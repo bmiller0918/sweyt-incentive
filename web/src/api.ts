@@ -71,6 +71,20 @@ export interface PlanAssignment {
   effectiveTo: string | null;
 }
 
+export interface ThresholdType {
+  id: string;
+  key: string;
+  name: string;
+  unit: string;
+  scaleParam: string | null;
+  builtin: number;
+}
+
+export interface AppConfig {
+  fiscalYearStartMonth: number;
+  weekStartsOn: 0 | 1;
+}
+
 export interface TypeAssignment {
   id: string;
   employeeTypeId: string;
@@ -240,6 +254,11 @@ export const api = {
   createPlan: (body: Omit<CompPlan, 'id' | 'updatedAt' | 'employeeCount'>) => request<CompPlan>('/api/comp-plans', json('POST', body)),
   updatePlan: (id: string, body: Omit<CompPlan, 'id' | 'updatedAt' | 'employeeCount'>) => request<CompPlan>(`/api/comp-plans/${id}`, json('PUT', body)),
   deletePlan: (id: string) => request<void>(`/api/comp-plans/${id}`, { method: 'DELETE' }),
+
+  getConfig: () => request<AppConfig>('/api/config'),
+  listThresholdTypes: () => request<ThresholdType[]>('/api/threshold-types'),
+  createThresholdType: (body: { name: string; unit: string; scaleParam?: string | null }) => request<ThresholdType>('/api/threshold-types', json('POST', body)),
+  deleteThresholdType: (id: string) => request<void>(`/api/threshold-types/${id}`, { method: 'DELETE' }),
 
   listEmployeeTypes: () => request<EmployeeType[]>('/api/employee-types'),
   createEmployeeType: (body: EmployeeTypeInput) => request<EmployeeType>('/api/employee-types', json('POST', body)),

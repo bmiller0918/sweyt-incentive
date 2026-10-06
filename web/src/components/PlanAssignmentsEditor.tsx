@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import type { CompPlan } from '../api';
+import { PeriodPicker } from './PeriodPicker';
 
 export interface AssignmentRow {
   id: string;
@@ -45,7 +46,7 @@ export function PlanAssignmentsEditor({ title, hint, assignments, inherited = []
           <tr>
             <th className="py-1 font-normal">Slot</th>
             <th className="py-1 font-normal">Plan</th>
-            <th className="py-1 font-normal">Effective</th>
+            <th className="py-1 font-normal">Effective period</th>
             <th />
           </tr>
         </thead>
@@ -76,10 +77,8 @@ export function PlanAssignmentsEditor({ title, hint, assignments, inherited = []
                   ))}
                 </select>
               </td>
-              <td className="py-1 pr-2 whitespace-nowrap">
-                <input type="date" className="input" value={a.effectiveFrom ?? ''} onChange={(e) => run(onUpdate(a.id, { ...a, effectiveFrom: e.target.value || null }))} />
-                <span className="mx-1 text-slate-400">→</span>
-                <input type="date" className="input" value={a.effectiveTo ?? ''} onChange={(e) => run(onUpdate(a.id, { ...a, effectiveTo: e.target.value || null }))} />
+              <td className="py-1 pr-2">
+                <PeriodPicker compact from={a.effectiveFrom} to={a.effectiveTo} onChange={(effectiveFrom, effectiveTo) => run(onUpdate(a.id, { ...a, effectiveFrom, effectiveTo }))} />
               </td>
               <td className="py-1 text-right">
                 <button className="text-slate-400 hover:text-rose-600" onClick={() => run(onDelete(a.id))}>

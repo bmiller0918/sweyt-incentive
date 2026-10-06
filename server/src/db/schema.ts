@@ -66,6 +66,19 @@ export const canonicalMappings = pgTable('canonical_mappings', {
   mapping: jsonb('mapping').$type<Record<string, string>>().notNull(),
 });
 
+/** What a tier table's thresholds are measured in. Built-ins are seeded; users add more. */
+export const thresholdTypes = pgTable('threshold_types', {
+  ...base,
+  /** Stable key stored on plans (e.g. 'amount', 'calls'). */
+  key: text('key').notNull().unique(),
+  name: text('name').notNull(),
+  /** Display unit, e.g. '$', '%', 'calls'. */
+  unit: text('unit').notNull().default(''),
+  /** When set, thresholds are fractions of this plan parameter (e.g. 'quota'). */
+  scaleParam: text('scale_param'),
+  builtin: integer('builtin').notNull().default(0),
+});
+
 /** A compensation plan: named parameters formulas can reference as plan.<key>. */
 export const compPlans = pgTable('comp_plans', {
   ...base,
@@ -73,7 +86,7 @@ export const compPlans = pgTable('comp_plans', {
   description: text('description'),
   params: jsonb('params').$type<Record<string, number | string | boolean | null>>().notNull().default({}),
   /** Tier table used by TIER() / TIER_RATE() in formulas. */
-  tiers: jsonb('tiers').$type<PlanTiers>().notNull().default({ mode: 'marginal', basis: 'amount', rows: [] }),
+  tiers: jsonb('tiers').$type<PlanTiers>().notNull().default({ mode: 'marginal', basis: 'amount', scaleParam: null, rows: [] }),
   /** YYYY-MM-DD; null = open-ended. */
   effectiveFrom: text('effective_from'),
   effectiveTo: text('effective_to'),

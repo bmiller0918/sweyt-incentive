@@ -1,6 +1,7 @@
 import { emptyTiers, tierPayout, type PlanTiers } from '@commissions/shared';
 import { useCallback, useEffect, useState } from 'react';
-import { api, type CompPlan, type PlanParams } from '../api';
+import { api, type CompPlan, type PlanParams, type ThresholdType } from '../api';
+import { PeriodPicker } from './PeriodPicker';
 
 type Draft = Omit<CompPlan, 'id' | 'updatedAt' | 'employeeCount'>;
 
@@ -152,14 +153,12 @@ export function CompPlansView() {
                 Description
                 <input className="input mt-1 block w-full" value={draft.description ?? ''} onChange={(e) => setDraft({ ...draft, description: e.target.value })} />
               </label>
-              <label className="text-slate-600">
-                Effective from
-                <input type="date" className="input mt-1 block w-full" value={draft.effectiveFrom ?? ''} onChange={(e) => setDraft({ ...draft, effectiveFrom: e.target.value || null })} />
-              </label>
-              <label className="text-slate-600">
-                Effective to
-                <input type="date" className="input mt-1 block w-full" value={draft.effectiveTo ?? ''} onChange={(e) => setDraft({ ...draft, effectiveTo: e.target.value || null })} />
-              </label>
+              <div className="col-span-2 text-slate-600">
+                Effective period <span className="text-slate-400">(assignments to this plan only count inside it)</span>
+                <div className="mt-1">
+                  <PeriodPicker from={draft.effectiveFrom} to={draft.effectiveTo} onChange={(effectiveFrom, effectiveTo) => setDraft({ ...draft, effectiveFrom, effectiveTo })} />
+                </div>
+              </div>
             </div>
 
             <div>
@@ -201,7 +200,11 @@ export function CompPlansView() {
               </div>
             </div>
 
-            <TierEditor tiers={draft.tiers} quota={typeof draft.params.quota === 'number' ? draft.params.quota : parseNum(paramRows.find((r) => r.key.trim() === 'quota')?.value ?? '')} onChange={(tiers) => setDraft({ ...draft, tiers })} />
+            <TierEditor
+              tiers={draft.tiers}
+              paramValue={(key) => parseNum(paramRows.find((r) => r.key.trim() === key)?.value ?? '')}
+              onChange={(tiers) => setDraft({ ...draft, tiers })}
+            />
           </section>
 
           {selectedId && selectedId !== 'new' && (
@@ -217,37 +220,64 @@ export function CompPlansView() {
 
 // -- Tiers -------------------------------------------------------------------
 
-function TierEditor({ tiers, quota, onChange }: { tiers: PlanTiers; quota: number | null; onChange: (t: PlanTiers) => void }) {
-  const [rows, setRows] = useState(() => tiers.rows.map((r) => ({ from: tiers.basis === 'percent_of_quota' ? pct(r.from) : String(r.from), rate: pct(r.rate) })));
+function TierEditor({ tiers, paramValue, onChange }: { tiers: PlanTiers; paramValue: (key: string) => number | null; onChange: (t: PlanTiers) => void }) {
+  const [types, setTypes] = useState<ThresholdType[]>([]);
+  const [newType, setNewType] = useState<{ name: string; unit: string; scaleParam: string } | null>(null);
+  const [typeError, setTypeError] = useState<string | null>(null);
+  useEffect(() => {
+    api.listThresholdTypes().then(setTypes).catch(() => {});
+  }, []);
+
+  const type = types.find((t) => t.key === tiers.basis);
+  // Scaling: from the type if loaded, else what the plan already carries.
+  const scaleParam = type ? type.scaleParam : (tiers.scaleParam ?? (tiers.basis === 'percent_of_quota' ? 'quota' : null));
+  const isPct = !!scaleParam;
+  const unit = type?.unit ?? (isPct ? '%' : '$');
+  const scale = scaleParam ? paramValue(scaleParam) : null;
+
+  const showFrom = (n: number) => (isPct ? pct(n) : String(n));
+  const [rows, setRows] = useState(() => tiers.rows.map((r) => ({ from: showFrom(r.from), rate: pct(r.rate) })));
   // Re-seed the text rows when a different plan is loaded.
   const [seedKey, setSeedKey] = useState(JSON.stringify(tiers));
   const key = JSON.stringify(tiers);
   if (key !== seedKey) {
-    const fromRows = tiers.rows.map((r) => ({ from: tiers.basis === 'percent_of_quota' ? pct(r.from) : String(r.from), rate: pct(r.rate) }));
-    // Only reseed if the structure actually differs from what our text rows represent.
     const ours = rows.map((r) => ({ from: parseNum(r.from) ?? 0, rate: parseNum(r.rate) ?? 0 }));
-    if (JSON.stringify(ours) !== JSON.stringify(tiers.rows)) setRows(fromRows);
+    if (JSON.stringify(ours) !== JSON.stringify(tiers.rows)) setRows(tiers.rows.map((r) => ({ from: showFrom(r.from), rate: pct(r.rate) })));
     setSeedKey(key);
   }
 
   const commit = (next: { from: string; rate: string }[], patch: Partial<PlanTiers> = {}) => {
     setRows(next);
-    onChange({
-      ...tiers,
-      ...patch,
-      rows: next.map((r) => ({ from: parseNum(r.from) ?? 0, rate: parseNum(r.rate) ?? 0 })),
-    });
+    onChange({ ...tiers, ...patch, rows: next.map((r) => ({ from: parseNum(r.from) ?? 0, rate: parseNum(r.rate) ?? 0 })) });
   };
-  const isPct = tiers.basis === 'percent_of_quota';
-  const sample = isPct ? (quota ?? 0) * 1.2 : 120000;
-  const preview = tiers.rows.length ? tierPayout(sample, tiers, quota) : null;
+  const pickType = (k: string) => {
+    if (k === '__new') return setNewType({ name: '', unit: '', scaleParam: '' });
+    const t = types.find((x) => x.key === k);
+    commit(rows, { basis: k, scaleParam: t ? t.scaleParam : null });
+  };
+  const createType = async () => {
+    if (!newType?.name.trim()) return;
+    setTypeError(null);
+    try {
+      const created = await api.createThresholdType({ name: newType.name, unit: newType.unit, scaleParam: newType.scaleParam || null });
+      setTypes(await api.listThresholdTypes());
+      setNewType(null);
+      commit(rows, { basis: created.key, scaleParam: created.scaleParam });
+    } catch (e) {
+      setTypeError((e as Error).message);
+    }
+  };
+
+  const sample = isPct ? (scale ?? 0) * 1.2 : unit === '$' ? 120000 : 150;
+  const preview = tiers.rows.length ? tierPayout(sample, { ...tiers, scaleParam }, scale) : null;
+  const rateIsMoney = unit !== '$' && unit !== '%';
 
   return (
     <div>
       <div className="mb-1 flex items-center text-xs">
         <span className="font-semibold text-slate-600">Tiers</span>
         <span className="ml-2 text-slate-400">
-          used by <code>TIER([amount])</code> in Calculate
+          used by <code>TIER(x)</code> in Calculate — x is whatever you pass (dollars won, calls made, …)
         </span>
         <div className="flex-1" />
         <button className="btn btn-sm" onClick={() => commit([...rows, { from: rows.length ? '' : '0', rate: '' }])}>
@@ -256,27 +286,60 @@ function TierEditor({ tiers, quota, onChange }: { tiers: PlanTiers; quota: numbe
       </div>
       <div className="mb-2 flex flex-wrap gap-3 text-xs">
         <label className="text-slate-600">
-          Thresholds in{' '}
-          <select className="select" value={tiers.basis} onChange={(e) => commit(rows, { basis: e.target.value as PlanTiers['basis'] })}>
-            <option value="amount">dollars</option>
-            <option value="percent_of_quota">% of quota (plan.quota)</option>
+          Threshold type{' '}
+          <select className="select" value={type ? tiers.basis : tiers.basis} onChange={(e) => pickType(e.target.value)}>
+            {!type && <option value={tiers.basis}>{tiers.basis}</option>}
+            {types.map((t) => (
+              <option key={t.key} value={t.key}>
+                {t.name}
+                {t.scaleParam ? ` (of plan.${t.scaleParam})` : t.unit ? ` (${t.unit})` : ''}
+              </option>
+            ))}
+            <option value="__new">+ New threshold type…</option>
           </select>
         </label>
         <label className="text-slate-600">
-          Mode{' '}
+          Payout{' '}
           <select className="select" value={tiers.mode} onChange={(e) => commit(rows, { mode: e.target.value as PlanTiers['mode'] })}>
-            <option value="marginal">marginal — each tier rate applies to its slice</option>
-            <option value="whole">whole amount — highest tier reached re-rates everything</option>
+            <option value="marginal">marginal — each tier's rate applies to its own slice</option>
+            <option value="whole">whole amount — the highest tier reached re-rates everything</option>
           </select>
         </label>
       </div>
+      {newType && (
+        <div className="mb-2 flex flex-wrap items-end gap-2 rounded-md border border-indigo-200 bg-indigo-50/50 p-2 text-xs">
+          <label className="text-slate-600">
+            Name
+            <input className="input mt-1 block w-36" autoFocus placeholder="Calls" value={newType.name} onChange={(e) => setNewType({ ...newType, name: e.target.value })} />
+          </label>
+          <label className="text-slate-600">
+            Unit <span className="text-slate-400">(label)</span>
+            <input className="input mt-1 block w-24" placeholder="calls" value={newType.unit} onChange={(e) => setNewType({ ...newType, unit: e.target.value })} />
+          </label>
+          <label className="text-slate-600">
+            % of plan parameter <span className="text-slate-400">(optional)</span>
+            <input className="input mt-1 block w-28 font-mono" placeholder="e.g. target" value={newType.scaleParam} onChange={(e) => setNewType({ ...newType, scaleParam: e.target.value })} />
+          </label>
+          <button className="btn btn-sm btn-primary" disabled={!newType.name.trim()} onClick={createType}>
+            Create
+          </button>
+          <button className="btn btn-sm" onClick={() => setNewType(null)}>
+            Cancel
+          </button>
+          {typeError && <span className="text-rose-700">{typeError}</span>}
+          <div className="w-full text-slate-500">
+            Leave the parameter blank for absolute thresholds (dollars, counts). Fill it in to express thresholds as a percentage of e.g. <code>plan.quota</code> or <code>plan.target</code>.
+          </div>
+        </div>
+      )}
       <div className="space-y-1 text-xs">
         {rows.map((r, i) => (
           <div key={i} className="flex items-center gap-2">
             <span className="w-10 text-right text-slate-400">from</span>
-            <input className="input w-28" placeholder={isPct ? '80%' : '50000'} value={r.from} onChange={(e) => commit(rows.map((x, j) => (j === i ? { ...x, from: e.target.value } : x)))} />
-            <span className="text-slate-400">pay</span>
-            <input className="input w-20" placeholder="8%" value={r.rate} onChange={(e) => commit(rows.map((x, j) => (j === i ? { ...x, rate: e.target.value } : x)))} />
+            <input className="input w-28" placeholder={isPct ? '80%' : unit === '$' ? '50000' : '100'} value={r.from} onChange={(e) => commit(rows.map((x, j) => (j === i ? { ...x, from: e.target.value } : x)))} />
+            <span className="text-slate-400">{unit && !isPct ? unit : ''} pay</span>
+            <input className="input w-24" placeholder={rateIsMoney ? '$5 each' : '8%'} value={r.rate} onChange={(e) => commit(rows.map((x, j) => (j === i ? { ...x, rate: e.target.value } : x)))} />
+            <span className="text-slate-400">{rateIsMoney ? `per ${unit.replace(/s$/, '')}` : 'of the amount'}</span>
             <div className="flex-1" />
             <button className="text-slate-400 hover:text-rose-600" onClick={() => commit(rows.filter((_, j) => j !== i))}>
               ✕
@@ -284,10 +347,14 @@ function TierEditor({ tiers, quota, onChange }: { tiers: PlanTiers; quota: numbe
           </div>
         ))}
         {rows.length === 0 && <div className="text-slate-400">No tiers. Example: from 0 pay 5% · from 50,000 pay 10% · from 100,000 pay 15%.</div>}
-        {isPct && (quota === null || quota <= 0) && rows.length > 0 && <div className="text-amber-700">Add a numeric <code>quota</code> parameter for %-of-quota thresholds to work.</div>}
+        {isPct && (scale === null || scale <= 0) && rows.length > 0 && (
+          <div className="text-amber-700">
+            Add a numeric <code>{scaleParam}</code> parameter above for %-of-{scaleParam} thresholds to work (an employee's own quota overrides it).
+          </div>
+        )}
         {preview !== null && (
           <div className="text-slate-400">
-            Check: {isPct ? '120% of quota' : '$120,000'} would pay <strong className="text-slate-600">{preview.toLocaleString(undefined, { maximumFractionDigits: 2 })}</strong>.
+            Check: {isPct ? `120% of ${scaleParam}` : unit === '$' ? '$120,000' : `150 ${unit}`} would pay <strong className="text-slate-600">{preview.toLocaleString(undefined, { maximumFractionDigits: 2 })}</strong>.
           </div>
         )}
       </div>

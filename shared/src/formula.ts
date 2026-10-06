@@ -10,7 +10,7 @@
 // = <> != < <= > >=, AND OR NOT, parentheses. Functions: IF, MIN, MAX, ROUND,
 // ABS, COALESCE, FLOOR, CEIL, ISBLANK, AND/OR as functions too.
 
-import { planTiersSchema, tierPayout, tierRate } from './tiers.js';
+import { planTiersSchema, tierPayout, tierRate, tierScaleParam } from './tiers.js';
 
 export type FormulaValue = number | string | boolean | null;
 /** Namespaces (e.g. plan) may hold nested objects such as a tier table. */
@@ -250,13 +250,18 @@ function lookup(name: string, scope: Scope): FormulaValue {
   return null;
 }
 
-/** A slot's (default "plan") tier table and quota, if the scope has them. */
+/**
+ * A slot's (default "plan") tier table plus the value of the parameter its
+ * thresholds scale by (e.g. plan.quota for "% of quota"), if the scope has them.
+ */
 function planTiers(scope: Scope, slot: string) {
   const plan = scope[slot];
   if (!plan || typeof plan !== 'object') return null;
   const parsed = planTiersSchema.safeParse((plan as Record<string, unknown>).tiers);
   if (!parsed.success || !parsed.data.rows.length) return null;
-  return { tiers: parsed.data, quota: num(isScalar((plan as Record<string, unknown>).quota) ? ((plan as Record<string, unknown>).quota as FormulaValue) : null) };
+  const param = tierScaleParam(parsed.data);
+  const raw = param ? (plan as Record<string, unknown>)[param] : null;
+  return { tiers: parsed.data, scale: param ? num(isScalar(raw) ? raw : null) : null };
 }
 
 export function evaluateNode(n: Node, scope: Scope): FormulaValue {
@@ -371,7 +376,7 @@ export function evaluateNode(n: Node, scope: Scope): FormulaValue {
           const slotArg = arg(1);
           const t = planTiers(scope, typeof slotArg === 'string' && slotArg ? slotArg : 'plan');
           if (v === null || !t) return null;
-          return fn === 'TIER' ? tierPayout(v, t.tiers, t.quota) : tierRate(v, t.tiers, t.quota);
+          return fn === 'TIER' ? tierPayout(v, t.tiers, t.scale) : tierRate(v, t.tiers, t.scale);
         }
       }
       return null;

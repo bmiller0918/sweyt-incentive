@@ -1,9 +1,23 @@
-import { makePlanLookup, planTiersSchema, type EmployeeRecord, type PlanLookup } from '@commissions/shared';
+import { BUILTIN_THRESHOLD_TYPES, makePlanLookup, planTiersSchema, type EmployeeRecord, type PlanLookup, type PlanTiers } from '@commissions/shared';
 import { asc, eq, sql } from 'drizzle-orm';
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
+import { config } from '../config.js';
 import type { Db } from '../db/client.js';
-import { auditLog, compPlans, employeeTypes, employees, planAssignments, typePlanAssignments } from '../db/schema.js';
+import { auditLog, compPlans, employeeTypes, employees, planAssignments, thresholdTypes, typePlanAssignments } from '../db/schema.js';
+
+/** Make sure the built-in threshold types exist (idempotent). */
+export async function seedThresholdTypes(db: Db) {
+  const existing = new Set((await db.select({ key: thresholdTypes.key }).from(thresholdTypes)).map((r) => r.key));
+  const missing = BUILTIN_THRESHOLD_TYPES.filter((t) => !existing.has(t.key));
+  if (missing.length) await db.insert(thresholdTypes).values(missing.map((t) => ({ ...t, builtin: 1 })));
+}
+
+/** Attach each plan's threshold-type scaling so the engine needs no DB access. */
+function resolveTiers(tiers: PlanTiers, types: Map<string, { scaleParam: string | null }>): PlanTiers {
+  const t = types.get(tiers.basis);
+  return { ...tiers, scaleParam: t ? t.scaleParam : tiers.basis === 'percent_of_quota' ? 'quota' : null };
+}
 
 const paramValue = z.union([z.number(), z.string(), z.boolean(), z.null()]);
 const dateStr = z.string().regex(/^\d{4}-\d{2}-\d{2}$/).nullable().optional();
@@ -12,7 +26,7 @@ const planSchema = z.object({
   name: z.string().min(1),
   description: z.string().nullable().optional(),
   params: z.record(paramValue).default({}),
-  tiers: planTiersSchema.default({ mode: 'marginal', basis: 'amount', rows: [] }),
+  tiers: planTiersSchema.default({ mode: 'marginal', basis: 'amount', scaleParam: null, rows: [] }),
   effectiveFrom: dateStr,
   effectiveTo: dateStr,
 });
@@ -66,6 +80,7 @@ function bounded(r: { effectiveFrom: string | null; effectiveTo: string | null; 
 
 /** Load employees (+ type defaults) with their assignments and build the stage-3 lookup. */
 export async function loadPlanLookup(db: Db, asOf: string): Promise<PlanLookup> {
+  const ttypes = new Map((await db.select().from(thresholdTypes)).map((t) => [t.key, { scaleParam: t.scaleParam }]));
   const emps = await db
     .select({ e: employees, typeName: employeeTypes.name, typeSalary: employeeTypes.defaultBaseSalary, typeQuota: employeeTypes.defaultQuota })
     .from(employees)
@@ -95,14 +110,54 @@ export async function loadPlanLookup(db: Db, asOf: string): Promise<PlanLookup> 
     quota: e.quota ?? typeQuota ?? null,
     bonuses: Object.fromEntries(e.bonuses.map((b) => [b.label, b.amount])),
     assignments: [
-      ...(ownBy.get(e.id) ?? []).map((r) => ({ source: 'employee' as const, slot: r.slot, planName: r.planName, params: r.params, tiers: r.tiers, ...bounded(r) })),
-      ...(e.employeeTypeId ? (typeBy.get(e.employeeTypeId) ?? []) : []).map((r) => ({ source: 'type' as const, slot: r.slot, planName: r.planName, params: r.params, tiers: r.tiers, ...bounded(r) })),
+      ...(ownBy.get(e.id) ?? []).map((r) => ({ source: 'employee' as const, slot: r.slot, planName: r.planName, params: r.params, tiers: resolveTiers(r.tiers, ttypes), ...bounded(r) })),
+      ...(e.employeeTypeId ? (typeBy.get(e.employeeTypeId) ?? []) : []).map((r) => ({ source: 'type' as const, slot: r.slot, planName: r.planName, params: r.params, tiers: resolveTiers(r.tiers, ttypes), ...bounded(r) })),
     ],
   }));
   return makePlanLookup(records, asOf);
 }
 
 export async function planRoutes(app: FastifyInstance, db: Db) {
+  await seedThresholdTypes(db);
+
+  /** Settings the client needs to resolve periods the same way the server does. */
+  app.get('/api/config', async () => ({ fiscalYearStartMonth: config.fiscalYearStartMonth, weekStartsOn: config.weekStartsOn }));
+
+  // -- Threshold types -------------------------------------------------------
+  app.get('/api/threshold-types', async () => db.select().from(thresholdTypes).orderBy(asc(thresholdTypes.builtin), asc(thresholdTypes.name)));
+
+  const thresholdTypeSchema = z.object({
+    name: z.string().min(1),
+    unit: z.string().default(''),
+    scaleParam: z.string().nullable().optional(),
+  });
+  app.post('/api/threshold-types', async (req, reply) => {
+    const body = thresholdTypeSchema.parse(req.body);
+    const key = body.name
+      .trim()
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, '_')
+      .replace(/^_+|_+$/g, '');
+    if (!key) return reply.code(400).send({ error: 'Name must contain letters or digits' });
+    const [dupe] = await db.select({ id: thresholdTypes.id }).from(thresholdTypes).where(eq(thresholdTypes.key, key));
+    if (dupe) return reply.code(409).send({ error: `A threshold type "${body.name}" already exists` });
+    const [row] = await db
+      .insert(thresholdTypes)
+      .values({ key, name: body.name.trim(), unit: body.unit.trim(), scaleParam: body.scaleParam?.trim() || null })
+      .returning();
+    await db.insert(auditLog).values({ action: 'threshold_type.create', entityType: 'threshold_type', entityId: row.id });
+    return row;
+  });
+
+  app.delete('/api/threshold-types/:id', async (req, reply) => {
+    const { id } = req.params as { id: string };
+    const [row] = await db.select().from(thresholdTypes).where(eq(thresholdTypes.id, id));
+    if (!row) return reply.code(404).send({ error: 'Not found' });
+    if (row.builtin) return reply.code(400).send({ error: 'Built-in threshold types cannot be deleted' });
+    await db.delete(thresholdTypes).where(eq(thresholdTypes.id, id));
+    return reply.code(204).send();
+  });
+
   // -- Comp plans ------------------------------------------------------------
   app.get('/api/comp-plans', async () => {
     const plans = await db.select().from(compPlans).orderBy(asc(compPlans.name));

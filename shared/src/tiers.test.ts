@@ -32,6 +32,15 @@ describe('tiers', () => {
     expect(tierPayout(90000, attainment, null)).toBeNull();
     expect(tierPayout(90000, attainment, 0)).toBeNull();
   });
+  it('custom threshold types: counts are absolute; scaleParam picks any plan parameter', () => {
+    const calls: PlanTiers = { mode: 'whole', basis: 'count', scaleParam: null, rows: [{ from: 0, rate: 0 }, { from: 100, rate: 5 }, { from: 200, rate: 8 }] };
+    // "rate" here is dollars per call once the tier is reached
+    expect(tierPayout(150, calls, null)).toBe(750);
+    expect(tierRate(250, calls, null)).toBe(8);
+    const pctOfTarget: PlanTiers = { mode: 'marginal', basis: 'pct_target', scaleParam: 'target', rows: [{ from: 0, rate: 1 }, { from: 1, rate: 2 }] };
+    expect(tierPayout(120, pctOfTarget, 100)).toBe(100 * 1 + 20 * 2);
+    expect(evaluateFormula('TIER([Meetings])', { Meetings: 120, plan: { target: 100, tiers: pctOfTarget } })).toBe(140);
+  });
   it('unsorted rows are fine', () => {
     const t: PlanTiers = { ...marginal, rows: [...marginal.rows].reverse() };
     expect(tierPayout(120000, t, null)).toBe(tierPayout(120000, marginal, null));
