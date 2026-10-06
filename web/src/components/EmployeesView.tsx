@@ -1,8 +1,21 @@
 import { scopeKey } from '@commissions/shared';
 import { useCallback, useEffect, useState } from 'react';
-import { EMPLOYEE_STATUSES, STATUS_LABELS, api, type CompPlan, type Employee, type EmployeeInput, type ImportSummary } from '../api';
+import { EMPLOYEE_STATUSES, STATUS_LABELS, api, type CompPlan, type Employee, type EmployeeInput, type EmployeeType, type ImportSummary } from '../api';
+import { PlanAssignmentsEditor } from './PlanAssignmentsEditor';
 
-const emptyInput = (): EmployeeInput => ({ name: '', title: '', email: '', baseSalary: null, bonuses: [], notes: '', startDate: null, status: 'active', statusDate: null });
+const emptyInput = (): EmployeeInput => ({
+  name: '',
+  title: '',
+  email: '',
+  employeeTypeId: null,
+  baseSalary: null,
+  quota: null,
+  bonuses: [],
+  notes: '',
+  startDate: null,
+  status: 'active',
+  statusDate: null,
+});
 
 const STATUS_STYLE: Record<string, string> = {
   active: 'bg-emerald-100 text-emerald-800',
@@ -22,28 +35,28 @@ const money = (n: number | null | undefined) => (n == null ? '' : n.toLocaleStri
 
 export function EmployeesView() {
   const [employees, setEmployees] = useState<Employee[]>([]);
+  const [types, setTypes] = useState<EmployeeType[]>([]);
   const [plans, setPlans] = useState<CompPlan[]>([]);
   const [selectedId, setSelectedId] = useState<string | 'new' | null>(null);
   const [draft, setDraft] = useState<EmployeeInput>(emptyInput());
   const [salaryText, setSalaryText] = useState('');
+  const [quotaText, setQuotaText] = useState('');
   const [bonusRows, setBonusRows] = useState<{ label: string; amount: string }[]>([]);
   const [search, setSearch] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
 
   const refresh = useCallback(async () => {
-    const [e, p] = await Promise.all([api.listEmployees(), api.listPlans()]);
+    const [e, t, p] = await Promise.all([api.listEmployees(), api.listEmployeeTypes(), api.listPlans()]);
     setEmployees(e);
+    setTypes(t);
     setPlans(p);
     return e;
   }, []);
 
   useEffect(() => {
     refresh()
-      .then((e) => {
-        if (e.length) select(e[0]);
-        else select('new');
-      })
+      .then((e) => (e.length ? select(e[0]) : select('new')))
       .catch((err) => setError(err.message));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -53,6 +66,7 @@ export function EmployeesView() {
       setSelectedId('new');
       setDraft(emptyInput());
       setSalaryText('');
+      setQuotaText('');
       setBonusRows([]);
       return;
     }
@@ -61,7 +75,9 @@ export function EmployeesView() {
       name: e.name,
       title: e.title ?? '',
       email: e.email ?? '',
+      employeeTypeId: e.employeeTypeId,
       baseSalary: e.baseSalary,
+      quota: e.quota,
       bonuses: e.bonuses,
       notes: e.notes ?? '',
       startDate: e.startDate,
@@ -69,6 +85,7 @@ export function EmployeesView() {
       statusDate: e.statusDate,
     });
     setSalaryText(e.baseSalary == null ? '' : String(e.baseSalary));
+    setQuotaText(e.quota == null ? '' : String(e.quota));
     setBonusRows(e.bonuses.map((b) => ({ label: b.label, amount: String(b.amount) })));
   };
 
@@ -82,6 +99,7 @@ export function EmployeesView() {
         email: draft.email || null,
         notes: draft.notes || null,
         baseSalary: parseMoney(salaryText),
+        quota: parseMoney(quotaText),
         bonuses: bonusRows.filter((b) => b.label.trim()).map((b) => ({ label: b.label.trim(), amount: parseMoney(b.amount) ?? 0 })),
       };
       const saved = selectedId === 'new' || !selectedId ? await api.createEmployee(body) : await api.updateEmployee(selectedId, body);
@@ -105,7 +123,8 @@ export function EmployeesView() {
   };
 
   const current = employees.find((e) => e.id === selectedId);
-  const visible = employees.filter((e) => !search || e.name.toLowerCase().includes(search.toLowerCase()));
+  const type = types.find((t) => t.id === draft.employeeTypeId);
+  const visible = employees.filter((e) => !search || `${e.name} ${e.typeName ?? ''}`.toLowerCase().includes(search.toLowerCase()));
 
   return (
     <div className="flex h-full">
@@ -133,14 +152,15 @@ export function EmployeesView() {
                 {e.status !== 'active' && <span className={`rounded px-1 text-[10px] ${statusStyle(e.status)}`}>{STATUS_LABELS[e.status] ?? e.status}</span>}
               </div>
               <div className="truncate text-xs text-slate-400">
-                {e.assignments.length ? e.assignments.map((a) => a.planName).join(' + ') : 'no plan'}
+                {e.typeName ?? 'no type'}
+                {e.assignments.length ? ` · +${e.assignments.length} own plan${e.assignments.length === 1 ? '' : 's'}` : ''}
                 {e.baseSalary != null ? ` · ${money(e.baseSalary)}` : ''}
               </div>
             </button>
           ))}
           {employees.length === 0 && <div className="px-2 py-4 text-xs text-slate-400">No employees yet.</div>}
         </div>
-        <ImportEmployees onDone={refresh} onError={setError} existing={employees} />
+        <ImportEmployees onDone={refresh} onError={setError} existing={employees} types={types} />
       </aside>
 
       <div className="flex min-w-0 flex-1 flex-col overflow-auto">
@@ -172,6 +192,17 @@ export function EmployeesView() {
                 <input className="input mt-1 block w-full" value={draft.name} onChange={(e) => setDraft({ ...draft, name: e.target.value })} />
               </label>
               <label className="text-slate-600">
+                Employee type <span className="text-slate-400">(employee.type)</span>
+                <select className="select mt-1 block w-full" value={draft.employeeTypeId ?? ''} onChange={(e) => setDraft({ ...draft, employeeTypeId: e.target.value || null })}>
+                  <option value="">— none —</option>
+                  {types.map((t) => (
+                    <option key={t.id} value={t.id}>
+                      {t.name}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label className="text-slate-600">
                 Title
                 <input className="input mt-1 block w-full" value={draft.title ?? ''} onChange={(e) => setDraft({ ...draft, title: e.target.value })} />
               </label>
@@ -181,7 +212,11 @@ export function EmployeesView() {
               </label>
               <label className="text-slate-600">
                 Base salary <span className="text-slate-400">(annual · employee.base_salary)</span>
-                <input className="input mt-1 block w-full" placeholder="$90,000" value={salaryText} onChange={(e) => setSalaryText(e.target.value)} />
+                <input className="input mt-1 block w-full" placeholder={type?.defaultBaseSalary != null ? `${money(type.defaultBaseSalary)} from ${type.name}` : '$90,000'} value={salaryText} onChange={(e) => setSalaryText(e.target.value)} />
+              </label>
+              <label className="text-slate-600">
+                Quota <span className="text-slate-400">(employee.quota · overrides plan.quota)</span>
+                <input className="input mt-1 block w-full" placeholder={type?.defaultQuota != null ? `${money(type.defaultQuota)} from ${type.name}` : 'plan default'} value={quotaText} onChange={(e) => setQuotaText(e.target.value)} />
               </label>
               <label className="text-slate-600">
                 Start date
@@ -237,129 +272,40 @@ export function EmployeesView() {
             </div>
           </section>
 
-          {current && <AssignmentsSection employee={current} plans={plans} onChanged={refresh} onError={setError} />}
-          {selectedId === 'new' && <p className="text-xs text-slate-400">Save the employee first, then assign plans.</p>}
+          {current && (
+            <PlanAssignmentsEditor
+              title="Plans"
+              hint={
+                <>
+                  Plans from the employee type are shown greyed. Add a plan here to override a slot for this person only (e.g. a special SPIFF, or a different core plan). Formulas use{' '}
+                  <code>plan.rate</code> / <code>TIER(x)</code> for slot <code>plan</code> and <code>spiff.rate</code> / <code>TIER(x, "spiff")</code> for slot <code>spiff</code>.
+                </>
+              }
+              assignments={current.assignments}
+              inherited={current.inherited ?? []}
+              plans={plans}
+              onAdd={(b) => api.addAssignment(current.id, b).then(refresh)}
+              onUpdate={(id, b) => api.updateAssignment(id, b).then(refresh)}
+              onDelete={(id) => api.deleteAssignment(id).then(refresh)}
+              onError={setError}
+            />
+          )}
+          {selectedId === 'new' && <p className="text-xs text-slate-400">Save the employee first, then add any plans beyond what their type provides.</p>}
         </div>
       </div>
     </div>
   );
 }
 
-// -- Plan assignments --------------------------------------------------------
-
-const SLOT_SUGGESTIONS = ['plan', 'spiff', 'bonus', 'override'];
-
-function AssignmentsSection({ employee, plans, onChanged, onError }: { employee: Employee; plans: CompPlan[]; onChanged: () => Promise<unknown>; onError: (m: string) => void }) {
-  const [planId, setPlanId] = useState('');
-  const [slot, setSlot] = useState('plan');
-  const used = new Set(employee.assignments.map((a) => a.slot));
-
-  const add = async () => {
-    if (!planId) return;
-    try {
-      await api.addAssignment(employee.id, { compPlanId: planId, slot: slot.trim() || 'plan' });
-      setPlanId('');
-      await onChanged();
-    } catch (e) {
-      onError((e as Error).message);
-    }
-  };
-
-  return (
-    <section className="space-y-2">
-      <h3 className="text-sm font-semibold">
-        Plans <span className="font-normal text-slate-400">({employee.assignments.length})</span>
-      </h3>
-      <p className="text-xs text-slate-500">
-        An employee can be on several plans at once. The <strong>slot</strong> is how formulas refer to each one: the core plan is <code>plan</code> (
-        <code>plan.rate</code>, <code>TIER(x)</code>); a second plan in slot <code>spiff</code> is <code>spiff.rate</code> / <code>TIER(x, "spiff")</code>. Effective dates are
-        optional; the plan in force at the end of the Period is used.
-      </p>
-      <table className="w-full text-xs">
-        <thead className="text-left text-slate-400">
-          <tr>
-            <th className="py-1 font-normal">Slot</th>
-            <th className="py-1 font-normal">Plan</th>
-            <th className="py-1 font-normal">Effective</th>
-            <th />
-          </tr>
-        </thead>
-        <tbody>
-          {employee.assignments.map((a) => (
-            <tr key={a.id} className="border-t border-slate-100">
-              <td className="py-1 pr-2">
-                <input
-                  className="input w-24 font-mono"
-                  list="slot-suggestions"
-                  value={a.slot}
-                  onChange={(e) => api.updateAssignment(a.id, { ...a, slot: e.target.value || 'plan' }).then(onChanged)}
-                />
-              </td>
-              <td className="py-1 pr-2">
-                <select className="select" value={a.compPlanId} onChange={(e) => api.updateAssignment(a.id, { ...a, compPlanId: e.target.value }).then(onChanged)}>
-                  {plans.map((p) => (
-                    <option key={p.id} value={p.id}>
-                      {p.name}
-                    </option>
-                  ))}
-                </select>
-              </td>
-              <td className="py-1 pr-2 whitespace-nowrap">
-                <input type="date" className="input" value={a.effectiveFrom ?? ''} onChange={(e) => api.updateAssignment(a.id, { ...a, effectiveFrom: e.target.value || null }).then(onChanged)} />
-                <span className="mx-1 text-slate-400">→</span>
-                <input type="date" className="input" value={a.effectiveTo ?? ''} onChange={(e) => api.updateAssignment(a.id, { ...a, effectiveTo: e.target.value || null }).then(onChanged)} />
-              </td>
-              <td className="py-1 text-right">
-                <button className="text-slate-400 hover:text-rose-600" onClick={() => api.deleteAssignment(a.id).then(onChanged)}>
-                  ✕
-                </button>
-              </td>
-            </tr>
-          ))}
-          {employee.assignments.length === 0 && (
-            <tr>
-              <td colSpan={4} className="py-2 text-slate-400">
-                No plans assigned.
-              </td>
-            </tr>
-          )}
-        </tbody>
-      </table>
-      <datalist id="slot-suggestions">
-        {SLOT_SUGGESTIONS.map((s) => (
-          <option key={s} value={s} />
-        ))}
-      </datalist>
-      <div className="flex flex-wrap items-center gap-2 rounded-lg border border-slate-200 bg-white p-2 text-xs">
-        <span className="text-slate-500">Add plan:</span>
-        <select className="select" value={planId} onChange={(e) => setPlanId(e.target.value)}>
-          <option value="">— choose a plan —</option>
-          {plans.map((p) => (
-            <option key={p.id} value={p.id}>
-              {p.name}
-            </option>
-          ))}
-        </select>
-        <span className="text-slate-500">as</span>
-        <input className="input w-24 font-mono" list="slot-suggestions" value={slot} onChange={(e) => setSlot(e.target.value)} />
-        {used.has(slot.trim().toLowerCase()) && <span className="text-amber-700">slot already used — the newest effective assignment wins</span>}
-        <button className="btn btn-sm" disabled={!planId} onClick={add}>
-          Add
-        </button>
-        {plans.length === 0 && <span className="text-amber-700">Create a comp plan first.</span>}
-      </div>
-    </section>
-  );
-}
-
 // -- Bulk import from an import column ---------------------------------------
 
-function ImportEmployees({ onDone, onError, existing }: { onDone: () => Promise<unknown>; onError: (m: string) => void; existing: Employee[] }) {
+function ImportEmployees({ onDone, onError, existing, types }: { onDone: () => Promise<unknown>; onError: (m: string) => void; existing: Employee[]; types: EmployeeType[] }) {
   const [open, setOpen] = useState(false);
   const [imports, setImports] = useState<ImportSummary[]>([]);
   const [pickImport, setPickImport] = useState('');
   const [columns, setColumns] = useState<string[]>([]);
   const [pickColumn, setPickColumn] = useState('');
+  const [typeId, setTypeId] = useState('');
   const [candidates, setCandidates] = useState<{ value: string; count: number }[]>([]);
   const [ticked, setTicked] = useState<Set<string>>(new Set());
   const have = new Set(existing.map((e) => e.name.toLowerCase()));
@@ -417,6 +363,14 @@ function ImportEmployees({ onDone, onError, existing }: { onDone: () => Promise<
           </option>
         ))}
       </select>
+      <select className="select w-full" value={typeId} onChange={(e) => setTypeId(e.target.value)} title="Employee type to give the new people">
+        <option value="">— no type —</option>
+        {types.map((t) => (
+          <option key={t.id} value={t.id}>
+            as {t.name}
+          </option>
+        ))}
+      </select>
       <div className="max-h-40 overflow-auto">
         {missing.map((c) => (
           <label key={c.value} className="flex items-center gap-2 py-0.5">
@@ -447,7 +401,7 @@ function ImportEmployees({ onDone, onError, existing }: { onDone: () => Promise<
           disabled={!ticked.size}
           onClick={async () => {
             try {
-              await api.bulkCreateEmployees([...ticked]);
+              await api.bulkCreateEmployees([...ticked], typeId || null);
               setTicked(new Set());
               await onDone();
             } catch (e) {

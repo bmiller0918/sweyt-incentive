@@ -22,7 +22,11 @@ export interface EmployeeInfo {
   name: string;
   /** active | terminated | parental_leave | ... — exposed as employee.status */
   status?: string;
+  /** Employee type name, exposed as employee.type */
+  type?: string | null;
   baseSalary: number | null;
+  /** Effective quota (employee > type default); overrides plan.quota when set. */
+  quota?: number | null;
   /** label -> amount */
   bonuses: Record<string, number>;
 }
@@ -148,11 +152,17 @@ export function repScope(r: ResolvedRep | null): Record<string, Record<string, u
   out.employee = {
     name: r.employee.name,
     status: r.employee.status ?? 'active',
+    type: r.employee.type ?? null,
     base_salary: r.employee.baseSalary,
+    quota: r.employee.quota ?? null,
     bonus_total: bonusTotal,
     ...Object.fromEntries(Object.entries(r.employee.bonuses).map(([label, amt]) => [scopeKey(label), amt])),
   };
-  for (const [slot, p] of Object.entries(r.plans)) out[slot] = { ...p.params, name: p.planName, tiers: p.tiers };
+  for (const [slot, p] of Object.entries(r.plans)) {
+    // A person's own quota beats the plan's default, so one plan serves many quotas.
+    const quota = r.employee.quota ?? p.params.quota;
+    out[slot] = { ...p.params, ...(quota != null ? { quota } : {}), name: p.planName, tiers: p.tiers };
+  }
   return out;
 }
 
@@ -176,35 +186,41 @@ export function asOfFromCriteria(criteria: { root: { children: CriteriaNode[] } 
   return toIso(today);
 }
 
+export interface AssignmentRecord {
+  slot: string;
+  planName: string;
+  params: PlanParams;
+  tiers?: PlanTiers;
+  effectiveFrom: string | null;
+  effectiveTo: string | null;
+  /** Where it came from; an employee's own assignment beats one inherited from their type. */
+  source?: 'employee' | 'type';
+}
+
 export interface EmployeeRecord extends EmployeeInfo {
-  assignments: {
-    slot: string;
-    planName: string;
-    params: PlanParams;
-    tiers?: PlanTiers;
-    effectiveFrom: string | null;
-    effectiveTo: string | null;
-  }[];
+  assignments: AssignmentRecord[];
 }
 
 /**
- * Build a lookup from employees and their plan assignments. Names match
- * case-insensitively after trimming. Per slot, when several assignments
- * cover the as-of date, the one with the latest start wins.
+ * Build a lookup from employees and their plan assignments (own + inherited
+ * from their type). Names match case-insensitively after trimming. Per slot:
+ * the employee's own live assignment wins over the type's; among several,
+ * the one with the latest start wins.
  */
 export function makePlanLookup(employees: EmployeeRecord[], asOf: string): PlanLookup {
   const byName = new Map<string, EmployeeRecord>();
   for (const e of employees) byName.set(e.name.trim().toLowerCase(), e);
+  const rank = (a: AssignmentRecord) => (a.source === 'type' ? 1 : 0);
   return (rep) => {
     const e = byName.get(rep.trim().toLowerCase());
     if (!e) return null;
     const plans: Record<string, ResolvedPlan> = {};
     const live = e.assignments.filter((a) => (!a.effectiveFrom || a.effectiveFrom <= asOf) && (!a.effectiveTo || a.effectiveTo >= asOf));
-    live.sort((a, b) => (b.effectiveFrom ?? '').localeCompare(a.effectiveFrom ?? ''));
+    live.sort((a, b) => rank(a) - rank(b) || (b.effectiveFrom ?? '').localeCompare(a.effectiveFrom ?? ''));
     for (const a of live) {
       const slot = scopeKey(a.slot) || DEFAULT_SLOT;
       if (!(slot in plans)) plans[slot] = { planName: a.planName, params: a.params, tiers: a.tiers };
     }
-    return { employee: { name: e.name, status: e.status, baseSalary: e.baseSalary, bonuses: e.bonuses }, plans };
+    return { employee: { name: e.name, status: e.status, type: e.type, baseSalary: e.baseSalary, quota: e.quota, bonuses: e.bonuses }, plans };
   };
 }

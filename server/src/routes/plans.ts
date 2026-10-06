@@ -3,7 +3,7 @@ import { asc, eq, sql } from 'drizzle-orm';
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import type { Db } from '../db/client.js';
-import { auditLog, compPlans, employees, planAssignments } from '../db/schema.js';
+import { auditLog, compPlans, employeeTypes, employees, planAssignments, typePlanAssignments } from '../db/schema.js';
 
 const paramValue = z.union([z.number(), z.string(), z.boolean(), z.null()]);
 const dateStr = z.string().regex(/^\d{4}-\d{2}-\d{2}$/).nullable().optional();
@@ -19,11 +19,20 @@ const planSchema = z.object({
 
 export const EMPLOYEE_STATUSES = ['active', 'terminated', 'parental_leave', 'medical_leave', 'leave', 'inactive'] as const;
 
+const employeeTypeSchema = z.object({
+  name: z.string().min(1),
+  description: z.string().nullable().optional(),
+  defaultBaseSalary: z.number().nullable().optional(),
+  defaultQuota: z.number().nullable().optional(),
+});
+
 const employeeSchema = z.object({
   name: z.string().min(1),
   title: z.string().nullable().optional(),
   email: z.string().nullable().optional(),
+  employeeTypeId: z.string().uuid().nullable().optional(),
   baseSalary: z.number().nullable().optional(),
+  quota: z.number().nullable().optional(),
   bonuses: z.array(z.object({ label: z.string().min(1), amount: z.number() })).default([]),
   notes: z.string().nullable().optional(),
   startDate: dateStr,
@@ -38,43 +47,57 @@ const assignmentSchema = z.object({
   effectiveTo: dateStr,
 });
 
-/** Load employees with their assignments + plans and build the stage-3 lookup. */
+const planCols = {
+  slot: sql<string>`slot`,
+  planName: compPlans.name,
+  params: compPlans.params,
+  tiers: compPlans.tiers,
+  planFrom: compPlans.effectiveFrom,
+  planTo: compPlans.effectiveTo,
+};
+
+/** A plan's own effective window also bounds its assignments. */
+function bounded(r: { effectiveFrom: string | null; effectiveTo: string | null; planFrom: string | null; planTo: string | null }) {
+  return {
+    effectiveFrom: [r.effectiveFrom, r.planFrom].filter(Boolean).sort().pop() ?? null,
+    effectiveTo: [r.effectiveTo, r.planTo].filter(Boolean).sort().shift() ?? null,
+  };
+}
+
+/** Load employees (+ type defaults) with their assignments and build the stage-3 lookup. */
 export async function loadPlanLookup(db: Db, asOf: string): Promise<PlanLookup> {
-  const emps = await db.select().from(employees);
-  const rows = await db
-    .select({
-      employeeId: planAssignments.employeeId,
-      slot: planAssignments.slot,
-      effectiveFrom: planAssignments.effectiveFrom,
-      effectiveTo: planAssignments.effectiveTo,
-      planName: compPlans.name,
-      params: compPlans.params,
-      tiers: compPlans.tiers,
-      planFrom: compPlans.effectiveFrom,
-      planTo: compPlans.effectiveTo,
-    })
+  const emps = await db
+    .select({ e: employees, typeName: employeeTypes.name, typeSalary: employeeTypes.defaultBaseSalary, typeQuota: employeeTypes.defaultQuota })
+    .from(employees)
+    .leftJoin(employeeTypes, eq(employees.employeeTypeId, employeeTypes.id));
+  const own = await db
+    .select({ ownerId: planAssignments.employeeId, effectiveFrom: planAssignments.effectiveFrom, effectiveTo: planAssignments.effectiveTo, ...planCols, slot: planAssignments.slot })
     .from(planAssignments)
     .innerJoin(compPlans, eq(planAssignments.compPlanId, compPlans.id));
-  const byEmployee = new Map<string, EmployeeRecord['assignments']>();
-  for (const r of rows) {
-    const list = byEmployee.get(r.employeeId) ?? [];
-    // A plan's own effective window also bounds its assignments.
-    list.push({
-      slot: r.slot,
-      planName: r.planName,
-      params: r.params,
-      tiers: r.tiers,
-      effectiveFrom: [r.effectiveFrom, r.planFrom].filter(Boolean).sort().pop() ?? null,
-      effectiveTo: [r.effectiveTo, r.planTo].filter(Boolean).sort().shift() ?? null,
-    });
-    byEmployee.set(r.employeeId, list);
-  }
-  const records: EmployeeRecord[] = emps.map((e) => ({
+  const inherited = await db
+    .select({ ownerId: typePlanAssignments.employeeTypeId, effectiveFrom: typePlanAssignments.effectiveFrom, effectiveTo: typePlanAssignments.effectiveTo, ...planCols, slot: typePlanAssignments.slot })
+    .from(typePlanAssignments)
+    .innerJoin(compPlans, eq(typePlanAssignments.compPlanId, compPlans.id));
+
+  const group = <T extends { ownerId: string }>(rows: T[]) => {
+    const m = new Map<string, T[]>();
+    for (const r of rows) m.set(r.ownerId, [...(m.get(r.ownerId) ?? []), r]);
+    return m;
+  };
+  const ownBy = group(own);
+  const typeBy = group(inherited);
+
+  const records: EmployeeRecord[] = emps.map(({ e, typeName, typeSalary, typeQuota }) => ({
     name: e.name,
     status: e.status,
-    baseSalary: e.baseSalary,
+    type: typeName,
+    baseSalary: e.baseSalary ?? typeSalary ?? null,
+    quota: e.quota ?? typeQuota ?? null,
     bonuses: Object.fromEntries(e.bonuses.map((b) => [b.label, b.amount])),
-    assignments: byEmployee.get(e.id) ?? [],
+    assignments: [
+      ...(ownBy.get(e.id) ?? []).map((r) => ({ source: 'employee' as const, slot: r.slot, planName: r.planName, params: r.params, tiers: r.tiers, ...bounded(r) })),
+      ...(e.employeeTypeId ? (typeBy.get(e.employeeTypeId) ?? []) : []).map((r) => ({ source: 'type' as const, slot: r.slot, planName: r.planName, params: r.params, tiers: r.tiers, ...bounded(r) })),
+    ],
   }));
   return makePlanLookup(records, asOf);
 }
@@ -118,9 +141,102 @@ export async function planRoutes(app: FastifyInstance, db: Db) {
     return reply.code(204).send();
   });
 
+  // -- Employee types --------------------------------------------------------
+  const typeAssignmentRows = () =>
+    db
+      .select({
+        id: typePlanAssignments.id,
+        employeeTypeId: typePlanAssignments.employeeTypeId,
+        compPlanId: typePlanAssignments.compPlanId,
+        planName: compPlans.name,
+        slot: typePlanAssignments.slot,
+        effectiveFrom: typePlanAssignments.effectiveFrom,
+        effectiveTo: typePlanAssignments.effectiveTo,
+      })
+      .from(typePlanAssignments)
+      .innerJoin(compPlans, eq(typePlanAssignments.compPlanId, compPlans.id));
+
+  const typesWithAssignments = async () => {
+    const types = await db.select().from(employeeTypes).orderBy(asc(employeeTypes.name));
+    const rows = await typeAssignmentRows();
+    const counts = await db.select({ typeId: employees.employeeTypeId, n: sql<number>`count(*)::int` }).from(employees).groupBy(employees.employeeTypeId);
+    const countBy = new Map(counts.map((c) => [c.typeId, c.n]));
+    return types.map((t) => ({
+      ...t,
+      employeeCount: countBy.get(t.id) ?? 0,
+      assignments: rows.filter((r) => r.employeeTypeId === t.id).sort((a, b) => a.slot.localeCompare(b.slot)),
+    }));
+  };
+
+  app.get('/api/employee-types', async () => typesWithAssignments());
+
+  app.post('/api/employee-types', async (req) => {
+    const body = employeeTypeSchema.parse(req.body);
+    const [row] = await db.insert(employeeTypes).values(body).returning();
+    await db.insert(auditLog).values({ action: 'employee_type.create', entityType: 'employee_type', entityId: row.id });
+    return (await typesWithAssignments()).find((t) => t.id === row.id);
+  });
+
+  app.put('/api/employee-types/:id', async (req, reply) => {
+    const { id } = req.params as { id: string };
+    const body = employeeTypeSchema.parse(req.body);
+    const [row] = await db
+      .update(employeeTypes)
+      .set({ ...body, updatedAt: new Date() })
+      .where(eq(employeeTypes.id, id))
+      .returning();
+    if (!row) return reply.code(404).send({ error: 'Employee type not found' });
+    await db.insert(auditLog).values({ action: 'employee_type.update', entityType: 'employee_type', entityId: id });
+    return (await typesWithAssignments()).find((t) => t.id === id);
+  });
+
+  app.delete('/api/employee-types/:id', async (req, reply) => {
+    const { id } = req.params as { id: string };
+    await db.delete(employeeTypes).where(eq(employeeTypes.id, id));
+    await db.insert(auditLog).values({ action: 'employee_type.delete', entityType: 'employee_type', entityId: id });
+    return reply.code(204).send();
+  });
+
+  app.post('/api/employee-types/:id/assignments', async (req, reply) => {
+    const { id } = req.params as { id: string };
+    const body = assignmentSchema.parse(req.body);
+    const [t] = await db.select({ id: employeeTypes.id }).from(employeeTypes).where(eq(employeeTypes.id, id));
+    if (!t) return reply.code(404).send({ error: 'Employee type not found' });
+    const [row] = await db.insert(typePlanAssignments).values({ ...body, employeeTypeId: id, slot: body.slot.trim().toLowerCase() }).returning();
+    return row;
+  });
+
+  app.put('/api/type-assignments/:id', async (req, reply) => {
+    const { id } = req.params as { id: string };
+    const body = assignmentSchema.parse(req.body);
+    const [row] = await db
+      .update(typePlanAssignments)
+      .set({ ...body, slot: body.slot.trim().toLowerCase(), updatedAt: new Date() })
+      .where(eq(typePlanAssignments.id, id))
+      .returning();
+    if (!row) return reply.code(404).send({ error: 'Assignment not found' });
+    return row;
+  });
+
+  app.delete('/api/type-assignments/:id', async (req, reply) => {
+    const { id } = req.params as { id: string };
+    await db.delete(typePlanAssignments).where(eq(typePlanAssignments.id, id));
+    return reply.code(204).send();
+  });
+
   // -- Employees -------------------------------------------------------------
   const withAssignments = async (ids?: string[]) => {
-    const emps = ids ? await db.select().from(employees).where(sql`${employees.id} in ${ids}`) : await db.select().from(employees).orderBy(asc(employees.name));
+    const emps = ids
+      ? await db
+          .select({ e: employees, typeName: employeeTypes.name })
+          .from(employees)
+          .leftJoin(employeeTypes, eq(employees.employeeTypeId, employeeTypes.id))
+          .where(sql`${employees.id} in ${ids}`)
+      : await db
+          .select({ e: employees, typeName: employeeTypes.name })
+          .from(employees)
+          .leftJoin(employeeTypes, eq(employees.employeeTypeId, employeeTypes.id))
+          .orderBy(asc(employees.name));
     const rows = await db
       .select({
         id: planAssignments.id,
@@ -133,9 +249,16 @@ export async function planRoutes(app: FastifyInstance, db: Db) {
       })
       .from(planAssignments)
       .innerJoin(compPlans, eq(planAssignments.compPlanId, compPlans.id));
+    const typeRows = await typeAssignmentRows();
     const byEmp = new Map<string, typeof rows>();
     for (const r of rows) byEmp.set(r.employeeId, [...(byEmp.get(r.employeeId) ?? []), r]);
-    return emps.map((e) => ({ ...e, assignments: (byEmp.get(e.id) ?? []).sort((a, b) => a.slot.localeCompare(b.slot)) }));
+    return emps.map(({ e, typeName }) => ({
+      ...e,
+      typeName,
+      assignments: (byEmp.get(e.id) ?? []).sort((a, b) => a.slot.localeCompare(b.slot)),
+      /** Read-only view of what the type contributes. */
+      inherited: e.employeeTypeId ? typeRows.filter((r) => r.employeeTypeId === e.employeeTypeId).sort((a, b) => a.slot.localeCompare(b.slot)) : [],
+    }));
   };
 
   app.get('/api/employees', async () => withAssignments());
@@ -148,14 +271,14 @@ export async function planRoutes(app: FastifyInstance, db: Db) {
   });
 
   /** Create many employees by name (skips names that already exist, case-insensitively). */
-  const bulkSchema = z.object({ names: z.array(z.string().min(1)) });
+  const bulkSchema = z.object({ names: z.array(z.string().min(1)), employeeTypeId: z.string().uuid().nullable().optional() });
   app.post('/api/employees/bulk', async (req) => {
     const body = bulkSchema.parse(req.body);
     const existing = await db.select({ name: employees.name }).from(employees);
     const have = new Set(existing.map((e) => e.name.trim().toLowerCase()));
     const names = [...new Set(body.names.map((n) => n.trim()).filter(Boolean))].filter((n) => !have.has(n.toLowerCase()));
     if (!names.length) return { created: 0 };
-    await db.insert(employees).values(names.map((name) => ({ name })));
+    await db.insert(employees).values(names.map((name) => ({ name, employeeTypeId: body.employeeTypeId ?? null })));
     await db.insert(auditLog).values({ action: 'employee.bulk', entityType: 'employee', detail: { created: names.length } });
     return { created: names.length };
   });

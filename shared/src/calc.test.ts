@@ -40,6 +40,18 @@ const employees: EmployeeRecord[] = [
   },
   { name: 'Bob', status: 'terminated', baseSalary: null, bonuses: {}, assignments: [{ slot: 'plan', planName: 'SMB', params: { rate: 0.1, quota: 30000, accel: 0.15 }, effectiveFrom: null, effectiveTo: null }] },
   { name: 'Dave', baseSalary: 50000, bonuses: {}, assignments: [] },
+  {
+    name: 'Erin',
+    type: 'Enterprise AE',
+    baseSalary: 80000,
+    quota: 60000,
+    bonuses: {},
+    assignments: [
+      { source: 'type', slot: 'plan', planName: 'Enterprise', params: { rate: 0.12, quota: 40000 }, effectiveFrom: null, effectiveTo: null },
+      { source: 'type', slot: 'spiff', planName: 'Q4 SPIFF', params: { rate: 0.02 }, effectiveFrom: null, effectiveTo: null },
+      { source: 'employee', slot: 'spiff', planName: 'Special SPIFF', params: { rate: 0.05 }, effectiveFrom: null, effectiveTo: null },
+    ],
+  },
 ];
 
 const lookup = makePlanLookup(employees, '2025-11-15');
@@ -56,6 +68,17 @@ describe('makePlanLookup', () => {
     const past = makePlanLookup(employees, '2024-06-01');
     expect(past('Alice')?.plans.plan.planName).toBe('Old plan');
     expect(past('Alice')?.plans.spiff).toBeUndefined();
+  });
+  it('employee assignments override type assignments per slot; employee quota overrides plan quota', () => {
+    const erin = lookup('Erin')!;
+    expect(erin.plans.plan.planName).toBe('Enterprise');
+    expect(erin.plans.spiff.planName).toBe('Special SPIFF');
+    const r = applyCalc(
+      { ...summary, raw: [{ Rep: 'Erin', Won: '70000' }], typed: [{ Rep: 'Erin', Won: 70000 }], groupCount: 1 },
+      { repField: 'Rep', items: [{ id: 'q', label: 'Quota', formula: 'plan.quota' }, { id: 't', label: 'Type', formula: 'employee.type' }, { id: 's', label: 'SpiffRate', formula: 'spiff.rate' }] },
+      lookup,
+    );
+    expect(r.raw[0]).toMatchObject({ Plan: 'Enterprise + Special SPIFF (spiff)', Quota: '60000', Type: 'Enterprise AE', SpiffRate: '0.05' });
   });
   it('scopeKey normalises bonus labels', () => {
     expect(scopeKey('Q4 SPIFF bonus')).toBe('q4_spiff_bonus');

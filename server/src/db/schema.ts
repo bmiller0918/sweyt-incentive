@@ -79,6 +79,33 @@ export const compPlans = pgTable('comp_plans', {
   effectiveTo: text('effective_to'),
 });
 
+/** A role (Enterprise AE, SDR, ...) carrying default plan assignments and defaults. */
+export const employeeTypes = pgTable('employee_types', {
+  ...base,
+  name: text('name').notNull(),
+  description: text('description'),
+  defaultBaseSalary: doublePrecision('default_base_salary'),
+  defaultQuota: doublePrecision('default_quota'),
+});
+
+/** Default plan for a slot, for every employee of a type (unless they override it). */
+export const typePlanAssignments = pgTable(
+  'type_plan_assignments',
+  {
+    ...base,
+    employeeTypeId: uuid('employee_type_id')
+      .notNull()
+      .references(() => employeeTypes.id, { onDelete: 'cascade' }),
+    compPlanId: uuid('comp_plan_id')
+      .notNull()
+      .references(() => compPlans.id, { onDelete: 'cascade' }),
+    slot: text('slot').notNull().default('plan'),
+    effectiveFrom: text('effective_from'),
+    effectiveTo: text('effective_to'),
+  },
+  (t) => [index('type_plan_assignments_type_idx').on(t.employeeTypeId)],
+);
+
 /** A person who earns commission. `name` must match the rep column in the data. */
 export const employees = pgTable(
   'employees',
@@ -87,7 +114,10 @@ export const employees = pgTable(
     name: text('name').notNull(),
     title: text('title'),
     email: text('email'),
+    employeeTypeId: uuid('employee_type_id').references(() => employeeTypes.id, { onDelete: 'set null' }),
     baseSalary: doublePrecision('base_salary'),
+    /** Per-person quota; overrides the type default and the plan's quota param. */
+    quota: doublePrecision('quota'),
     /** Named recurring/fixed bonuses: [{label, amount}]. */
     bonuses: jsonb('bonuses').$type<{ label: string; amount: number }[]>().notNull().default([]),
     notes: text('notes'),

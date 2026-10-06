@@ -71,13 +71,40 @@ export interface PlanAssignment {
   effectiveTo: string | null;
 }
 
+export interface TypeAssignment {
+  id: string;
+  employeeTypeId: string;
+  compPlanId: string;
+  planName: string;
+  slot: string;
+  effectiveFrom: string | null;
+  effectiveTo: string | null;
+}
+
+export interface EmployeeType {
+  id: string;
+  name: string;
+  description: string | null;
+  defaultBaseSalary: number | null;
+  defaultQuota: number | null;
+  employeeCount: number;
+  assignments: TypeAssignment[];
+  updatedAt: string;
+}
+export type EmployeeTypeInput = Pick<EmployeeType, 'name' | 'description' | 'defaultBaseSalary' | 'defaultQuota'>;
+
 export interface Employee {
   id: string;
   name: string;
   title: string | null;
   email: string | null;
+  employeeTypeId: string | null;
+  typeName?: string | null;
   baseSalary: number | null;
+  quota: number | null;
   bonuses: { label: string; amount: number }[];
+  /** Assignments contributed by the employee's type (read-only here). */
+  inherited?: TypeAssignment[];
   notes: string | null;
   startDate: string | null;
   status: EmployeeStatus;
@@ -97,7 +124,7 @@ export const STATUS_LABELS: Record<EmployeeStatus, string> = {
   inactive: 'Inactive',
 };
 
-export type EmployeeInput = Omit<Employee, 'id' | 'assignments' | 'updatedAt'>;
+export type EmployeeInput = Omit<Employee, 'id' | 'assignments' | 'inherited' | 'typeName' | 'updatedAt'>;
 
 /** A saved incentive: the whole filter → summarize → calculate pipeline for an import. */
 export interface CriteriaSet {
@@ -214,9 +241,20 @@ export const api = {
   updatePlan: (id: string, body: Omit<CompPlan, 'id' | 'updatedAt' | 'employeeCount'>) => request<CompPlan>(`/api/comp-plans/${id}`, json('PUT', body)),
   deletePlan: (id: string) => request<void>(`/api/comp-plans/${id}`, { method: 'DELETE' }),
 
+  listEmployeeTypes: () => request<EmployeeType[]>('/api/employee-types'),
+  createEmployeeType: (body: EmployeeTypeInput) => request<EmployeeType>('/api/employee-types', json('POST', body)),
+  updateEmployeeType: (id: string, body: EmployeeTypeInput) => request<EmployeeType>(`/api/employee-types/${id}`, json('PUT', body)),
+  deleteEmployeeType: (id: string) => request<void>(`/api/employee-types/${id}`, { method: 'DELETE' }),
+  addTypeAssignment: (typeId: string, body: { compPlanId: string; slot: string; effectiveFrom?: string | null; effectiveTo?: string | null }) =>
+    request<TypeAssignment>(`/api/employee-types/${typeId}/assignments`, json('POST', body)),
+  updateTypeAssignment: (id: string, body: { compPlanId: string; slot: string; effectiveFrom?: string | null; effectiveTo?: string | null }) =>
+    request<TypeAssignment>(`/api/type-assignments/${id}`, json('PUT', body)),
+  deleteTypeAssignment: (id: string) => request<void>(`/api/type-assignments/${id}`, { method: 'DELETE' }),
+
   listEmployees: () => request<Employee[]>('/api/employees'),
   createEmployee: (body: EmployeeInput) => request<Employee>('/api/employees', json('POST', body)),
-  bulkCreateEmployees: (names: string[]) => request<{ created: number }>('/api/employees/bulk', json('POST', { names })),
+  bulkCreateEmployees: (names: string[], employeeTypeId?: string | null) =>
+    request<{ created: number }>('/api/employees/bulk', json('POST', { names, employeeTypeId: employeeTypeId ?? null })),
   updateEmployee: (id: string, body: EmployeeInput) => request<Employee>(`/api/employees/${id}`, json('PUT', body)),
   deleteEmployee: (id: string) => request<void>(`/api/employees/${id}`, { method: 'DELETE' }),
   addAssignment: (employeeId: string, body: { compPlanId: string; slot: string; effectiveFrom?: string | null; effectiveTo?: string | null }) =>

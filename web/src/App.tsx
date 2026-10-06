@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { api, type ImportSummary } from './api';
 import { CompPlansView } from './components/CompPlansView';
+import { EmployeeTypesView } from './components/EmployeeTypesView';
 import { EmployeesView } from './components/EmployeesView';
 import { IncentivesView } from './components/IncentivesView';
 import { ImportView } from './components/ImportView';
@@ -10,7 +11,9 @@ export default function App() {
   const [imports, setImports] = useState<ImportSummary[]>([]);
   const [selected, setSelected] = useState<string | null>(null);
   const [uploading, setUploading] = useState(false);
-  const [page, setPage] = useState<'imports' | 'plans' | 'employees' | 'incentives'>('imports');
+  const [page, setPage] = useState<'imports' | 'plans' | 'employees' | 'types' | 'incentives'>('imports');
+  const [peopleOpen, setPeopleOpen] = useState(false);
+  const peoplePages = ['employees', 'types', 'plans'] as const;
   /** Incentive to load when an import is opened from the register. */
   const [openSetId, setOpenSetId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -80,20 +83,37 @@ export default function App() {
             <div className="font-medium">Incentives</div>
             <div className="text-xs text-slate-400">saved filters, summaries, calculations</div>
           </button>
-          <button
-            onClick={() => setPage('employees')}
-            className={`block w-full rounded-md px-2 py-1.5 text-left text-sm hover:bg-slate-100 ${page === 'employees' ? 'bg-indigo-50 text-indigo-700' : 'text-slate-700'}`}
-          >
-            <div className="font-medium">Employees</div>
-            <div className="text-xs text-slate-400">salary, bonuses, plan assignments</div>
-          </button>
-          <button
-            onClick={() => setPage('plans')}
-            className={`block w-full rounded-md px-2 py-1.5 text-left text-sm hover:bg-slate-100 ${page === 'plans' ? 'bg-indigo-50 text-indigo-700' : 'text-slate-700'}`}
-          >
-            <div className="font-medium">Comp plans</div>
-            <div className="text-xs text-slate-400">rates, quotas, tiers</div>
-          </button>
+          {/* Employees group: hover (or an active sub-page) reveals one level deeper. */}
+          <div onMouseEnter={() => setPeopleOpen(true)} onMouseLeave={() => setPeopleOpen(false)}>
+            <button
+              onClick={() => setPage('employees')}
+              className={`flex w-full items-center rounded-md px-2 py-1.5 text-left text-sm hover:bg-slate-100 ${page === 'employees' ? 'bg-indigo-50 text-indigo-700' : 'text-slate-700'}`}
+            >
+              <div className="flex-1">
+                <div className="font-medium">Employees</div>
+                <div className="text-xs text-slate-400">people, salary, bonuses</div>
+              </div>
+              <span className={`text-slate-400 transition-transform ${peopleOpen || peoplePages.includes(page as (typeof peoplePages)[number]) ? 'rotate-90' : ''}`}>▸</span>
+            </button>
+            {(peopleOpen || peoplePages.includes(page as (typeof peoplePages)[number])) && (
+              <div className="ml-3 border-l border-slate-200 pl-2">
+                <button
+                  onClick={() => setPage('types')}
+                  className={`block w-full rounded-md px-2 py-1 text-left text-sm hover:bg-slate-100 ${page === 'types' ? 'bg-indigo-50 text-indigo-700' : 'text-slate-700'}`}
+                >
+                  <div className="font-medium">Employee types</div>
+                  <div className="text-xs text-slate-400">roles with default plans</div>
+                </button>
+                <button
+                  onClick={() => setPage('plans')}
+                  className={`block w-full rounded-md px-2 py-1 text-left text-sm hover:bg-slate-100 ${page === 'plans' ? 'bg-indigo-50 text-indigo-700' : 'text-slate-700'}`}
+                >
+                  <div className="font-medium">Comp plans</div>
+                  <div className="text-xs text-slate-400">rates, quotas, tiers</div>
+                </button>
+              </div>
+            )}
+          </div>
         </div>
       </aside>
 
@@ -110,6 +130,8 @@ export default function App() {
           <CompPlansView />
         ) : page === 'employees' ? (
           <EmployeesView />
+        ) : page === 'types' ? (
+          <EmployeeTypesView />
         ) : page === 'incentives' ? (
           <IncentivesView
             onOpen={(importId, setId) => {

@@ -43,6 +43,13 @@
       "when": 1791316150977,
       "tag": "0005_nice_marvel_zombies",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1791320810958,
+      "tag": "0006_parched_nemesis",
+      "breakpoints": true
     }
   ]
 }
