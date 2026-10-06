@@ -7,6 +7,9 @@
     "node": ">=22"
   },
   "packageManager": "pnpm@12.9.1",
+  "pnpm": {
+    "onlyBuiltDependencies": ["esbuild", "@electric-sql/pglite"]
+  },
   "scripts": {
     "dev": "pnpm --filter @commissions/server dev & pnpm --filter @commissions/web dev & wait",
     "build": "pnpm --filter @commissions/shared build && pnpm --filter @commissions/web build && pnpm --filter @commissions/server build",
