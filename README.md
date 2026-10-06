@@ -8,7 +8,8 @@ Drag-and-drop CSV/Excel import with a NetSuite-style (and beyond) filter and cri
 - **Column typing**: text / integer / decimal / currency / percent / date / datetime / boolean, inferred and overridable per column. Handles `$1,234.50`, `(500)`, `500-`, `12/31/25`, Excel serials, `Y/N`.
 - **Grid**: virtualized, sortable, type badges in headers.
 - **Criteria builder**: unlimited nested AND / OR groups with NOT, type-aware operators (text incl. regex + case toggle; number incl. between / any of; date incl. relative presets like *this fiscal quarter*, *last N days*), value sources (literal, another field, `{{param}}`), per-condition "rows this removes" badge, live match counts, row-level explain, disable-without-deleting.
-- **Saved criteria sets** with automatic version history and an audit log.
+- **Summarize** (stage 2): group by any columns, aggregates (sum / count / count distinct / avg / min / max) with custom labels, and a HAVING filter on the summary rows using the same criteria builder. Toggle Detail / Summary; export either. A totals bar always shows sums of the filtered rows.
+- **Saved criteria sets** (filter + summary together = a reusable *measure*) with automatic version history and an audit log.
 - **Export** filtered rows to CSV or XLSX with formula-injection sanitising.
 - **Deploy**: single Docker image, `/health` endpoint, Railway config.
 
@@ -104,7 +105,7 @@ web/src/
 | GET    | `/api/imports/:id`           | detail incl. columns + warnings                      |
 | PATCH  | `/api/imports/:id`           | rename / override column types                       |
 | DELETE | `/api/imports/:id`           |                                                      |
-| POST   | `/api/imports/:id/query`     | `{criteria, params, offset, limit, sort}` → rows, counts, per-condition impact, errors |
+| POST   | `/api/imports/:id/query`     | `{criteria, params, mode: detail\|summary, offset, limit, sort}` → rows, counts, per-condition impact, errors, totals; summary mode returns the summary's `columns` |
 | POST   | `/api/imports/:id/explain`   | `{criteria, rowIndex}` → which conditions passed     |
 | POST   | `/api/imports/:id/export`    | `{criteria, format: csv|xlsx}` → file                |
 | CRUD   | `/api/criteria-sets[/:id]`   | saved criteria; `GET /:id/versions` for history      |
@@ -112,7 +113,6 @@ web/src/
 ## Not yet built (planned)
 
 - Formula / computed columns (safe expression language)
-- Summary (group-by + HAVING) view
 - Lookup / join against a second file
 - Fuzzy name matching
 - Canonical field mapping UI (table exists)

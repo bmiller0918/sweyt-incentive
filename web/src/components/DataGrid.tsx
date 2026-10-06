@@ -12,7 +12,8 @@ interface Props {
   rows: GridRow[];
   sort?: { field: string; dir: 'asc' | 'desc' };
   onSort: (field: string) => void;
-  onTypeChange: (field: string, type: ColumnType) => void;
+  /** Omit to show types read-only (e.g. summary view). */
+  onTypeChange?: (field: string, type: ColumnType) => void;
   onRowClick?: (row: GridRow) => void;
   onEndReached?: () => void;
   hasMore: boolean;
@@ -65,20 +66,26 @@ export function DataGrid({ columns, rows, sort, onSort, onTypeChange, onRowClick
                 <span className="truncate">{c.name}</span>
                 {sort?.field === c.name && <span className="text-indigo-600">{sort.dir === 'asc' ? '▲' : '▼'}</span>}
               </button>
-              <select
-                className={`mt-0.5 w-fit rounded border-0 bg-transparent px-0 py-0 text-[10px] uppercase tracking-wide ${
-                  c.type !== c.inferredType ? 'text-amber-700' : 'text-slate-400'
-                }`}
-                value={c.type}
-                onChange={(e) => onTypeChange(c.name, e.target.value as ColumnType)}
-                title={c.type !== c.inferredType ? `Overridden (inferred ${c.inferredType})` : 'Column type'}
-              >
-                {COLUMN_TYPES.map((t) => (
-                  <option key={t} value={t}>
-                    {TYPE_BADGE[t]} {t}
-                  </option>
-                ))}
-              </select>
+              {onTypeChange ? (
+                <select
+                  className={`mt-0.5 w-fit rounded border-0 bg-transparent px-0 py-0 text-[10px] uppercase tracking-wide ${
+                    c.type !== c.inferredType ? 'text-amber-700' : 'text-slate-400'
+                  }`}
+                  value={c.type}
+                  onChange={(e) => onTypeChange(c.name, e.target.value as ColumnType)}
+                  title={c.type !== c.inferredType ? `Overridden (inferred ${c.inferredType})` : 'Column type'}
+                >
+                  {COLUMN_TYPES.map((t) => (
+                    <option key={t} value={t}>
+                      {TYPE_BADGE[t]} {t}
+                    </option>
+                  ))}
+                </select>
+              ) : (
+                <span className="mt-0.5 text-[10px] uppercase tracking-wide text-slate-400">
+                  {TYPE_BADGE[c.type]} {c.type}
+                </span>
+              )}
             </div>
           ))}
         </div>
@@ -89,7 +96,7 @@ export function DataGrid({ columns, rows, sort, onSort, onTypeChange, onRowClick
             return (
               <div
                 key={row.index}
-                className="absolute left-0 flex w-full cursor-pointer border-b border-slate-100 text-xs hover:bg-indigo-50"
+                className={`absolute left-0 flex w-full border-b border-slate-100 text-xs ${onRowClick ? 'cursor-pointer hover:bg-indigo-50' : ''}`}
                 style={{ top: vi.start, height: ROW_HEIGHT }}
                 onClick={() => onRowClick?.(row)}
               >

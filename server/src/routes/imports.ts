@@ -1,13 +1,19 @@
 import { randomUUID } from 'node:crypto';
 import {
   COLUMN_TYPES,
+  columnTotals,
   compileCriteria,
   conditionImpact,
   criteriaSchema,
   inferColumnType,
+  isSummaryActive,
+  summarize,
+  summaryColumns,
   validateCriteria,
   type ColumnDef,
+  type Criteria,
   type RawRow,
+  type TypedRow,
   type TypedValue,
 } from '@commissions/shared';
 import { desc, eq } from 'drizzle-orm';
@@ -35,10 +41,26 @@ const BATCH = 1000;
 const querySchema = z.object({
   criteria: criteriaSchema.optional(),
   params: z.record(z.string()).optional(),
+  /** 'summary' rolls the filtered rows up using criteria.summary. */
+  mode: z.enum(['detail', 'summary']).default('detail'),
   offset: z.number().int().min(0).default(0),
   limit: z.number().int().min(1).max(5000).default(500),
   sort: z.object({ field: z.string(), dir: z.enum(['asc', 'desc']) }).optional(),
 });
+
+function sortIndices(indices: number[], typed: TypedRow[], sort: { field: string; dir: 'asc' | 'desc' } | undefined, types: Record<string, unknown>) {
+  if (!sort || !(sort.field in types)) return;
+  const f = sort.field;
+  const dir = sort.dir === 'asc' ? 1 : -1;
+  indices.sort((a, b) => dir * compareTyped(typed[a][f], typed[b][f]));
+}
+
+/** Validate HAVING against the summary's output columns. */
+function havingErrors(criteria: Criteria, types: Record<string, ColumnDef['type']>, ctx: Parameters<typeof validateCriteria>[1]) {
+  if (!isSummaryActive(criteria.summary) || !criteria.summary.having) return {};
+  const outTypes = Object.fromEntries(summaryColumns(criteria.summary, types).map((c) => [c.name, c.type]));
+  return validateCriteria({ version: 1, root: criteria.summary.having }, { ...ctx, types: outTypes });
+}
 
 function compareTyped(a: TypedValue, b: TypedValue): number {
   if (a === null && b === null) return 0;
@@ -209,7 +231,7 @@ export async function importRoutes(app: FastifyInstance, db: Db) {
     let impact: Record<string, number> = {};
     let errors: Record<string, string> = {};
     if (q.criteria) {
-      errors = validateCriteria(q.criteria, ctx);
+      errors = { ...validateCriteria(q.criteria, ctx), ...havingErrors(q.criteria, cached.types, ctx) };
       if (Object.keys(errors).length) {
         // Don't evaluate a broken tree; show everything and surface errors.
         indices = cached.typed.map((_, i) => i);
@@ -223,14 +245,38 @@ export async function importRoutes(app: FastifyInstance, db: Db) {
       indices = cached.typed.map((_, i) => i);
     }
 
-    if (q.sort && q.sort.field in cached.types) {
-      const f = q.sort.field;
-      const dir = q.sort.dir === 'asc' ? 1 : -1;
-      indices.sort((a, b) => dir * compareTyped(cached.typed[a][f], cached.typed[b][f]));
+    // Summary mode: roll up, then sort/page the summary rows instead.
+    if (q.mode === 'summary' && q.criteria && isSummaryActive(q.criteria.summary) && !Object.keys(errors).length) {
+      const s = summarize(cached.raw, cached.typed, indices, q.criteria.summary, ctx);
+      const outTypes = Object.fromEntries(s.columns.map((c) => [c.name, c.type]));
+      const sIdx = s.raw.map((_, i) => i);
+      sortIndices(sIdx, s.typed, q.sort, outTypes);
+      const page = sIdx.slice(q.offset, q.offset + q.limit).map((i) => ({ index: i, data: s.raw[i] }));
+      return {
+        mode: 'summary',
+        total: cached.raw.length,
+        detailMatched: indices.length,
+        groupCount: s.groupCount,
+        matched: s.raw.length,
+        columns: s.columns,
+        rows: page,
+        impact,
+        errors,
+        totals: columnTotals(s.typed, sIdx, outTypes),
+      };
     }
 
+    sortIndices(indices, cached.typed, q.sort, cached.types);
     const page = indices.slice(q.offset, q.offset + q.limit).map((i) => ({ index: i, data: cached.raw[i] }));
-    return { total: cached.raw.length, matched: indices.length, rows: page, impact, errors };
+    return {
+      mode: 'detail',
+      total: cached.raw.length,
+      matched: indices.length,
+      rows: page,
+      impact,
+      errors,
+      totals: columnTotals(cached.typed, indices, cached.types),
+    };
   });
 
   // -- Explain one row -------------------------------------------------------
@@ -253,6 +299,7 @@ export async function importRoutes(app: FastifyInstance, db: Db) {
   const exportSchema = z.object({
     criteria: criteriaSchema.optional(),
     params: z.record(z.string()).optional(),
+    mode: z.enum(['detail', 'summary']).default('detail'),
     format: z.enum(['csv', 'xlsx']).default('csv'),
   });
   app.post('/api/imports/:id/export', async (req, reply) => {
@@ -261,24 +308,34 @@ export async function importRoutes(app: FastifyInstance, db: Db) {
     const [imp] = await db.select().from(imports).where(eq(imports.id, id));
     if (!imp) return reply.code(404).send({ error: 'Import not found' });
     const cached = await getRows(db, id, imp.columns);
+    let indices = cached.raw.map((_, i) => i);
+    let columns = imp.columns;
     let rows = cached.raw;
+    let suffix = '';
     if (body.criteria) {
       const ctx = evalCtx(cached.types, body.params);
-      const errors = validateCriteria(body.criteria, ctx);
+      const errors = { ...validateCriteria(body.criteria, ctx), ...havingErrors(body.criteria, cached.types, ctx) };
       if (Object.keys(errors).length) return reply.code(400).send({ error: 'Criteria has errors', errors });
       const compiled = compileCriteria(body.criteria, ctx);
-      rows = cached.raw.filter((_, i) => compiled.matches(cached.typed[i]));
+      indices = indices.filter((i) => compiled.matches(cached.typed[i]));
+      rows = indices.map((i) => cached.raw[i]);
+      if (body.mode === 'summary' && isSummaryActive(body.criteria.summary)) {
+        const s = summarize(cached.raw, cached.typed, indices, body.criteria.summary, ctx);
+        columns = s.columns;
+        rows = s.raw;
+        suffix = '-summary';
+      }
     }
-    const base = imp.name.replace(/[^\w.-]+/g, '_');
+    const base = imp.name.replace(/[^\w.-]+/g, '_') + suffix;
     if (body.format === 'xlsx') {
       return reply
         .header('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
         .header('Content-Disposition', `attachment; filename="${base}.xlsx"`)
-        .send(toXlsx(imp.columns, rows));
+        .send(toXlsx(columns, rows));
     }
     return reply
       .header('Content-Type', 'text/csv; charset=utf-8')
       .header('Content-Disposition', `attachment; filename="${base}.csv"`)
-      .send(toCsv(imp.columns, rows));
+      .send(toCsv(columns, rows));
   });
 }

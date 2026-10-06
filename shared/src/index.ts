@@ -3,3 +3,4 @@ export * from './coerce.js';
 export * from './dates.js';
 export * from './criteria.js';
 export * from './evaluate.js';
+export * from './summary.js';

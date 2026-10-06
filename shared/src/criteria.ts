@@ -173,11 +173,53 @@ export const groupSchema: z.ZodType<Group> = z.lazy(() =>
   }),
 ) as z.ZodType<Group>;
 
+// -- Summary (group by + aggregates + HAVING) ----------------------------------
+
+export const AGG_FNS = ['sum', 'count', 'count_distinct', 'avg', 'min', 'max'] as const;
+export type AggFn = (typeof AGG_FNS)[number];
+
+export const AGG_LABELS: Record<AggFn, string> = {
+  sum: 'Sum',
+  count: 'Count',
+  count_distinct: 'Count distinct',
+  avg: 'Average',
+  min: 'Min',
+  max: 'Max',
+};
+
+export const aggregateSchema = z.object({
+  id: z.string().min(1),
+  fn: z.enum(AGG_FNS),
+  /** Source column. Not needed for `count` (counts rows). */
+  field: z.string().optional(),
+  /** Output column name; defaults to e.g. "Sum of Amount". */
+  label: z.string().optional(),
+});
+export type Aggregate = z.infer<typeof aggregateSchema>;
+
+export const summarySchema = z.object({
+  groupBy: z.array(z.string()).default([]),
+  aggregates: z.array(aggregateSchema).default([]),
+  /** Filter applied to the summary rows (fields are the summary's columns). */
+  having: groupSchema.optional(),
+});
+export type SummarySpec = z.infer<typeof summarySchema>;
+
+export function emptySummary(): SummarySpec {
+  return { groupBy: [], aggregates: [] };
+}
+
+export function isSummaryActive(s: SummarySpec | undefined): s is SummarySpec {
+  return !!s && (s.groupBy.length > 0 || s.aggregates.length > 0);
+}
+
 export const criteriaSchema = z.object({
   version: z.literal(CRITERIA_SCHEMA_VERSION),
   root: groupSchema,
   /** Default parameter values; callers can override at run time. */
   params: z.record(z.string()).optional(),
+  /** Optional second stage: roll the filtered rows up. */
+  summary: summarySchema.optional(),
 });
 export type Criteria = z.infer<typeof criteriaSchema>;
 

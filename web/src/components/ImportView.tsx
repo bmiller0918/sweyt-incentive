@@ -1,10 +1,29 @@
-import { OPERATOR_LABELS, RELATIVE_LABELS, emptyCriteria, listConditions, type ColumnType, type Criteria, type Group } from '@commissions/shared';
+import {
+  OPERATOR_LABELS,
+  RELATIVE_LABELS,
+  emptyCriteria,
+  emptySummary,
+  isSummaryActive,
+  listConditions,
+  type ColumnDef,
+  type ColumnType,
+  type Criteria,
+  type Group,
+  type SummarySpec,
+} from '@commissions/shared';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { api, type CriteriaSet, type ImportDetail, type QueryResult } from '../api';
 import { CriteriaBuilder } from './CriteriaBuilder';
 import { DataGrid, type GridRow } from './DataGrid';
+import { SummaryPanel } from './SummaryPanel';
 
 const PAGE = 500;
+
+function formatTotal(n: number, type: ColumnType): string {
+  if (type === 'currency') return n.toLocaleString(undefined, { style: 'currency', currency: 'USD' });
+  if (type === 'percent') return `${n.toLocaleString(undefined, { maximumFractionDigits: 2 })}%`;
+  return n.toLocaleString(undefined, { maximumFractionDigits: 2 });
+}
 
 interface Props {
   importId: string;
@@ -18,7 +37,9 @@ export function ImportView({ importId, onDeleted, onRenamed }: Props) {
   const [params, setParams] = useState<Record<string, string>>({});
   const [sort, setSort] = useState<{ field: string; dir: 'asc' | 'desc' } | undefined>();
   const [rows, setRows] = useState<GridRow[]>([]);
-  const [meta, setMeta] = useState<Pick<QueryResult, 'total' | 'matched' | 'impact' | 'errors'>>({ total: 0, matched: 0, impact: {}, errors: {} });
+  const [meta, setMeta] = useState<Omit<QueryResult, 'rows'>>({ mode: 'detail', total: 0, matched: 0, impact: {}, errors: {}, totals: {} });
+  const [viewMode, setViewMode] = useState<'detail' | 'summary'>('detail');
+  const [summaryColumns, setSummaryColumns] = useState<ColumnDef[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [sets, setSets] = useState<CriteriaSet[]>([]);
@@ -41,6 +62,9 @@ export function ImportView({ importId, onDeleted, onRenamed }: Props) {
     loadSets();
   }, [importId, loadSets]);
 
+  const summaryOn = isSummaryActive(criteria.summary);
+  const mode: 'detail' | 'summary' = viewMode === 'summary' && summaryOn ? 'summary' : 'detail';
+
   const runQuery = useCallback(
     async (offset: number, append: boolean) => {
       abortRef.current?.abort();
@@ -48,10 +72,12 @@ export function ImportView({ importId, onDeleted, onRenamed }: Props) {
       abortRef.current = ctrl;
       setLoading(true);
       try {
-        const res = await api.query(importId, { criteria, params, offset, limit: PAGE, sort }, ctrl.signal);
+        const res = await api.query(importId, { criteria, params, mode, offset, limit: PAGE, sort }, ctrl.signal);
         if (ctrl.signal.aborted) return;
-        setMeta({ total: res.total, matched: res.matched, impact: res.impact, errors: res.errors });
-        setRows((prev) => (append ? [...prev, ...res.rows] : res.rows));
+        const { rows: pageRows, ...rest } = res;
+        setMeta(rest);
+        if (res.columns) setSummaryColumns(res.columns);
+        setRows((prev) => (append ? [...prev, ...pageRows] : pageRows));
         setError(null);
       } catch (e) {
         if ((e as Error).name !== 'AbortError') setError((e as Error).message);
@@ -59,7 +85,7 @@ export function ImportView({ importId, onDeleted, onRenamed }: Props) {
         if (!ctrl.signal.aborted) setLoading(false);
       }
     },
-    [importId, criteria, params, sort],
+    [importId, criteria, params, sort, mode],
   );
 
   // Debounced re-query whenever criteria / params / sort / column types change.
@@ -75,6 +101,14 @@ export function ImportView({ importId, onDeleted, onRenamed }: Props) {
   }, [loading, hasMore, rows.length, runQuery]);
 
   const setRoot = (root: Group) => setCriteria((c) => ({ ...c, root }));
+  const setSummary = (summary: SummarySpec) => setCriteria((c) => ({ ...c, summary }));
+
+  // Sorting by a column that doesn't exist in the other view would be ignored
+  // server-side; clear it when the view flips.
+  const switchView = (m: 'detail' | 'summary') => {
+    setViewMode(m);
+    setSort(undefined);
+  };
 
   const changeType = async (field: string, type: ColumnType) => {
     if (!imp) return;
@@ -123,7 +157,7 @@ export function ImportView({ importId, onDeleted, onRenamed }: Props) {
   };
 
   const explainRow = async (row: GridRow) => {
-    if (listConditions(criteria.root).length === 0) return;
+    if (mode === 'summary' || listConditions(criteria.root).length === 0) return;
     try {
       const res = await api.explain(importId, { criteria, params, rowIndex: row.index });
       setExplain({ row, ...res });
@@ -135,6 +169,8 @@ export function ImportView({ importId, onDeleted, onRenamed }: Props) {
   if (!imp) return <div className="p-8 text-sm text-slate-400">{error ?? 'Loading…'}</div>;
 
   const conditionsById = Object.fromEntries(listConditions(criteria.root).map((c) => [c.id, c]));
+  const gridColumns = mode === 'summary' ? summaryColumns : imp.columns;
+  const totalEntries = gridColumns.filter((c) => meta.totals[c.name]).map((c) => ({ col: c, t: meta.totals[c.name] }));
 
   return (
     <div className="flex h-full flex-col">
@@ -153,13 +189,41 @@ export function ImportView({ importId, onDeleted, onRenamed }: Props) {
           </span>
         )}
         <div className="flex-1" />
-        <span className="text-sm tabular-nums">
-          <strong>{meta.matched.toLocaleString()}</strong> <span className="text-slate-400">of {meta.total.toLocaleString()} rows</span>
+        <div className="inline-flex overflow-hidden rounded-md border border-slate-300 text-xs">
+          {(['detail', 'summary'] as const).map((m) => (
+            <button
+              key={m}
+              onClick={() => switchView(m)}
+              disabled={m === 'summary' && !summaryOn}
+              className={`px-2 py-1 font-medium capitalize disabled:opacity-40 ${
+                mode === m ? 'bg-indigo-600 text-white' : 'bg-white text-slate-600 hover:bg-slate-100'
+              }`}
+              title={m === 'summary' && !summaryOn ? 'Add a group-by or aggregate first' : undefined}
+            >
+              {m}
+            </button>
+          ))}
+        </div>
+        <span className="whitespace-nowrap text-sm tabular-nums">
+          {mode === 'summary' ? (
+            <>
+              <strong>{meta.matched.toLocaleString()}</strong>{' '}
+              <span className="text-slate-400">
+                group{meta.matched === 1 ? '' : 's'}
+                {meta.groupCount !== undefined && meta.groupCount !== meta.matched ? ` of ${meta.groupCount}` : ''} · from{' '}
+                {(meta.detailMatched ?? 0).toLocaleString()} of {meta.total.toLocaleString()} rows
+              </span>
+            </>
+          ) : (
+            <>
+              <strong>{meta.matched.toLocaleString()}</strong> <span className="text-slate-400">of {meta.total.toLocaleString()} rows</span>
+            </>
+          )}
         </span>
-        <button className="btn" onClick={() => api.export(importId, { criteria, params, format: 'csv' }).catch((e) => setError(e.message))}>
+        <button className="btn" onClick={() => api.export(importId, { criteria, params, mode, format: 'csv' }).catch((e) => setError(e.message))}>
           Export CSV
         </button>
-        <button className="btn" onClick={() => api.export(importId, { criteria, params, format: 'xlsx' }).catch((e) => setError(e.message))}>
+        <button className="btn" onClick={() => api.export(importId, { criteria, params, mode, format: 'xlsx' }).catch((e) => setError(e.message))}>
           Export XLSX
         </button>
         <button className="btn text-rose-600" onClick={remove}>
@@ -234,27 +298,69 @@ export function ImportView({ importId, onDeleted, onRenamed }: Props) {
               </div>
             )}
             <div className="flex-1 overflow-auto p-3">
+              <div className="mb-1 flex items-center text-xs">
+                <span className="font-semibold text-slate-600">1 · Filter rows</span>
+              </div>
               <CriteriaBuilder root={criteria.root} columns={imp.columns} impact={meta.impact} errors={meta.errors} onChange={setRoot} />
-              <p className="mt-3 text-[11px] leading-relaxed text-slate-400">
-                Tip: the amber badge on each condition shows how many rows it removes. Click any row in the grid to see why it did or didn't match.
+              <p className="mt-2 text-[11px] leading-relaxed text-slate-400">
+                The amber badge shows rows a condition removes. Click a row in the grid to see why it did or didn't match.
               </p>
+
+              <div className="mt-4 mb-1 flex items-center text-xs">
+                <span className="font-semibold text-slate-600">2 · Summarize</span>
+                <span className="ml-2 text-slate-400">(optional)</span>
+                <div className="flex-1" />
+                {summaryOn ? (
+                  <button className="btn btn-sm" onClick={() => setSummary(emptySummary())}>
+                    Clear
+                  </button>
+                ) : (
+                  <button
+                    className="btn btn-sm"
+                    onClick={() => {
+                      const amount = imp.columns.find((c) => c.type === 'currency' || c.type === 'decimal' || c.type === 'integer');
+                      setSummary({ groupBy: [], aggregates: amount ? [{ id: `agg${Date.now()}`, fn: 'sum', field: amount.name }] : [] });
+                      switchView('summary');
+                    }}
+                  >
+                    + Summary
+                  </button>
+                )}
+              </div>
+              {summaryOn && (
+                <div className="rounded-lg border border-slate-200 bg-white p-2">
+                  <SummaryPanel spec={criteria.summary ?? emptySummary()} columns={imp.columns} errors={meta.errors} onChange={setSummary} />
+                </div>
+              )}
             </div>
           </div>
         )}
 
-        {/* Grid */}
-        <div className="min-w-0 flex-1">
-          <DataGrid
-            columns={imp.columns}
-            rows={rows}
-            sort={sort}
-            onSort={toggleSort}
-            onTypeChange={changeType}
-            onRowClick={explainRow}
-            onEndReached={loadMore}
-            hasMore={hasMore}
-            loading={loading}
-          />
+        {/* Grid + totals */}
+        <div className="flex min-w-0 flex-1 flex-col">
+          <div className="min-h-0 flex-1">
+            <DataGrid
+              columns={gridColumns}
+              rows={rows}
+              sort={sort}
+              onSort={toggleSort}
+              onTypeChange={mode === 'detail' ? changeType : undefined}
+              onRowClick={mode === 'detail' ? explainRow : undefined}
+              onEndReached={loadMore}
+              hasMore={hasMore}
+              loading={loading}
+            />
+          </div>
+          {totalEntries.length > 0 && (
+            <div className="flex flex-wrap items-center gap-x-4 gap-y-1 border-t border-slate-200 bg-slate-50 px-3 py-1.5 text-xs tabular-nums">
+              <span className="font-semibold text-slate-500">Totals{mode === 'detail' ? ' (filtered rows)' : ' (summary rows)'}:</span>
+              {totalEntries.map(({ col, t }) => (
+                <span key={col.name} title={`${t.count.toLocaleString()} non-blank values`}>
+                  <span className="text-slate-500">{col.name}</span> <strong>{formatTotal(t.sum, col.type)}</strong>
+                </span>
+              ))}
+            </div>
+          )}
         </div>
       </div>
 

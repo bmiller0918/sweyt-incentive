@@ -23,11 +23,18 @@ export interface UploadResult {
 }
 
 export interface QueryResult {
+  mode: 'detail' | 'summary';
   total: number;
   matched: number;
+  /** Summary mode only: filtered detail rows and groups before HAVING. */
+  detailMatched?: number;
+  groupCount?: number;
+  /** Summary mode only: the summary's output columns. */
+  columns?: ColumnDef[];
   rows: { index: number; data: RawRow }[];
   impact: Record<string, number>;
   errors: Record<string, string>;
+  totals: Record<string, { sum: number; count: number }>;
 }
 
 export interface CriteriaSet {
@@ -98,6 +105,7 @@ export const api = {
     body: {
       criteria?: Criteria;
       params?: Record<string, string>;
+      mode?: 'detail' | 'summary';
       offset?: number;
       limit?: number;
       sort?: { field: string; dir: 'asc' | 'desc' };
@@ -106,7 +114,7 @@ export const api = {
   ) => request<QueryResult>(`/api/imports/${id}/query`, { ...json('POST', body), signal }),
   explain: (id: string, body: { criteria: Criteria; params?: Record<string, string>; rowIndex: number }) =>
     request<{ matched: boolean; conditions: Record<string, boolean> }>(`/api/imports/${id}/explain`, json('POST', body)),
-  async export(id: string, body: { criteria?: Criteria; params?: Record<string, string>; format: 'csv' | 'xlsx' }) {
+  async export(id: string, body: { criteria?: Criteria; params?: Record<string, string>; mode?: 'detail' | 'summary'; format: 'csv' | 'xlsx' }) {
     const res = await fetch(`/api/imports/${id}/export`, json('POST', body));
     if (!res.ok) throw new Error((await res.json()).error ?? 'Export failed');
     const blob = await res.blob();
