@@ -13,6 +13,8 @@ Drag-and-drop CSV/Excel import with a NetSuite-style (and beyond) filter and cri
 - Incomplete conditions (no value typed yet) are ignored rather than matching nothing.
 - **Summarize** (stage 2): group by any columns, aggregates (sum / count / count distinct / avg / min / max) with custom labels, and a HAVING filter on the summary rows using the same criteria builder. Toggle Detail / Summary; export either. A totals bar always shows sums of the filtered rows.
 - **Drill-down**: expand any summary row to see the detail rows behind it (pick which columns to show) with a subtotal, so you can audit how a number was built.
+- **Calculate** (stage 3): formulas over the summary rows — `[Sum of Amount] * 12%`, `IF([Won] > plan.quota, …)`, tiered payouts with `MIN`/`MAX` — using a safe expression language (`shared/src/formula.ts`: arithmetic, comparisons, AND/OR/NOT, IF, MIN, MAX, ROUND, ABS, COALESCE, FLOOR, CEIL, ISBLANK; `12%` literals; later rows can reference earlier results). Pick a **rep column** and each row looks up that rep's comp plan, exposing its parameters as `plan.rate`, `plan.quota`, etc., plus a `Plan` column. Rows whose rep has no plan are flagged.
+- **Comp plans**: named plans with free-form parameters (rate, quota, accelerator…), effective dates, and rep assignments (by the name that appears in the data, case-insensitive, with optional effective dates). Add reps by typing names or by ticking them from an import's column.
 - **Saved criteria sets** (filter + summary together = a reusable *measure*) with automatic version history and an audit log.
 - **Export** filtered rows to CSV or XLSX with formula-injection sanitising.
 - **Deploy**: single Docker image, `/health` endpoint, Railway config.
@@ -115,10 +117,13 @@ web/src/
 | POST   | `/api/imports/:id/explain`   | `{criteria, rowIndex}` → which conditions passed     |
 | POST   | `/api/imports/:id/export`    | `{criteria, format: csv|xlsx}` → file                |
 | CRUD   | `/api/criteria-sets[/:id]`   | saved criteria; `GET /:id/versions` for history      |
+| CRUD   | `/api/comp-plans[/:id]`      | plans with `params` (used as `plan.<key>` in formulas) |
+| CRUD   | `/api/rep-assignments[/:id]` | rep name → plan with effective dates; `POST /bulk` assigns many |
 
 ## Not yet built (planned)
 
-- Formula / computed columns (safe expression language)
+- Computed columns on detail rows (the formula engine exists; only summary-row calculations are wired up)
+- Tier tables / accelerators as plan structures (today they are written as formulas)
 - Lookup / join against a second file
 - Fuzzy name matching
 - Canonical field mapping UI (table exists)

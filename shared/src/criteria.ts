@@ -215,6 +215,34 @@ export function isSummaryActive(s: SummarySpec | undefined): s is SummarySpec {
   return !!s && (s.groupBy.length > 0 || s.aggregates.length > 0);
 }
 
+// -- Calculate (stage 3: formulas over the summary rows) ----------------------
+
+export const calcItemSchema = z.object({
+  id: z.string().min(1),
+  /** Output column name. */
+  label: z.string().min(1),
+  /** Formula over summary columns and `plan.<param>`; see formula.ts. */
+  formula: z.string(),
+});
+export type CalcItem = z.infer<typeof calcItemSchema>;
+
+export const calcSchema = z.object({
+  /** Which summary column holds the rep name, for comp-plan lookup. */
+  repField: z.string().optional(),
+  /** Date (YYYY-MM-DD) used to pick the effective plan assignment; default today. */
+  asOf: z.string().optional(),
+  items: z.array(calcItemSchema).default([]),
+});
+export type CalcSpec = z.infer<typeof calcSchema>;
+
+export function emptyCalc(): CalcSpec {
+  return { items: [] };
+}
+
+export function isCalcActive(c: CalcSpec | undefined): c is CalcSpec {
+  return !!c && c.items.length > 0;
+}
+
 export const criteriaSchema = z.object({
   version: z.literal(CRITERIA_SCHEMA_VERSION),
   root: groupSchema,
@@ -222,6 +250,8 @@ export const criteriaSchema = z.object({
   params: z.record(z.string()).optional(),
   /** Optional second stage: roll the filtered rows up. */
   summary: summarySchema.optional(),
+  /** Optional third stage: formulas over the summary rows, with comp-plan lookup. */
+  calc: calcSchema.optional(),
 });
 export type Criteria = z.infer<typeof criteriaSchema>;
 

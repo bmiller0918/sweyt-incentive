@@ -1,10 +1,14 @@
 import {
   OPERATOR_LABELS,
   RELATIVE_LABELS,
+  emptyCalc,
   emptyCriteria,
   emptySummary,
+  isCalcActive,
   isSummaryActive,
   listConditions,
+  summaryColumns as summaryColumnsOf,
+  type CalcSpec,
   type ColumnDef,
   type ColumnType,
   type Criteria,
@@ -22,6 +26,7 @@ import {
   setHeaderFilter,
   type HeaderFilterState,
 } from '../headerFilters';
+import { CalcPanel } from './CalcPanel';
 import { CriteriaBuilder } from './CriteriaBuilder';
 import { DataGrid, type GridRow } from './DataGrid';
 import { HeaderFilterPopover } from './HeaderFilterPopover';
@@ -136,6 +141,8 @@ export function ImportView({ importId, onDeleted, onRenamed }: Props) {
 
   const setRoot = (root: Group) => setCriteria((c) => ({ ...c, root }));
   const setSummary = (summary: SummarySpec) => setCriteria((c) => ({ ...c, summary }));
+  const setCalc = (calc: CalcSpec) => setCriteria((c) => ({ ...c, calc }));
+  const calcOn = (criteria.calc?.items.length ?? 0) > 0 || !!criteria.calc?.repField;
   const setFieldFilter = (col: ColumnDef, state: HeaderFilterState) => setRoot(setHeaderFilter(criteria.root, col, state));
   const headerFields = activeHeaderFields(criteria.root);
   const popoverColumn = filterPopover ? imp?.columns.find((c) => c.name === filterPopover.field) : undefined;
@@ -394,6 +401,44 @@ export function ImportView({ importId, onDeleted, onRenamed }: Props) {
                 <div className="rounded-lg border border-slate-200 bg-white p-2">
                   <SummaryPanel spec={criteria.summary ?? emptySummary()} columns={imp.columns} errors={meta.errors} onChange={setSummary} />
                 </div>
+              )}
+
+              {summaryOn && (
+                <>
+                  <div className="mt-4 mb-1 flex items-center text-xs">
+                    <span className="font-semibold text-slate-600">3 · Calculate</span>
+                    <span className="ml-2 text-slate-400">(formulas over the summary rows, with comp-plan lookup)</span>
+                    <div className="flex-1" />
+                    {calcOn ? (
+                      <button className="btn btn-sm" onClick={() => setCalc(emptyCalc())}>
+                        Clear
+                      </button>
+                    ) : (
+                      <button
+                        className="btn btn-sm"
+                        onClick={() => {
+                          const spec = criteria.summary ?? emptySummary();
+                          const repField = spec.groupBy.find((g) => /rep|owner|sales|employee|name/i.test(g)) ?? spec.groupBy[0];
+                          setCalc({ repField, items: [] });
+                          switchView('summary');
+                        }}
+                      >
+                        + Calculate
+                      </button>
+                    )}
+                  </div>
+                  {calcOn && (
+                    <div className="rounded-lg border border-slate-200 bg-white p-2">
+                      <CalcPanel
+                        spec={criteria.calc ?? emptyCalc()}
+                        summaryColumns={summaryColumnsOf(criteria.summary ?? emptySummary(), Object.fromEntries(imp.columns.map((c) => [c.name, c.type])))}
+                        errors={meta.errors}
+                        noPlan={meta.calc?.noPlan}
+                        onChange={setCalc}
+                      />
+                    </div>
+                  )}
+                </>
               )}
             </div>
           </div>

@@ -35,6 +35,8 @@ export interface QueryResult {
   impact: Record<string, number>;
   errors: Record<string, string>;
   totals: Record<string, { sum: number; count: number }>;
+  /** Summary mode with a calc stage: rows whose rep had no plan. */
+  calc?: { noPlan: number };
 }
 
 export interface GroupRowsResult {
@@ -42,6 +44,28 @@ export interface GroupRowsResult {
   rows: { index: number; data: RawRow }[];
   matched: number;
   subtotals: Record<string, { sum: number; count: number }>;
+}
+
+export type PlanParams = Record<string, number | string | boolean | null>;
+
+export interface CompPlan {
+  id: string;
+  name: string;
+  description: string | null;
+  params: PlanParams;
+  effectiveFrom: string | null;
+  effectiveTo: string | null;
+  repCount?: number;
+  updatedAt: string;
+}
+
+export interface RepAssignment {
+  id: string;
+  repName: string;
+  compPlanId: string;
+  planName: string;
+  effectiveFrom: string | null;
+  effectiveTo: string | null;
 }
 
 export interface CriteriaSet {
@@ -150,4 +174,17 @@ export const api = {
   updateCriteriaSet: (id: string, body: { name: string; description?: string; importId?: string | null; criteria: Criteria }) =>
     request<CriteriaSet>(`/api/criteria-sets/${id}`, json('PUT', body)),
   deleteCriteriaSet: (id: string) => request<void>(`/api/criteria-sets/${id}`, { method: 'DELETE' }),
+
+  listPlans: () => request<CompPlan[]>('/api/comp-plans'),
+  createPlan: (body: Omit<CompPlan, 'id' | 'updatedAt' | 'repCount'>) => request<CompPlan>('/api/comp-plans', json('POST', body)),
+  updatePlan: (id: string, body: Omit<CompPlan, 'id' | 'updatedAt' | 'repCount'>) => request<CompPlan>(`/api/comp-plans/${id}`, json('PUT', body)),
+  deletePlan: (id: string) => request<void>(`/api/comp-plans/${id}`, { method: 'DELETE' }),
+  listAssignments: () => request<RepAssignment[]>('/api/rep-assignments'),
+  createAssignment: (body: { repName: string; compPlanId: string; effectiveFrom?: string | null; effectiveTo?: string | null }) =>
+    request<RepAssignment>('/api/rep-assignments', json('POST', body)),
+  bulkAssign: (body: { compPlanId: string; repNames: string[]; effectiveFrom?: string | null; effectiveTo?: string | null }) =>
+    request<{ created: number }>('/api/rep-assignments/bulk', json('POST', body)),
+  updateAssignment: (id: string, body: { repName: string; compPlanId: string; effectiveFrom?: string | null; effectiveTo?: string | null }) =>
+    request<RepAssignment>(`/api/rep-assignments/${id}`, json('PUT', body)),
+  deleteAssignment: (id: string) => request<void>(`/api/rep-assignments/${id}`, { method: 'DELETE' }),
 };

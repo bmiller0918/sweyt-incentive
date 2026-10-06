@@ -1,7 +1,9 @@
 import { randomUUID } from 'node:crypto';
 import {
   COLUMN_TYPES,
+  applyCalc,
   columnTotals,
+  isCalcActive,
   compileCriteria,
   conditionImpact,
   criteriaSchema,
@@ -27,6 +29,22 @@ import { auditLog, importRows, imports } from '../db/schema.js';
 import { toCsv, toXlsx } from '../export.js';
 import { applyHeaderRow, parseBuffer, type ParsedFile } from '../parse.js';
 import { getRows, invalidate, typesOf } from '../rowcache.js';
+import { loadPlanLookup } from './plans.js';
+
+/** Stage 2 + optional stage 3 over the filtered row indices. */
+async function summarizeWithCalc(
+  db: Db,
+  cached: Awaited<ReturnType<typeof getRows>>,
+  indices: number[],
+  criteria: Criteria & { summary: NonNullable<Criteria['summary']> },
+  ctx: Parameters<typeof summarize>[4],
+) {
+  const s = summarize(cached.raw, cached.typed, indices, criteria.summary, ctx);
+  if (!isCalcActive(criteria.calc)) return { ...s, errors: {} as Record<string, string>, noPlan: 0 };
+  const asOf = criteria.calc.asOf || new Date().toISOString().slice(0, 10);
+  const lookup = criteria.calc.repField ? await loadPlanLookup(db, asOf) : null;
+  return applyCalc(s, criteria.calc, lookup);
+}
 
 // Uploads wait here (in memory, 15 min) between "parse" and "commit", so the
 // user can pick a sheet and header row without us touching local disk.
@@ -249,7 +267,7 @@ export async function importRoutes(app: FastifyInstance, db: Db) {
 
     // Summary mode: roll up, then sort/page the summary rows instead.
     if (q.mode === 'summary' && q.criteria && isSummaryActive(q.criteria.summary) && !Object.keys(errors).length) {
-      const s = summarize(cached.raw, cached.typed, indices, q.criteria.summary, ctx);
+      const s = await summarizeWithCalc(db, cached, indices, q.criteria as Criteria & { summary: NonNullable<Criteria['summary']> }, ctx);
       const outTypes = Object.fromEntries(s.columns.map((c) => [c.name, c.type]));
       const sIdx = s.raw.map((_, i) => i);
       sortIndices(sIdx, s.typed, q.sort, outTypes);
@@ -263,7 +281,8 @@ export async function importRoutes(app: FastifyInstance, db: Db) {
         columns: s.columns,
         rows: page,
         impact,
-        errors,
+        errors: { ...errors, ...s.errors },
+        calc: { noPlan: s.noPlan },
         totals: columnTotals(s.typed, sIdx, outTypes),
       };
     }
@@ -394,7 +413,7 @@ export async function importRoutes(app: FastifyInstance, db: Db) {
       indices = indices.filter((i) => compiled.matches(cached.typed[i]));
       rows = indices.map((i) => cached.raw[i]);
       if (body.mode === 'summary' && isSummaryActive(body.criteria.summary)) {
-        const s = summarize(cached.raw, cached.typed, indices, body.criteria.summary, ctx);
+        const s = await summarizeWithCalc(db, cached, indices, body.criteria as Criteria & { summary: NonNullable<Criteria['summary']> }, ctx);
         columns = s.columns;
         rows = s.raw;
         suffix = '-summary';

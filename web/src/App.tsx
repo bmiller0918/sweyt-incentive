@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import { api, type ImportSummary } from './api';
+import { CompPlansView } from './components/CompPlansView';
 import { ImportView } from './components/ImportView';
 import { UploadFlow } from './components/UploadFlow';
 
@@ -7,6 +8,7 @@ export default function App() {
   const [imports, setImports] = useState<ImportSummary[]>([]);
   const [selected, setSelected] = useState<string | null>(null);
   const [uploading, setUploading] = useState(false);
+  const [page, setPage] = useState<'imports' | 'plans'>('imports');
   const [error, setError] = useState<string | null>(null);
 
   const refresh = useCallback(async () => {
@@ -38,6 +40,7 @@ export default function App() {
         <button
           className="btn btn-primary m-3"
           onClick={() => {
+            setPage('imports');
             setUploading(true);
             setSelected(null);
           }}
@@ -50,11 +53,12 @@ export default function App() {
             <button
               key={imp.id}
               onClick={() => {
+                setPage('imports');
                 setSelected(imp.id);
                 setUploading(false);
               }}
               className={`block w-full rounded-md px-2 py-1.5 text-left text-sm hover:bg-slate-100 ${
-                selected === imp.id && !uploading ? 'bg-indigo-50 text-indigo-700' : 'text-slate-700'
+                page === 'imports' && selected === imp.id && !uploading ? 'bg-indigo-50 text-indigo-700' : 'text-slate-700'
               }`}
             >
               <div className="truncate font-medium">{imp.name}</div>
@@ -64,6 +68,15 @@ export default function App() {
             </button>
           ))}
         </nav>
+        <div className="border-t border-slate-200 p-2">
+          <button
+            onClick={() => setPage('plans')}
+            className={`block w-full rounded-md px-2 py-1.5 text-left text-sm hover:bg-slate-100 ${page === 'plans' ? 'bg-indigo-50 text-indigo-700' : 'text-slate-700'}`}
+          >
+            <div className="font-medium">Comp plans</div>
+            <div className="text-xs text-slate-400">rates, quotas, rep assignments</div>
+          </button>
+        </div>
       </aside>
 
       <main className="flex min-w-0 flex-1 flex-col">
@@ -75,7 +88,9 @@ export default function App() {
             </button>
           </div>
         )}
-        {uploading || !selected ? (
+        {page === 'plans' ? (
+          <CompPlansView />
+        ) : uploading || !selected ? (
           <UploadFlow
             onDone={async (imp) => {
               await refresh();

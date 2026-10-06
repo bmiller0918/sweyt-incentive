@@ -66,6 +66,32 @@ export const canonicalMappings = pgTable('canonical_mappings', {
   mapping: jsonb('mapping').$type<Record<string, string>>().notNull(),
 });
 
+/** A compensation plan: named parameters formulas can reference as plan.<key>. */
+export const compPlans = pgTable('comp_plans', {
+  ...base,
+  name: text('name').notNull(),
+  description: text('description'),
+  params: jsonb('params').$type<Record<string, number | string | boolean | null>>().notNull().default({}),
+  /** YYYY-MM-DD; null = open-ended. */
+  effectiveFrom: text('effective_from'),
+  effectiveTo: text('effective_to'),
+});
+
+/** Which plan a rep (by the name that appears in the data) is on, and when. */
+export const repPlanAssignments = pgTable(
+  'rep_plan_assignments',
+  {
+    ...base,
+    repName: text('rep_name').notNull(),
+    compPlanId: uuid('comp_plan_id')
+      .notNull()
+      .references(() => compPlans.id, { onDelete: 'cascade' }),
+    effectiveFrom: text('effective_from'),
+    effectiveTo: text('effective_to'),
+  },
+  (t) => [index('rep_plan_assignments_rep_idx').on(t.repName)],
+);
+
 export const auditLog = pgTable('audit_log', {
   ...base,
   actor: text('actor').notNull().default('system'),
