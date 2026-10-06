@@ -9,6 +9,7 @@ Drag-and-drop CSV/Excel import with a NetSuite-style (and beyond) filter and cri
 - **Grid**: virtualized, sortable, type badges in headers.
 - **Criteria builder**: unlimited nested AND / OR groups with NOT, type-aware operators (text incl. regex + case toggle; number incl. between / any of; date incl. relative presets like *this fiscal quarter*, *last N days*), value sources (literal, another field, `{{param}}`), per-condition "rows this removes" badge, live match counts, row-level explain, disable-without-deleting.
 - **Summarize** (stage 2): group by any columns, aggregates (sum / count / count distinct / avg / min / max) with custom labels, and a HAVING filter on the summary rows using the same criteria builder. Toggle Detail / Summary; export either. A totals bar always shows sums of the filtered rows.
+- **Drill-down**: expand any summary row to see the detail rows behind it (pick which columns to show) with a subtotal, so you can audit how a number was built.
 - **Saved criteria sets** (filter + summary together = a reusable *measure*) with automatic version history and an audit log.
 - **Export** filtered rows to CSV or XLSX with formula-injection sanitising.
 - **Deploy**: single Docker image, `/health` endpoint, Railway config.
@@ -106,6 +107,7 @@ web/src/
 | PATCH  | `/api/imports/:id`           | rename / override column types                       |
 | DELETE | `/api/imports/:id`           |                                                      |
 | POST   | `/api/imports/:id/query`     | `{criteria, params, mode: detail\|summary, offset, limit, sort}` → rows, counts, per-condition impact, errors, totals; summary mode returns the summary's `columns` |
+| POST   | `/api/imports/:id/group-rows` | `{criteria, groupValues}` → detail rows + subtotals behind one summary row |
 | POST   | `/api/imports/:id/explain`   | `{criteria, rowIndex}` → which conditions passed     |
 | POST   | `/api/imports/:id/export`    | `{criteria, format: csv|xlsx}` → file                |
 | CRUD   | `/api/criteria-sets[/:id]`   | saved criteria; `GET /:id/versions` for history      |

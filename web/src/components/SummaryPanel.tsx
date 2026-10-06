@@ -28,6 +28,7 @@ function fieldsFor(fn: AggFn, columns: ColumnDef[]): ColumnDef[] {
 export function SummaryPanel({ spec, columns, errors, onChange }: Props) {
   const types = Object.fromEntries(columns.map((c) => [c.name, c.type]));
   const outColumns = summaryColumns(spec, types);
+  const detailFields = spec.detailFields ?? [];
   const numeric = columns.filter((c) => familyOf(c.type) === 'number');
 
   const setAgg = (i: number, patch: Partial<Aggregate>) =>
@@ -130,6 +131,38 @@ export function SummaryPanel({ spec, columns, errors, onChange }: Props) {
           {spec.aggregates.length === 0 && <div className="text-slate-400">Add an aggregate, e.g. Sum of Amount.</div>}
         </div>
       </div>
+
+      {spec.groupBy.length > 0 && (
+        <div>
+          <div className="mb-1 font-semibold text-slate-600">
+            Drill-down columns <span className="font-normal text-slate-400">(shown when you expand a group)</span>
+          </div>
+          <div className="flex flex-wrap gap-1">
+            {columns
+              .filter((c) => !spec.groupBy.includes(c.name))
+              .map((c) => {
+                const on = detailFields.includes(c.name);
+                return (
+                  <button
+                    key={c.name}
+                    onClick={() =>
+                      onChange({
+                        ...spec,
+                        detailFields: on ? detailFields.filter((f) => f !== c.name) : [...detailFields, c.name],
+                      })
+                    }
+                    className={`rounded-full border px-2 py-0.5 ${
+                      on ? 'border-emerald-600 bg-emerald-600 text-white' : 'border-slate-300 bg-white text-slate-600 hover:bg-slate-100'
+                    }`}
+                  >
+                    {c.name}
+                  </button>
+                );
+              })}
+          </div>
+          {detailFields.length === 0 && <div className="mt-1 text-slate-400">None selected: all columns are shown.</div>}
+        </div>
+      )}
 
       {outColumns.length > 0 && (
         <div>

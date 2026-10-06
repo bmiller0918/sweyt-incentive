@@ -2,7 +2,7 @@
 // optionally filter the result (HAVING). Output is shaped like an import
 // (columns + raw + typed rows) so the grid, sort, export and criteria
 // evaluator all work on it unchanged.
-import { formatDateMs } from './coerce.js';
+import { coerceRow, formatDateMs } from './coerce.js';
 import type { Aggregate, SummarySpec } from './criteria.js';
 import { compileCriteria, type EvalContext } from './evaluate.js';
 import { familyOf, type ColumnDef, type ColumnType, type RawRow, type TypedRow, type TypedValue } from './types.js';
@@ -90,6 +90,22 @@ interface Bucket {
   rows: number[];
 }
 
+/**
+ * Bucket key for one row. Text columns key on the exact trimmed text;
+ * everything else keys on the parsed value so differing formats merge.
+ */
+export function groupKey(raw: RawRow, typed: TypedRow, groupBy: string[], types: Record<string, ColumnType>): string {
+  return groupBy
+    .map((g) => (familyOf(types[g] ?? 'text') === 'text' ? (raw[g] ?? '').trim() : String(typed[g] ?? null)))
+    .join('\u0001');
+}
+
+/** The same key, built from a summary row's displayed group values. */
+export function groupKeyFromValues(values: Record<string, string>, groupBy: string[], types: Record<string, ColumnType>): string {
+  const typed = coerceRow(values, Object.fromEntries(groupBy.map((g) => [g, types[g] ?? 'text'])));
+  return groupKey(values, typed, groupBy, types);
+}
+
 export function summarize(
   raw: RawRow[],
   typed: TypedRow[],
@@ -106,9 +122,7 @@ export function summarize(
   for (const i of rowIndices) {
     const groupTyped = spec.groupBy.map((g) => typed[i][g] ?? null);
     const groupRaw = spec.groupBy.map((g) => (raw[i][g] ?? '').trim());
-    const key = spec.groupBy
-      .map((g, k) => (familyOf(ctx.types[g] ?? 'text') === 'text' ? groupRaw[k] : String(groupTyped[k])))
-      .join('\u0001');
+    const key = groupKey(raw[i], typed[i], spec.groupBy, ctx.types);
     let b = buckets.get(key);
     if (!b) {
       b = { key, groupRaw, groupTyped, rows: [] };

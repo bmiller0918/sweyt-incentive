@@ -202,11 +202,13 @@ export const summarySchema = z.object({
   aggregates: z.array(aggregateSchema).default([]),
   /** Filter applied to the summary rows (fields are the summary's columns). */
   having: groupSchema.optional(),
+  /** Source columns shown when a summary row is expanded. Empty = all non-group columns. */
+  detailFields: z.array(z.string()).optional(),
 });
 export type SummarySpec = z.infer<typeof summarySchema>;
 
 export function emptySummary(): SummarySpec {
-  return { groupBy: [], aggregates: [] };
+  return { groupBy: [], aggregates: [], detailFields: [] };
 }
 
 export function isSummaryActive(s: SummarySpec | undefined): s is SummarySpec {

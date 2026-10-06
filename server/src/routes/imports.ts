@@ -5,6 +5,8 @@ import {
   compileCriteria,
   conditionImpact,
   criteriaSchema,
+  groupKey,
+  groupKeyFromValues,
   inferColumnType,
   isSummaryActive,
   summarize,
@@ -276,6 +278,44 @@ export async function importRoutes(app: FastifyInstance, db: Db) {
       impact,
       errors,
       totals: columnTotals(cached.typed, indices, cached.types),
+    };
+  });
+
+  // -- Drill-down: the detail rows behind one summary row -------------------
+  const groupRowsSchema = z.object({
+    criteria: criteriaSchema,
+    params: z.record(z.string()).optional(),
+    /** Group-by column -> the value shown on the summary row. */
+    groupValues: z.record(z.string()),
+    limit: z.number().int().min(1).max(5000).default(1000),
+  });
+  app.post('/api/imports/:id/group-rows', async (req, reply) => {
+    const { id } = req.params as { id: string };
+    const body = groupRowsSchema.parse(req.body);
+    const [imp] = await db.select().from(imports).where(eq(imports.id, id));
+    if (!imp) return reply.code(404).send({ error: 'Import not found' });
+    if (!isSummaryActive(body.criteria.summary)) return reply.code(400).send({ error: 'Criteria has no summary' });
+    const cached = await getRows(db, id, imp.columns);
+    const ctx = evalCtx(cached.types, body.params);
+    const errors = validateCriteria(body.criteria, ctx);
+    if (Object.keys(errors).length) return reply.code(400).send({ error: 'Criteria has errors', errors });
+
+    const { groupBy } = body.criteria.summary;
+    const detailFields = body.criteria.summary.detailFields ?? [];
+    const wanted = groupKeyFromValues(body.groupValues, groupBy, cached.types);
+    const compiled = compileCriteria(body.criteria, ctx);
+    const indices: number[] = [];
+    for (let i = 0; i < cached.typed.length; i++) {
+      if (compiled.matches(cached.typed[i]) && groupKey(cached.raw[i], cached.typed[i], groupBy, cached.types) === wanted) indices.push(i);
+    }
+    const fields = detailFields.length ? detailFields : imp.columns.map((c) => c.name).filter((n) => !groupBy.includes(n));
+    const columns = imp.columns.filter((c) => fields.includes(c.name));
+    const subTypes = Object.fromEntries(columns.map((c) => [c.name, c.type]));
+    return {
+      columns,
+      rows: indices.slice(0, body.limit).map((i) => ({ index: i, data: cached.raw[i] })),
+      matched: indices.length,
+      subtotals: columnTotals(cached.typed, indices, subTypes),
     };
   });
 

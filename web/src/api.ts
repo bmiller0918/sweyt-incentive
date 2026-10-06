@@ -37,6 +37,13 @@ export interface QueryResult {
   totals: Record<string, { sum: number; count: number }>;
 }
 
+export interface GroupRowsResult {
+  columns: ColumnDef[];
+  rows: { index: number; data: RawRow }[];
+  matched: number;
+  subtotals: Record<string, { sum: number; count: number }>;
+}
+
 export interface CriteriaSet {
   id: string;
   name: string;
@@ -112,6 +119,8 @@ export const api = {
     },
     signal?: AbortSignal,
   ) => request<QueryResult>(`/api/imports/${id}/query`, { ...json('POST', body), signal }),
+  groupRows: (id: string, body: { criteria: Criteria; params?: Record<string, string>; groupValues: Record<string, string>; limit?: number }) =>
+    request<GroupRowsResult>(`/api/imports/${id}/group-rows`, json('POST', body)),
   explain: (id: string, body: { criteria: Criteria; params?: Record<string, string>; rowIndex: number }) =>
     request<{ matched: boolean; conditions: Record<string, boolean> }>(`/api/imports/${id}/explain`, json('POST', body)),
   async export(id: string, body: { criteria?: Criteria; params?: Record<string, string>; mode?: 'detail' | 'summary'; format: 'csv' | 'xlsx' }) {

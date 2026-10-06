@@ -15,6 +15,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { api, type CriteriaSet, type ImportDetail, type QueryResult } from '../api';
 import { CriteriaBuilder } from './CriteriaBuilder';
 import { DataGrid, type GridRow } from './DataGrid';
+import { SummaryGrid, groupValuesOf, type GroupState } from './SummaryGrid';
 import { SummaryPanel } from './SummaryPanel';
 
 const PAGE = 500;
@@ -40,6 +41,7 @@ export function ImportView({ importId, onDeleted, onRenamed }: Props) {
   const [meta, setMeta] = useState<Omit<QueryResult, 'rows'>>({ mode: 'detail', total: 0, matched: 0, impact: {}, errors: {}, totals: {} });
   const [viewMode, setViewMode] = useState<'detail' | 'summary'>('detail');
   const [summaryColumns, setSummaryColumns] = useState<ColumnDef[]>([]);
+  const [expanded, setExpanded] = useState<Record<string, GroupState>>({});
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [sets, setSets] = useState<CriteriaSet[]>([]);
@@ -94,6 +96,26 @@ export function ImportView({ importId, onDeleted, onRenamed }: Props) {
     const t = setTimeout(() => runQuery(0, false), 250);
     return () => clearTimeout(t);
   }, [imp, runQuery]);
+
+  // Drill-downs are only valid for the criteria they were fetched under.
+  useEffect(() => {
+    setExpanded({});
+  }, [criteria, params, imp?.columns]);
+
+  const toggleGroup = (row: GridRow, key: string) => {
+    if (expanded[key]) {
+      setExpanded((e) => {
+        const { [key]: _gone, ...rest } = e;
+        return rest;
+      });
+      return;
+    }
+    setExpanded((e) => ({ ...e, [key]: { loading: true } }));
+    api
+      .groupRows(importId, { criteria, params, groupValues: groupValuesOf(row, criteria.summary?.groupBy ?? []) })
+      .then((result) => setExpanded((e) => (e[key] ? { ...e, [key]: { loading: false, result } } : e)))
+      .catch((err: Error) => setExpanded((e) => (e[key] ? { ...e, [key]: { loading: false, error: err.message } } : e)));
+  };
 
   const hasMore = rows.length < meta.matched;
   const loadMore = useCallback(() => {
@@ -339,17 +361,33 @@ export function ImportView({ importId, onDeleted, onRenamed }: Props) {
         {/* Grid + totals */}
         <div className="flex min-w-0 flex-1 flex-col">
           <div className="min-h-0 flex-1">
-            <DataGrid
-              columns={gridColumns}
-              rows={rows}
-              sort={sort}
-              onSort={toggleSort}
-              onTypeChange={mode === 'detail' ? changeType : undefined}
-              onRowClick={mode === 'detail' ? explainRow : undefined}
-              onEndReached={loadMore}
-              hasMore={hasMore}
-              loading={loading}
-            />
+            {mode === 'summary' ? (
+              <SummaryGrid
+                columns={gridColumns}
+                rows={rows}
+                groupBy={criteria.summary?.groupBy ?? []}
+                expanded={expanded}
+                onToggle={toggleGroup}
+                sort={sort}
+                onSort={toggleSort}
+                onEndReached={loadMore}
+                hasMore={hasMore}
+                loading={loading}
+                formatTotal={formatTotal}
+              />
+            ) : (
+              <DataGrid
+                columns={gridColumns}
+                rows={rows}
+                sort={sort}
+                onSort={toggleSort}
+                onTypeChange={changeType}
+                onRowClick={explainRow}
+                onEndReached={loadMore}
+                hasMore={hasMore}
+                loading={loading}
+              />
+            )}
           </div>
           {totalEntries.length > 0 && (
             <div className="flex flex-wrap items-center gap-x-4 gap-y-1 border-t border-slate-200 bg-slate-50 px-3 py-1.5 text-xs tabular-nums">

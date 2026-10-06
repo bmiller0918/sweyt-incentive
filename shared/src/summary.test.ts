@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { coerceRow } from './coerce.js';
 import { compileCriteria, type EvalContext } from './evaluate.js';
-import { columnTotals, summarize, summaryColumns } from './summary.js';
+import { columnTotals, groupKey, groupKeyFromValues, summarize, summaryColumns } from './summary.js';
 import type { ColumnType, RawRow } from './types.js';
 
 const types: Record<string, ColumnType> = { rep: 'text', stage: 'text', amount: 'currency', closed: 'date' };
@@ -85,6 +85,16 @@ describe('summarize', () => {
       ctx,
     );
     expect(res2.raw).toEqual([{ closed: '2025-11-01', Count: '2' }]);
+  });
+});
+
+describe('groupKey', () => {
+  it('matches a summary row back to its source rows', () => {
+    const key = groupKey(raw[1], typed[1], ['rep', 'closed'], types);
+    // The summary displays the raw first-seen value; a differently formatted
+    // literal for the same date must still resolve to the same bucket.
+    expect(groupKeyFromValues({ rep: 'Alice', closed: '2025-11-15' }, ['rep', 'closed'], types)).toBe(key);
+    expect(groupKeyFromValues({ rep: 'alice', closed: '2025-11-15' }, ['rep', 'closed'], types)).not.toBe(key);
   });
 });
 
