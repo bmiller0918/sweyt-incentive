@@ -53,6 +53,7 @@ pnpm test
 4. On the app service, **Variables → + New Variable**:
    - `DATABASE_URL` = `${{Postgres.DATABASE_URL}}` (use the reference picker)
    - `NODE_ENV` = `production`
+   - `PORT` = `3000` (Railway otherwise injects a random port that won't match the domain's target port)
    - optionally `MAX_UPLOAD_MB`, `FISCAL_YEAR_START_MONTH`, `WEEK_STARTS_ON`
 5. **Settings → Networking → Generate Domain**.
 6. Verify: `https://<your-domain>/health` returns `{"ok":true,...}`. Migrations run automatically at startup.
