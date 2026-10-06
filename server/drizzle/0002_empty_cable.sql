@@ -1,0 +1,1 @@
+ALTER TABLE "comp_plans" ADD COLUMN "tiers" jsonb DEFAULT '{"mode":"marginal","basis":"amount","rows":[]}'::jsonb NOT NULL;

@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { index, integer, jsonb, pgTable, text, timestamp, uuid } from 'drizzle-orm/pg-core';
-import type { ColumnDef, Criteria, RawRow } from '@commissions/shared';
+import type { ColumnDef, Criteria, PlanTiers, RawRow } from '@commissions/shared';
 
 // Every table carries timestamps and a nullable organization_id so multi-
 // tenancy can be added later without a migration of existing rows.
@@ -72,6 +72,8 @@ export const compPlans = pgTable('comp_plans', {
   name: text('name').notNull(),
   description: text('description'),
   params: jsonb('params').$type<Record<string, number | string | boolean | null>>().notNull().default({}),
+  /** Tier table used by TIER() / TIER_RATE() in formulas. */
+  tiers: jsonb('tiers').$type<PlanTiers>().notNull().default({ mode: 'marginal', basis: 'amount', rows: [] }),
   /** YYYY-MM-DD; null = open-ended. */
   effectiveFrom: text('effective_from'),
   effectiveTo: text('effective_to'),

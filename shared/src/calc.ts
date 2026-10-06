@@ -6,6 +6,7 @@ import type { CalcSpec, CriteriaNode } from './criteria.js';
 import { resolveRelativeRange, type DateContext } from './dates.js';
 import { FormulaError, compileFormula, type CompiledFormula, type FormulaValue, type Scope } from './formula.js';
 import type { SummaryResult } from './summary.js';
+import type { PlanTiers } from './tiers.js';
 import type { ColumnDef, ColumnType, RawRow, TypedRow } from './types.js';
 
 export type PlanParams = Record<string, number | string | boolean | null>;
@@ -13,6 +14,8 @@ export type PlanParams = Record<string, number | string | boolean | null>;
 export interface ResolvedPlan {
   planName: string;
   params: PlanParams;
+  /** Tier table for TIER() / TIER_RATE(); optional. */
+  tiers?: PlanTiers;
 }
 
 /** Finds the plan in force for a rep name (already trimmed), or null. */
@@ -86,7 +89,8 @@ export function applyCalc(res: SummaryResult, calc: CalcSpec, lookup: PlanLookup
   for (const { fn, name } of compiled) {
     const values: FormulaValue[] = typed.map((row, i) => {
       if (!fn) return null;
-      const scope: Scope = { ...(row as Record<string, FormulaValue>), plan: plans[i]?.params ?? {} };
+      const p = plans[i];
+      const scope: Scope = { ...(row as Record<string, FormulaValue>), plan: p ? { ...p.params, tiers: p.tiers } : {} };
       try {
         return fn.evaluate(scope);
       } catch {
@@ -131,7 +135,7 @@ export function asOfFromCriteria(criteria: { root: { children: CriteriaNode[] } 
  * with the latest start wins.
  */
 export function makePlanLookup(
-  assignments: { repName: string; planName: string; params: PlanParams; effectiveFrom: string | null; effectiveTo: string | null }[],
+  assignments: { repName: string; planName: string; params: PlanParams; tiers?: PlanTiers; effectiveFrom: string | null; effectiveTo: string | null }[],
   asOf: string,
 ): PlanLookup {
   const byRep = new Map<string, typeof assignments>();
@@ -147,6 +151,6 @@ export function makePlanLookup(
     const live = list.filter((a) => (!a.effectiveFrom || a.effectiveFrom <= asOf) && (!a.effectiveTo || a.effectiveTo >= asOf));
     if (!live.length) return null;
     live.sort((a, b) => (b.effectiveFrom ?? '').localeCompare(a.effectiveFrom ?? ''));
-    return { planName: live[0].planName, params: live[0].params };
+    return { planName: live[0].planName, params: live[0].params, tiers: live[0].tiers };
   };
 }

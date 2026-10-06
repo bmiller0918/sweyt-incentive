@@ -1,4 +1,4 @@
-import { makePlanLookup, type PlanLookup } from '@commissions/shared';
+import { makePlanLookup, planTiersSchema, type PlanLookup } from '@commissions/shared';
 import { asc, eq, sql } from 'drizzle-orm';
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
@@ -12,6 +12,7 @@ const planSchema = z.object({
   name: z.string().min(1),
   description: z.string().nullable().optional(),
   params: z.record(paramValue).default({}),
+  tiers: planTiersSchema.default({ mode: 'marginal', basis: 'amount', rows: [] }),
   effectiveFrom: dateStr,
   effectiveTo: dateStr,
 });
@@ -32,6 +33,7 @@ export async function loadPlanLookup(db: Db, asOf: string): Promise<PlanLookup> 
       effectiveTo: repPlanAssignments.effectiveTo,
       planName: compPlans.name,
       params: compPlans.params,
+      tiers: compPlans.tiers,
       planFrom: compPlans.effectiveFrom,
       planTo: compPlans.effectiveTo,
     })
@@ -42,6 +44,7 @@ export async function loadPlanLookup(db: Db, asOf: string): Promise<PlanLookup> 
     repName: r.repName,
     planName: r.planName,
     params: r.params,
+    tiers: r.tiers,
     effectiveFrom: [r.effectiveFrom, r.planFrom].filter(Boolean).sort().pop() ?? null,
     effectiveTo: [r.effectiveTo, r.planTo].filter(Boolean).sort().shift() ?? null,
   }));

@@ -10,8 +10,11 @@
 // = <> != < <= > >=, AND OR NOT, parentheses. Functions: IF, MIN, MAX, ROUND,
 // ABS, COALESCE, FLOOR, CEIL, ISBLANK, AND/OR as functions too.
 
+import { planTiersSchema, tierPayout, tierRate } from './tiers.js';
+
 export type FormulaValue = number | string | boolean | null;
-export type Scope = Record<string, FormulaValue | Record<string, FormulaValue>>;
+/** Namespaces (e.g. plan) may hold nested objects such as a tier table. */
+export type Scope = Record<string, FormulaValue | Record<string, unknown>>;
 
 export class FormulaError extends Error {
   constructor(
@@ -113,7 +116,7 @@ const PREC: Record<string, number> = {
   '^': 7,
 };
 
-const FUNCTIONS = new Set(['IF', 'MIN', 'MAX', 'ROUND', 'ABS', 'COALESCE', 'FLOOR', 'CEIL', 'ISBLANK', 'AND', 'OR', 'NOT']);
+const FUNCTIONS = new Set(['IF', 'MIN', 'MAX', 'ROUND', 'ABS', 'COALESCE', 'FLOOR', 'CEIL', 'ISBLANK', 'AND', 'OR', 'NOT', 'TIER', 'TIER_RATE']);
 
 export function parseFormula(src: string): Node {
   const toks = tokenize(src);
@@ -224,23 +227,36 @@ function cmp(a: FormulaValue, b: FormulaValue): number | null {
   return sa < sb ? -1 : sa > sb ? 1 : 0;
 }
 
+function isScalar(v: unknown): v is FormulaValue {
+  return v === null || typeof v === 'number' || typeof v === 'string' || typeof v === 'boolean';
+}
+
 function lookup(name: string, scope: Scope): FormulaValue {
   if (name in scope) {
     const v = scope[name];
-    return typeof v === 'object' && v !== null ? null : v;
+    return isScalar(v) ? v : null;
   }
   const dot = name.indexOf('.');
   if (dot > 0) {
     const ns = scope[name.slice(0, dot)];
     if (ns && typeof ns === 'object') {
-      const key = name.slice(dot + 1);
-      return key in ns ? ns[key] : null;
+      const v = (ns as Record<string, unknown>)[name.slice(dot + 1)];
+      return isScalar(v) ? v : null;
     }
   }
   // Case-insensitive fallback for column names.
   const lower = name.toLowerCase();
-  for (const k in scope) if (k.toLowerCase() === lower && typeof scope[k] !== 'object') return scope[k] as FormulaValue;
+  for (const k in scope) if (k.toLowerCase() === lower && isScalar(scope[k])) return scope[k] as FormulaValue;
   return null;
+}
+
+/** The current row's plan tier table and quota, if the scope has them. */
+function planTiers(scope: Scope) {
+  const plan = scope.plan;
+  if (!plan || typeof plan !== 'object') return null;
+  const parsed = planTiersSchema.safeParse((plan as Record<string, unknown>).tiers);
+  if (!parsed.success || !parsed.data.rows.length) return null;
+  return { tiers: parsed.data, quota: num(isScalar((plan as Record<string, unknown>).quota) ? ((plan as Record<string, unknown>).quota as FormulaValue) : null) };
 }
 
 export function evaluateNode(n: Node, scope: Scope): FormulaValue {
@@ -348,6 +364,13 @@ export function evaluateNode(n: Node, scope: Scope): FormulaValue {
           if (v === null) return null;
           const f = 10 ** places;
           return Math.round(v * f) / f;
+        }
+        case 'TIER':
+        case 'TIER_RATE': {
+          const v = num(arg(0));
+          const t = planTiers(scope);
+          if (v === null || !t) return null;
+          return fn === 'TIER' ? tierPayout(v, t.tiers, t.quota) : tierRate(v, t.tiers, t.quota);
         }
       }
       return null;

@@ -15,7 +15,7 @@ interface Props {
   onChange: (spec: CalcSpec) => void;
 }
 
-const FUNCTION_HINTS = ['IF(cond, a, b)', 'MIN(a, b)', 'MAX(a, b)', 'ROUND(x, 2)', 'ABS(x)', 'COALESCE(a, b)', 'ISBLANK(x)'];
+const FUNCTION_HINTS = ['TIER(x)', 'TIER_RATE(x)', 'IF(cond, a, b)', 'MIN(a, b)', 'MAX(a, b)', 'ROUND(x, 2)', 'ABS(x)', 'COALESCE(a, b)', 'ISBLANK(x)'];
 
 export function CalcPanel({ spec, summaryColumns, errors, noPlan, asOf, onChange }: Props) {
   const [plans, setPlans] = useState<CompPlan[]>([]);
@@ -91,9 +91,30 @@ export function CalcPanel({ spec, summaryColumns, errors, noPlan, asOf, onChange
       </div>
 
       <div>
-        <div className="mb-1 flex items-center">
+        <div className="mb-1 flex items-center gap-1">
           <span className="font-semibold text-slate-600">Calculations</span>
           <div className="flex-1" />
+          {spec.repField && (
+            <button
+              className="btn btn-sm"
+              title="Apply each rep's plan tier table to the amount"
+              onClick={() => {
+                const amount = summaryColumns.find((c) => familyOf(c.type) === 'number');
+                const ref = amount ? `[${amount.name}]` : '0';
+                onChange({
+                  ...spec,
+                  items: [
+                    ...spec.items,
+                    { id: newId(), label: 'Payout', formula: `TIER(${ref})` },
+                    { id: newId(), label: 'Rate', formula: `TIER_RATE(${ref})` },
+                  ],
+                });
+                setActive(spec.items.length);
+              }}
+            >
+              + Tiered payout
+            </button>
+          )}
           <button
             className="btn btn-sm"
             onClick={() => {
@@ -158,7 +179,8 @@ export function CalcPanel({ spec, summaryColumns, errors, noPlan, asOf, onChange
             ))}
           </div>
           <div className="text-[11px] text-slate-400">
-            Operators: + − × ÷ ^, comparisons, AND / OR / NOT. Percentages work: <code>12%</code>. Later rows can reference earlier results by name.
+            Operators: + − × ÷ ^, comparisons, AND / OR / NOT. Percentages work: <code>12%</code>. Later rows can reference earlier results by name.{' '}
+            <code>TIER(x)</code> applies the rep's plan tier table (set under Comp plans); <code>TIER_RATE(x)</code> is the rate reached.
           </div>
         </div>
       )}

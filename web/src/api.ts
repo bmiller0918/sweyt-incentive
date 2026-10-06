@@ -1,4 +1,4 @@
-import type { ColumnDef, ColumnType, Criteria, RawRow } from '@commissions/shared';
+import type { ColumnDef, ColumnType, Criteria, PlanTiers, RawRow } from '@commissions/shared';
 
 export interface ImportSummary {
   id: string;
@@ -53,6 +53,7 @@ export interface CompPlan {
   name: string;
   description: string | null;
   params: PlanParams;
+  tiers: PlanTiers;
   effectiveFrom: string | null;
   effectiveTo: string | null;
   repCount?: number;

@@ -4,5 +4,6 @@ export * from './dates.js';
 export * from './criteria.js';
 export * from './evaluate.js';
 export * from './summary.js';
+export * from './tiers.js';
 export * from './formula.js';
 export * from './calc.js';
