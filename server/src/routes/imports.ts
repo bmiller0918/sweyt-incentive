@@ -1,0 +1,284 @@
+import { randomUUID } from 'node:crypto';
+import {
+  COLUMN_TYPES,
+  compileCriteria,
+  conditionImpact,
+  criteriaSchema,
+  inferColumnType,
+  validateCriteria,
+  type ColumnDef,
+  type RawRow,
+  type TypedValue,
+} from '@commissions/shared';
+import { desc, eq } from 'drizzle-orm';
+import type { FastifyInstance } from 'fastify';
+import { z } from 'zod';
+import { config } from '../config.js';
+import type { Db } from '../db/client.js';
+import { auditLog, importRows, imports } from '../db/schema.js';
+import { toCsv, toXlsx } from '../export.js';
+import { applyHeaderRow, parseBuffer, type ParsedFile } from '../parse.js';
+import { getRows, invalidate } from '../rowcache.js';
+
+// Uploads wait here (in memory, 15 min) between "parse" and "commit", so the
+// user can pick a sheet and header row without us touching local disk.
+const pending = new Map<string, { parsed: ParsedFile; filename: string; expires: number }>();
+const PENDING_TTL_MS = 15 * 60 * 1000;
+
+function sweepPending() {
+  const now = Date.now();
+  for (const [id, p] of pending) if (p.expires < now) pending.delete(id);
+}
+
+const BATCH = 1000;
+
+const querySchema = z.object({
+  criteria: criteriaSchema.optional(),
+  params: z.record(z.string()).optional(),
+  offset: z.number().int().min(0).default(0),
+  limit: z.number().int().min(1).max(5000).default(500),
+  sort: z.object({ field: z.string(), dir: z.enum(['asc', 'desc']) }).optional(),
+});
+
+function compareTyped(a: TypedValue, b: TypedValue): number {
+  if (a === null && b === null) return 0;
+  if (a === null) return 1; // nulls last
+  if (b === null) return -1;
+  if (typeof a === 'number' && typeof b === 'number') return a - b;
+  if (typeof a === 'boolean' && typeof b === 'boolean') return Number(a) - Number(b);
+  return String(a).localeCompare(String(b), undefined, { numeric: true, sensitivity: 'base' });
+}
+
+function dataQualityWarnings(headers: string[], records: RawRow[]): string[] {
+  const warnings: string[] = [];
+  const seen = new Set<string>();
+  let dupes = 0;
+  for (const r of records) {
+    const key = headers.map((h) => r[h]).join('\u0001');
+    if (seen.has(key)) dupes++;
+    else seen.add(key);
+  }
+  if (dupes > 0) warnings.push(`${dupes} exact duplicate row${dupes === 1 ? '' : 's'} found (kept, not removed).`);
+  const generated = headers.filter((h) => /^Column \d+$/.test(h));
+  if (generated.length) warnings.push(`${generated.length} blank header${generated.length === 1 ? '' : 's'} auto-named.`);
+  return warnings;
+}
+
+export async function importRoutes(app: FastifyInstance, db: Db) {
+  const evalCtx = (types: Record<string, ColumnDef['type']>, params?: Record<string, string>) => ({
+    types,
+    params,
+    fiscalYearStartMonth: config.fiscalYearStartMonth,
+    weekStartsOn: config.weekStartsOn,
+  });
+
+  // -- Upload: parse and hold ------------------------------------------------
+  app.post('/api/uploads', async (req, reply) => {
+    sweepPending();
+    const file = await req.file({ limits: { fileSize: config.maxUploadBytes } });
+    if (!file) return reply.code(400).send({ error: 'No file uploaded' });
+    const buf = await file.toBuffer();
+    if (file.file.truncated) {
+      return reply.code(413).send({ error: `File exceeds ${config.maxUploadBytes / 1024 / 1024} MB limit` });
+    }
+    let parsed: ParsedFile;
+    try {
+      parsed = parseBuffer(buf);
+    } catch (e) {
+      return reply.code(400).send({ error: (e as Error).message });
+    }
+    const id = randomUUID();
+    pending.set(id, { parsed, filename: file.filename, expires: Date.now() + PENDING_TTL_MS });
+    return {
+      uploadId: id,
+      filename: file.filename,
+      kind: parsed.kind,
+      sheets: parsed.sheets.map((s) => ({ name: s.name, rowCount: s.rows.length, preview: s.rows.slice(0, 25) })),
+    };
+  });
+
+  // -- Commit: choose sheet + header row, infer types, store rows -----------
+  const commitSchema = z.object({
+    sheet: z.string().optional(),
+    headerRow: z.number().int().min(0).default(0),
+    name: z.string().min(1).optional(),
+  });
+  app.post('/api/uploads/:id/commit', async (req, reply) => {
+    const { id } = req.params as { id: string };
+    const p = pending.get(id);
+    if (!p) return reply.code(404).send({ error: 'Upload expired or not found. Please upload again.' });
+    const body = commitSchema.parse(req.body);
+    const sheet = p.parsed.sheets.find((s) => s.name === body.sheet) ?? p.parsed.sheets[0];
+    if (!sheet) return reply.code(400).send({ error: 'Workbook has no sheets' });
+
+    const { headers, records } = applyHeaderRow(sheet.rows, body.headerRow);
+    if (headers.length === 0) return reply.code(400).send({ error: 'No columns found at that header row' });
+
+    const columns: ColumnDef[] = headers.map((name, index) => {
+      const inferred = inferColumnType(records.map((r) => r[name]));
+      return { name, index, type: inferred, inferredType: inferred };
+    });
+
+    const [row] = await db
+      .insert(imports)
+      .values({
+        name: body.name ?? p.filename.replace(/\.[^.]+$/, ''),
+        filename: p.filename,
+        sheetName: p.parsed.kind === 'excel' ? sheet.name : null,
+        headerRow: body.headerRow,
+        rowCount: records.length,
+        columns,
+        warnings: dataQualityWarnings(headers, records),
+      })
+      .returning();
+
+    for (let i = 0; i < records.length; i += BATCH) {
+      const chunk = records.slice(i, i + BATCH).map((data, j) => ({ importId: row.id, rowIndex: i + j, data }));
+      await db.insert(importRows).values(chunk);
+    }
+    await db.insert(auditLog).values({ action: 'import.create', entityType: 'import', entityId: row.id, detail: { rows: records.length } });
+    pending.delete(id);
+    return row;
+  });
+
+  // -- Imports CRUD ----------------------------------------------------------
+  app.get('/api/imports', async () => {
+    return db
+      .select({
+        id: imports.id,
+        name: imports.name,
+        filename: imports.filename,
+        sheetName: imports.sheetName,
+        rowCount: imports.rowCount,
+        createdAt: imports.createdAt,
+      })
+      .from(imports)
+      .orderBy(desc(imports.createdAt));
+  });
+
+  app.get('/api/imports/:id', async (req, reply) => {
+    const { id } = req.params as { id: string };
+    const [row] = await db.select().from(imports).where(eq(imports.id, id));
+    if (!row) return reply.code(404).send({ error: 'Import not found' });
+    return row;
+  });
+
+  app.delete('/api/imports/:id', async (req, reply) => {
+    const { id } = req.params as { id: string };
+    await db.delete(imports).where(eq(imports.id, id));
+    invalidate(id);
+    await db.insert(auditLog).values({ action: 'import.delete', entityType: 'import', entityId: id });
+    return reply.code(204).send();
+  });
+
+  const patchSchema = z.object({
+    name: z.string().min(1).optional(),
+    columns: z.array(z.object({ name: z.string(), type: z.enum(COLUMN_TYPES) })).optional(),
+  });
+  app.patch('/api/imports/:id', async (req, reply) => {
+    const { id } = req.params as { id: string };
+    const body = patchSchema.parse(req.body);
+    const [current] = await db.select().from(imports).where(eq(imports.id, id));
+    if (!current) return reply.code(404).send({ error: 'Import not found' });
+    const columns = body.columns
+      ? current.columns.map((c) => {
+          const o = body.columns!.find((x) => x.name === c.name);
+          return o ? { ...c, type: o.type } : c;
+        })
+      : current.columns;
+    const [row] = await db
+      .update(imports)
+      .set({ name: body.name ?? current.name, columns, updatedAt: new Date() })
+      .where(eq(imports.id, id))
+      .returning();
+    invalidate(id);
+    return row;
+  });
+
+  // -- Query: filter, sort, paginate, impact ---------------------------------
+  app.post('/api/imports/:id/query', async (req, reply) => {
+    const { id } = req.params as { id: string };
+    const q = querySchema.parse(req.body ?? {});
+    const [imp] = await db.select().from(imports).where(eq(imports.id, id));
+    if (!imp) return reply.code(404).send({ error: 'Import not found' });
+
+    const cached = await getRows(db, id, imp.columns);
+    const ctx = evalCtx(cached.types, q.params);
+
+    let indices: number[];
+    let impact: Record<string, number> = {};
+    let errors: Record<string, string> = {};
+    if (q.criteria) {
+      errors = validateCriteria(q.criteria, ctx);
+      if (Object.keys(errors).length) {
+        // Don't evaluate a broken tree; show everything and surface errors.
+        indices = cached.typed.map((_, i) => i);
+      } else {
+        const compiled = compileCriteria(q.criteria, ctx);
+        indices = [];
+        for (let i = 0; i < cached.typed.length; i++) if (compiled.matches(cached.typed[i])) indices.push(i);
+        impact = conditionImpact(cached.typed, q.criteria, ctx).impact;
+      }
+    } else {
+      indices = cached.typed.map((_, i) => i);
+    }
+
+    if (q.sort && q.sort.field in cached.types) {
+      const f = q.sort.field;
+      const dir = q.sort.dir === 'asc' ? 1 : -1;
+      indices.sort((a, b) => dir * compareTyped(cached.typed[a][f], cached.typed[b][f]));
+    }
+
+    const page = indices.slice(q.offset, q.offset + q.limit).map((i) => ({ index: i, data: cached.raw[i] }));
+    return { total: cached.raw.length, matched: indices.length, rows: page, impact, errors };
+  });
+
+  // -- Explain one row -------------------------------------------------------
+  const explainSchema = z.object({ criteria: criteriaSchema, params: z.record(z.string()).optional(), rowIndex: z.number().int().min(0) });
+  app.post('/api/imports/:id/explain', async (req, reply) => {
+    const { id } = req.params as { id: string };
+    const body = explainSchema.parse(req.body);
+    const [imp] = await db.select().from(imports).where(eq(imports.id, id));
+    if (!imp) return reply.code(404).send({ error: 'Import not found' });
+    const cached = await getRows(db, id, imp.columns);
+    const row = cached.typed[body.rowIndex];
+    if (!row) return reply.code(404).send({ error: 'Row not found' });
+    const ctx = evalCtx(cached.types, body.params);
+    const errors = validateCriteria(body.criteria, ctx);
+    if (Object.keys(errors).length) return reply.code(400).send({ error: 'Criteria has errors', errors });
+    return compileCriteria(body.criteria, ctx).explain(row);
+  });
+
+  // -- Export ----------------------------------------------------------------
+  const exportSchema = z.object({
+    criteria: criteriaSchema.optional(),
+    params: z.record(z.string()).optional(),
+    format: z.enum(['csv', 'xlsx']).default('csv'),
+  });
+  app.post('/api/imports/:id/export', async (req, reply) => {
+    const { id } = req.params as { id: string };
+    const body = exportSchema.parse(req.body ?? {});
+    const [imp] = await db.select().from(imports).where(eq(imports.id, id));
+    if (!imp) return reply.code(404).send({ error: 'Import not found' });
+    const cached = await getRows(db, id, imp.columns);
+    let rows = cached.raw;
+    if (body.criteria) {
+      const ctx = evalCtx(cached.types, body.params);
+      const errors = validateCriteria(body.criteria, ctx);
+      if (Object.keys(errors).length) return reply.code(400).send({ error: 'Criteria has errors', errors });
+      const compiled = compileCriteria(body.criteria, ctx);
+      rows = cached.raw.filter((_, i) => compiled.matches(cached.typed[i]));
+    }
+    const base = imp.name.replace(/[^\w.-]+/g, '_');
+    if (body.format === 'xlsx') {
+      return reply
+        .header('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+        .header('Content-Disposition', `attachment; filename="${base}.xlsx"`)
+        .send(toXlsx(imp.columns, rows));
+    }
+    return reply
+      .header('Content-Type', 'text/csv; charset=utf-8')
+      .header('Content-Disposition', `attachment; filename="${base}.csv"`)
+      .send(toCsv(imp.columns, rows));
+  });
+}

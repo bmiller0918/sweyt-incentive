@@ -1,0 +1,17 @@
+{
+  "name": "commissions",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "packageManager": "pnpm@12.9.1",
+  "scripts": {
+    "dev": "pnpm --filter @commissions/server dev & pnpm --filter @commissions/web dev & wait",
+    "build": "pnpm --filter @commissions/shared build && pnpm --filter @commissions/web build && pnpm --filter @commissions/server build",
+    "start": "pnpm --filter @commissions/server start",
+    "test": "pnpm -r test",
+    "typecheck": "pnpm -r typecheck"
+  }
+}

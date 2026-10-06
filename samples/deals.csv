@@ -1,0 +1,11 @@
+Rep,Customer,Deal Type,Region,Amount,Quota,Close Date,Active,Notes
+Alice Johnson,Acme Corp,New Business,West,"$12,500.00","$10,000",2025-11-05,Y,Clean win
+alice johnson,Globex,Renewal,West,(500),"$10,000",10/20/2025,N,Credit memo
+Bob Smith,Initech,New Business,East,"8,000",9000,11/01/2025,Y,
+Carol Diaz,Umbrella,Upsell,Central,,5000,,,Missing amount and date
+Dan Lee,Hooli,New Business,East,25000,20000,8/15/25,true,Big Q3 deal
+Eve Park,Vehement,Renewal,West,$3200.50,4000,2025-09-30,yes,End of quarter
+Frank Moore,Stark Industries,New Business,Central,"$45,000",30000,2025-11-12,Y,"Multi-year, ""enterprise"""
+Grace Kim,Wayne Enterprises,Upsell,East,1500-,5000,11/12/2025,N,Trailing minus
+Bob Smith,Initech,New Business,East,"8,000",9000,11/01/2025,Y,
+=HYPERLINK("http://evil"),Injection Test,Renewal,West,10,10,2025-01-01,N,Formula injection attempt

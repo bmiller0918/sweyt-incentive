@@ -1,0 +1,12 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "app",
+      "runtimeExecutable": "/Users/bam/.nvm/versions/node/v22.23.3/bin/node",
+      "runtimeArgs": ["dist/index.js"],
+      "cwd": "server",
+      "port": 3000
+    }
+  ]
+}
