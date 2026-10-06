@@ -13,6 +13,7 @@ import {
   type Operand,
   type Operator,
 } from '@commissions/shared';
+import { ValuePicker } from './ValuePicker';
 
 let seq = 0;
 export const newId = () => `n${Date.now().toString(36)}${(seq++).toString(36)}`;
@@ -23,10 +24,12 @@ interface Props {
   impact: Record<string, number>;
   errors: Record<string, string>;
   onChange: (root: Group) => void;
+  /** When set, "is / is any of" offer a pick-list of the column's real values. */
+  importId?: string;
 }
 
-export function CriteriaBuilder({ root, columns, impact, errors, onChange }: Props) {
-  return <GroupEditor node={root} columns={columns} impact={impact} errors={errors} onChange={onChange} depth={0} />;
+export function CriteriaBuilder({ root, columns, impact, errors, onChange, importId }: Props) {
+  return <GroupEditor node={root} columns={columns} impact={impact} errors={errors} onChange={onChange} depth={0} importId={importId} />;
 }
 
 // -- Group -------------------------------------------------------------------
@@ -39,9 +42,10 @@ interface GroupProps {
   onChange: (g: Group) => void;
   onRemove?: () => void;
   depth: number;
+  importId?: string;
 }
 
-function GroupEditor({ node, columns, impact, errors, onChange, onRemove, depth }: GroupProps) {
+function GroupEditor({ node, columns, impact, errors, onChange, onRemove, depth, importId }: GroupProps) {
   const update = (patch: Partial<Group>) => onChange({ ...node, ...patch });
   const setChild = (i: number, child: CriteriaNode) =>
     update({ children: node.children.map((c, j) => (j === i ? child : c)) });
@@ -116,6 +120,7 @@ function GroupEditor({ node, columns, impact, errors, onChange, onRemove, depth 
                   onChange={(g) => setChild(i, g)}
                   onRemove={() => removeChild(i)}
                   depth={depth + 1}
+                  importId={importId}
                 />
               ) : (
                 <ConditionEditor
@@ -125,6 +130,7 @@ function GroupEditor({ node, columns, impact, errors, onChange, onRemove, depth 
                   error={errors[child.id]}
                   onChange={(c) => setChild(i, c)}
                   onRemove={() => removeChild(i)}
+                  importId={importId}
                 />
               )}
             </div>
@@ -144,9 +150,10 @@ interface CondProps {
   error?: string;
   onChange: (c: Condition) => void;
   onRemove: () => void;
+  importId?: string;
 }
 
-function ConditionEditor({ node, columns, impact, error, onChange, onRemove }: CondProps) {
+function ConditionEditor({ node, columns, impact, error, onChange, onRemove, importId }: CondProps) {
   const col = columns.find((c) => c.name === node.field) ?? columns[0];
   const family = familyOf(col.type);
   const operators = OPERATORS_BY_FAMILY[family];
@@ -193,7 +200,14 @@ function ConditionEditor({ node, columns, impact, error, onChange, onRemove }: C
         </select>
 
         {arity === 1 && (
-          <OperandInput value={node.values[0] ?? { kind: 'literal', value: '' }} onChange={(v) => setValue(0, v)} columns={columns} col={col} isRelative={node.operator === 'relative' || node.operator === 'not_relative'} />
+          <OperandInput
+            value={node.values[0] ?? { kind: 'literal', value: '' }}
+            onChange={(v) => setValue(0, v)}
+            columns={columns}
+            col={col}
+            isRelative={node.operator === 'relative' || node.operator === 'not_relative'}
+            picker={importId && (node.operator === 'is' || node.operator === 'is_not' || node.operator === 'eq' || node.operator === 'neq' || node.operator === 'on' || node.operator === 'not_on') ? { importId, field: node.field } : undefined}
+          />
         )}
         {arity === 2 && (
           <>
@@ -202,23 +216,32 @@ function ConditionEditor({ node, columns, impact, error, onChange, onRemove }: C
             <OperandInput value={node.values[1] ?? { kind: 'literal', value: '' }} onChange={(v) => setValue(1, v)} columns={columns} col={col} />
           </>
         )}
-        {arity === 'list' && (
-          <input
-            className="input min-w-[12rem] flex-1"
-            placeholder="comma-separated values"
-            value={node.values.map((v) => (v.kind === 'literal' ? v.value : '')).join(', ')}
-            onChange={(e) =>
-              onChange({
-                ...node,
-                values: e.target.value
-                  .split(',')
-                  .map((s) => s.trim())
-                  .filter(Boolean)
-                  .map((value) => ({ kind: 'literal', value })),
-              })
-            }
-          />
-        )}
+        {arity === 'list' &&
+          (importId ? (
+            <ValuePicker
+              importId={importId}
+              field={node.field}
+              multiple
+              selected={node.values.flatMap((v) => (v.kind === 'literal' ? [v.value] : []))}
+              onChange={(vals) => onChange({ ...node, values: vals.map((value) => ({ kind: 'literal', value })) })}
+            />
+          ) : (
+            <input
+              className="input min-w-[12rem] flex-1"
+              placeholder="comma-separated values"
+              value={node.values.map((v) => (v.kind === 'literal' ? v.value : '')).join(', ')}
+              onChange={(e) =>
+                onChange({
+                  ...node,
+                  values: e.target.value
+                    .split(',')
+                    .map((s) => s.trim())
+                    .filter(Boolean)
+                    .map((value) => ({ kind: 'literal', value })),
+                })
+              }
+            />
+          ))}
 
         {family === 'text' && arity !== 0 && (
           <label className="inline-flex items-center gap-1 text-[11px] text-slate-500" title="Case sensitive">
@@ -270,9 +293,11 @@ interface OperandProps {
   columns: ColumnDef[];
   col: ColumnDef;
   isRelative?: boolean;
+  /** Offer the column's real values in a dropdown for literal operands. */
+  picker?: { importId: string; field: string };
 }
 
-export function OperandInput({ value, onChange, columns, col, isRelative }: OperandProps) {
+export function OperandInput({ value, onChange, columns, col, isRelative, picker }: OperandProps) {
   if (isRelative) {
     const v = value.kind === 'relative' ? value : { kind: 'relative' as const, preset: 'this_quarter' as const };
     return (
@@ -319,7 +344,16 @@ export function OperandInput({ value, onChange, columns, col, isRelative }: Oper
         <option value="field">field</option>
         <option value="param">param</option>
       </select>
-      {kind === 'literal' && (
+      {kind === 'literal' && picker && (
+        <ValuePicker
+          importId={picker.importId}
+          field={picker.field}
+          multiple={false}
+          selected={value.kind === 'literal' && value.value !== '' ? [value.value] : []}
+          onChange={(vals) => onChange({ kind: 'literal', value: vals[0] ?? '' })}
+        />
+      )}
+      {kind === 'literal' && !picker && (
         <input
           type={inputType}
           className="input w-40"

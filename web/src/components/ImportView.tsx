@@ -347,7 +347,7 @@ export function ImportView({ importId, onDeleted, onRenamed }: Props) {
               </div>
               {showAdvanced ? (
                 <>
-                  <CriteriaBuilder root={criteria.root} columns={imp.columns} impact={meta.impact} errors={meta.errors} onChange={setRoot} />
+                  <CriteriaBuilder root={criteria.root} columns={imp.columns} impact={meta.impact} errors={meta.errors} onChange={setRoot} importId={importId} />
                   <p className="mt-2 text-[11px] leading-relaxed text-slate-400">
                     Header filters appear here too (ids starting with <code>hf:</code>). The amber badge shows rows a condition removes; click a grid row to see why it
                     did or didn't match.
