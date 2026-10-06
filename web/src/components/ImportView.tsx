@@ -47,11 +47,13 @@ function formatTotal(n: number, type: ColumnType): string {
 
 interface Props {
   importId: string;
+  /** Saved incentive to load on open (from the Incentives register). */
+  initialSetId?: string | null;
   onDeleted: () => void;
   onRenamed: () => void;
 }
 
-export function ImportView({ importId, onDeleted, onRenamed }: Props) {
+export function ImportView({ importId, initialSetId, onDeleted, onRenamed }: Props) {
   const [imp, setImp] = useState<ImportDetail | null>(null);
   const [criteria, setCriteria] = useState<Criteria>(emptyCriteria);
   const [params, setParams] = useState<Record<string, string>>({});
@@ -78,12 +80,22 @@ export function ImportView({ importId, onDeleted, onRenamed }: Props) {
     return [...names];
   }, [criteria]);
 
-  const loadSets = useCallback(() => api.listCriteriaSets(importId).then(setSets).catch(() => {}), [importId]);
+  const loadSets = useCallback(() => api.listCriteriaSets(importId).then((s) => (setSets(s), s)).catch(() => [] as CriteriaSet[]), [importId]);
+  const [saveDialog, setSaveDialog] = useState<{ asNew: boolean; name: string; description: string } | null>(null);
 
   useEffect(() => {
     api.getImport(importId).then(setImp).catch((e) => setError(e.message));
-    loadSets();
-  }, [importId, loadSets]);
+    loadSets().then((s) => {
+      if (!initialSetId) return;
+      const found = s.find((x) => x.id === initialSetId);
+      if (found) {
+        setCurrentSet(found);
+        setCriteria(found.criteria);
+        setParams(found.criteria.params ?? {});
+        if (isSummaryActive(found.criteria.summary)) setViewMode('summary');
+      } else setError('That incentive could not be found.');
+    });
+  }, [importId, initialSetId, loadSets]);
 
   const summaryOn = isSummaryActive(criteria.summary);
   const mode: 'detail' | 'summary' = viewMode === 'summary' && summaryOn ? 'summary' : 'detail';
@@ -172,13 +184,19 @@ export function ImportView({ importId, onDeleted, onRenamed }: Props) {
   const toggleSort = (field: string) =>
     setSort((s) => (s?.field !== field ? { field, dir: 'asc' } : s.dir === 'asc' ? { field, dir: 'desc' } : undefined));
 
-  const save = async (asNew: boolean) => {
-    const name = window.prompt('Criteria set name', currentSet && !asNew ? currentSet.name : '');
-    if (!name) return;
+  const save = (asNew: boolean) =>
+    setSaveDialog({
+      asNew,
+      name: currentSet && !asNew ? currentSet.name : '',
+      description: currentSet && !asNew ? (currentSet.description ?? '') : '',
+    });
+  const confirmSave = async () => {
+    if (!saveDialog || !saveDialog.name.trim()) return;
     try {
-      const body = { name, importId, criteria };
-      const saved = currentSet && !asNew ? await api.updateCriteriaSet(currentSet.id, body) : await api.createCriteriaSet(body);
+      const body = { name: saveDialog.name.trim(), description: saveDialog.description.trim() || null, importId, criteria };
+      const saved = currentSet && !saveDialog.asNew ? await api.updateCriteriaSet(currentSet.id, body) : await api.createCriteriaSet(body);
       setCurrentSet(saved);
+      setSaveDialog(null);
       await loadSets();
     } catch (e) {
       setError((e as Error).message);
@@ -297,15 +315,15 @@ export function ImportView({ importId, onDeleted, onRenamed }: Props) {
         {panelOpen && (
           <div className="flex w-[30rem] shrink-0 flex-col border-r border-slate-200 bg-slate-50">
             <div className="flex items-center gap-2 border-b border-slate-200 bg-white px-3 py-2 text-xs">
-              <select className="select flex-1" value={currentSet?.id ?? ''} onChange={(e) => loadSet(e.target.value)}>
-                <option value="">— unsaved criteria —</option>
+              <select className="select flex-1" value={currentSet?.id ?? ''} onChange={(e) => loadSet(e.target.value)} title="Saved incentives for this import">
+                <option value="">— unsaved incentive —</option>
                 {sets.map((s) => (
                   <option key={s.id} value={s.id}>
                     {s.name} (v{s.version})
                   </option>
                 ))}
               </select>
-              <button className="btn btn-sm" onClick={() => save(false)} title={currentSet ? 'Save new version' : 'Save'}>
+              <button className="btn btn-sm btn-primary" onClick={() => save(false)} title={currentSet ? 'Save a new version of this incentive' : 'Save as an incentive'}>
                 Save
               </button>
               {currentSet && (
@@ -316,7 +334,7 @@ export function ImportView({ importId, onDeleted, onRenamed }: Props) {
                   <button
                     className="btn btn-sm text-rose-600"
                     onClick={async () => {
-                      if (!window.confirm(`Delete criteria set "${currentSet.name}"?`)) return;
+                      if (!window.confirm(`Delete incentive "${currentSet.name}"?`)) return;
                       await api.deleteCriteriaSet(currentSet.id);
                       setCurrentSet(null);
                       loadSets();
@@ -535,6 +553,41 @@ export function ImportView({ importId, onDeleted, onRenamed }: Props) {
           )}
         </div>
       </div>
+
+      {/* Save incentive dialog */}
+      {saveDialog && (
+        <div className="fixed inset-0 z-20 flex items-center justify-center bg-black/30" onClick={() => setSaveDialog(null)}>
+          <div className="w-[28rem] rounded-lg bg-white p-4 shadow-xl" onClick={(e) => e.stopPropagation()}>
+            <div className="mb-3 text-sm font-semibold">{saveDialog.asNew || !currentSet ? 'Save incentive' : `Save new version of “${currentSet.name}”`}</div>
+            <label className="block text-xs text-slate-600">
+              Name
+              <input
+                className="input mt-1 block w-full"
+                autoFocus
+                value={saveDialog.name}
+                placeholder="e.g. Q4 New Business commissions"
+                onChange={(e) => setSaveDialog({ ...saveDialog, name: e.target.value })}
+                onKeyDown={(e) => e.key === 'Enter' && confirmSave()}
+              />
+            </label>
+            <label className="mt-2 block text-xs text-slate-600">
+              Description <span className="text-slate-400">(optional)</span>
+              <textarea className="input mt-1 block h-20 w-full" value={saveDialog.description} onChange={(e) => setSaveDialog({ ...saveDialog, description: e.target.value })} />
+            </label>
+            <div className="mt-2 text-[11px] text-slate-400">
+              Saves the period, filters, summary, drill-down columns and calculations for <strong>{imp.name}</strong>. Find it later under Incentives.
+            </div>
+            <div className="mt-3 flex justify-end gap-2">
+              <button className="btn" onClick={() => setSaveDialog(null)}>
+                Cancel
+              </button>
+              <button className="btn btn-primary" disabled={!saveDialog.name.trim()} onClick={confirmSave}>
+                Save
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Explain modal */}
       {explain && (

@@ -3,7 +3,7 @@ import { desc, eq } from 'drizzle-orm';
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import type { Db } from '../db/client.js';
-import { auditLog, criteriaSets, criteriaVersions } from '../db/schema.js';
+import { auditLog, criteriaSets, criteriaVersions, imports } from '../db/schema.js';
 
 const upsertSchema = z.object({
   name: z.string().min(1),
@@ -15,8 +15,21 @@ const upsertSchema = z.object({
 export async function criteriaRoutes(app: FastifyInstance, db: Db) {
   app.get('/api/criteria-sets', async (req) => {
     const { importId } = req.query as { importId?: string };
-    const q = db.select().from(criteriaSets).orderBy(desc(criteriaSets.updatedAt));
-    const rows = await q;
+    const rows = await db
+      .select({
+        id: criteriaSets.id,
+        name: criteriaSets.name,
+        description: criteriaSets.description,
+        importId: criteriaSets.importId,
+        importName: imports.name,
+        criteria: criteriaSets.criteria,
+        version: criteriaSets.version,
+        createdAt: criteriaSets.createdAt,
+        updatedAt: criteriaSets.updatedAt,
+      })
+      .from(criteriaSets)
+      .leftJoin(imports, eq(criteriaSets.importId, imports.id))
+      .orderBy(desc(criteriaSets.updatedAt));
     // Show sets for this import plus any not tied to an import.
     return importId ? rows.filter((r) => !r.importId || r.importId === importId) : rows;
   });

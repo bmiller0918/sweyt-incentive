@@ -20,6 +20,8 @@ export interface ResolvedPlan {
 
 export interface EmployeeInfo {
   name: string;
+  /** active | terminated | parental_leave | ... — exposed as employee.status */
+  status?: string;
   baseSalary: number | null;
   /** label -> amount */
   bonuses: Record<string, number>;
@@ -145,6 +147,7 @@ export function repScope(r: ResolvedRep | null): Record<string, Record<string, u
   const bonusTotal = Object.values(r.employee.bonuses).reduce((a, b) => a + b, 0);
   out.employee = {
     name: r.employee.name,
+    status: r.employee.status ?? 'active',
     base_salary: r.employee.baseSalary,
     bonus_total: bonusTotal,
     ...Object.fromEntries(Object.entries(r.employee.bonuses).map(([label, amt]) => [scopeKey(label), amt])),
@@ -202,6 +205,6 @@ export function makePlanLookup(employees: EmployeeRecord[], asOf: string): PlanL
       const slot = scopeKey(a.slot) || DEFAULT_SLOT;
       if (!(slot in plans)) plans[slot] = { planName: a.planName, params: a.params, tiers: a.tiers };
     }
-    return { employee: { name: e.name, baseSalary: e.baseSalary, bonuses: e.bonuses }, plans };
+    return { employee: { name: e.name, status: e.status, baseSalary: e.baseSalary, bonuses: e.bonuses }, plans };
   };
 }

@@ -17,6 +17,8 @@ const planSchema = z.object({
   effectiveTo: dateStr,
 });
 
+export const EMPLOYEE_STATUSES = ['active', 'terminated', 'parental_leave', 'medical_leave', 'leave', 'inactive'] as const;
+
 const employeeSchema = z.object({
   name: z.string().min(1),
   title: z.string().nullable().optional(),
@@ -25,7 +27,8 @@ const employeeSchema = z.object({
   bonuses: z.array(z.object({ label: z.string().min(1), amount: z.number() })).default([]),
   notes: z.string().nullable().optional(),
   startDate: dateStr,
-  endDate: dateStr,
+  status: z.enum(EMPLOYEE_STATUSES).default('active'),
+  statusDate: dateStr,
 });
 
 const assignmentSchema = z.object({
@@ -68,6 +71,7 @@ export async function loadPlanLookup(db: Db, asOf: string): Promise<PlanLookup> 
   }
   const records: EmployeeRecord[] = emps.map((e) => ({
     name: e.name,
+    status: e.status,
     baseSalary: e.baseSalary,
     bonuses: Object.fromEntries(e.bonuses.map((b) => [b.label, b.amount])),
     assignments: byEmployee.get(e.id) ?? [],

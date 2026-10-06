@@ -1,8 +1,15 @@
 import { scopeKey } from '@commissions/shared';
 import { useCallback, useEffect, useState } from 'react';
-import { api, type CompPlan, type Employee, type EmployeeInput, type ImportSummary } from '../api';
+import { EMPLOYEE_STATUSES, STATUS_LABELS, api, type CompPlan, type Employee, type EmployeeInput, type ImportSummary } from '../api';
 
-const emptyInput = (): EmployeeInput => ({ name: '', title: '', email: '', baseSalary: null, bonuses: [], notes: '', startDate: null, endDate: null });
+const emptyInput = (): EmployeeInput => ({ name: '', title: '', email: '', baseSalary: null, bonuses: [], notes: '', startDate: null, status: 'active', statusDate: null });
+
+const STATUS_STYLE: Record<string, string> = {
+  active: 'bg-emerald-100 text-emerald-800',
+  terminated: 'bg-rose-100 text-rose-800',
+  inactive: 'bg-slate-200 text-slate-600',
+};
+const statusStyle = (s: string) => STATUS_STYLE[s] ?? 'bg-amber-100 text-amber-800';
 
 function parseMoney(s: string): number | null {
   const t = s.trim().replace(/[$,\s]/g, '');
@@ -50,7 +57,17 @@ export function EmployeesView() {
       return;
     }
     setSelectedId(e.id);
-    setDraft({ name: e.name, title: e.title ?? '', email: e.email ?? '', baseSalary: e.baseSalary, bonuses: e.bonuses, notes: e.notes ?? '', startDate: e.startDate, endDate: e.endDate });
+    setDraft({
+      name: e.name,
+      title: e.title ?? '',
+      email: e.email ?? '',
+      baseSalary: e.baseSalary,
+      bonuses: e.bonuses,
+      notes: e.notes ?? '',
+      startDate: e.startDate,
+      status: e.status ?? 'active',
+      statusDate: e.statusDate,
+    });
     setSalaryText(e.baseSalary == null ? '' : String(e.baseSalary));
     setBonusRows(e.bonuses.map((b) => ({ label: b.label, amount: String(b.amount) })));
   };
@@ -111,7 +128,10 @@ export function EmployeesView() {
               onClick={() => select(e)}
               className={`block w-full rounded-md px-2 py-1.5 text-left text-sm hover:bg-slate-100 ${selectedId === e.id ? 'bg-indigo-50 text-indigo-700' : 'text-slate-700'}`}
             >
-              <div className="truncate font-medium">{e.name}</div>
+              <div className="flex items-center gap-1">
+                <span className="truncate font-medium">{e.name}</span>
+                {e.status !== 'active' && <span className={`rounded px-1 text-[10px] ${statusStyle(e.status)}`}>{STATUS_LABELS[e.status] ?? e.status}</span>}
+              </div>
               <div className="truncate text-xs text-slate-400">
                 {e.assignments.length ? e.assignments.map((a) => a.planName).join(' + ') : 'no plan'}
                 {e.baseSalary != null ? ` · ${money(e.baseSalary)}` : ''}
@@ -167,10 +187,22 @@ export function EmployeesView() {
                 Start date
                 <input type="date" className="input mt-1 block w-full" value={draft.startDate ?? ''} onChange={(e) => setDraft({ ...draft, startDate: e.target.value || null })} />
               </label>
-              <label className="text-slate-600">
-                End date
-                <input type="date" className="input mt-1 block w-full" value={draft.endDate ?? ''} onChange={(e) => setDraft({ ...draft, endDate: e.target.value || null })} />
-              </label>
+              <div className="grid grid-cols-2 gap-2">
+                <label className="text-slate-600">
+                  Status <span className="text-slate-400">(employee.status)</span>
+                  <select className="select mt-1 block w-full" value={draft.status} onChange={(e) => setDraft({ ...draft, status: e.target.value as EmployeeInput['status'] })}>
+                    {EMPLOYEE_STATUSES.map((s) => (
+                      <option key={s} value={s}>
+                        {STATUS_LABELS[s]}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <label className="text-slate-600">
+                  {draft.status === 'terminated' ? 'Termination date' : draft.status === 'active' ? 'Since' : 'Leave started'}
+                  <input type="date" className="input mt-1 block w-full" value={draft.statusDate ?? ''} onChange={(e) => setDraft({ ...draft, statusDate: e.target.value || null })} />
+                </label>
+              </div>
               <label className="col-span-2 text-slate-600">
                 Notes
                 <input className="input mt-1 block w-full" value={draft.notes ?? ''} onChange={(e) => setDraft({ ...draft, notes: e.target.value })} />

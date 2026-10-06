@@ -80,20 +80,35 @@ export interface Employee {
   bonuses: { label: string; amount: number }[];
   notes: string | null;
   startDate: string | null;
-  endDate: string | null;
+  status: EmployeeStatus;
+  statusDate: string | null;
   assignments: PlanAssignment[];
   updatedAt: string;
 }
 
+export const EMPLOYEE_STATUSES = ['active', 'terminated', 'parental_leave', 'medical_leave', 'leave', 'inactive'] as const;
+export type EmployeeStatus = (typeof EMPLOYEE_STATUSES)[number];
+export const STATUS_LABELS: Record<EmployeeStatus, string> = {
+  active: 'Active',
+  terminated: 'Terminated',
+  parental_leave: 'Parental leave',
+  medical_leave: 'Medical leave',
+  leave: 'Other leave',
+  inactive: 'Inactive',
+};
+
 export type EmployeeInput = Omit<Employee, 'id' | 'assignments' | 'updatedAt'>;
 
+/** A saved incentive: the whole filter → summarize → calculate pipeline for an import. */
 export interface CriteriaSet {
   id: string;
   name: string;
   description: string | null;
   importId: string | null;
+  importName?: string | null;
   criteria: Criteria;
   version: number;
+  createdAt?: string;
   updatedAt: string;
 }
 
@@ -188,9 +203,9 @@ export const api = {
   },
   listCriteriaSets: (importId?: string) =>
     request<CriteriaSet[]>(`/api/criteria-sets${importId ? `?importId=${importId}` : ''}`),
-  createCriteriaSet: (body: { name: string; description?: string; importId?: string | null; criteria: Criteria }) =>
+  createCriteriaSet: (body: { name: string; description?: string | null; importId?: string | null; criteria: Criteria }) =>
     request<CriteriaSet>('/api/criteria-sets', json('POST', body)),
-  updateCriteriaSet: (id: string, body: { name: string; description?: string; importId?: string | null; criteria: Criteria }) =>
+  updateCriteriaSet: (id: string, body: { name: string; description?: string | null; importId?: string | null; criteria: Criteria }) =>
     request<CriteriaSet>(`/api/criteria-sets/${id}`, json('PUT', body)),
   deleteCriteriaSet: (id: string) => request<void>(`/api/criteria-sets/${id}`, { method: 'DELETE' }),
 

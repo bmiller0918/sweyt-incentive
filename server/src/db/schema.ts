@@ -92,7 +92,12 @@ export const employees = pgTable(
     bonuses: jsonb('bonuses').$type<{ label: string; amount: number }[]>().notNull().default([]),
     notes: text('notes'),
     startDate: text('start_date'),
+    /** Kept for history; the UI uses status + statusDate instead. */
     endDate: text('end_date'),
+    /** active | terminated | parental_leave | medical_leave | leave | inactive */
+    status: text('status').notNull().default('active'),
+    /** When the current status began (e.g. termination date). */
+    statusDate: text('status_date'),
   },
   (t) => [index('employees_name_idx').on(t.name)],
 );

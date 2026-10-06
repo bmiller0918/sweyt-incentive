@@ -38,7 +38,7 @@ const employees: EmployeeRecord[] = [
       },
     ],
   },
-  { name: 'Bob', baseSalary: null, bonuses: {}, assignments: [{ slot: 'plan', planName: 'SMB', params: { rate: 0.1, quota: 30000, accel: 0.15 }, effectiveFrom: null, effectiveTo: null }] },
+  { name: 'Bob', status: 'terminated', baseSalary: null, bonuses: {}, assignments: [{ slot: 'plan', planName: 'SMB', params: { rate: 0.1, quota: 30000, accel: 0.15 }, effectiveFrom: null, effectiveTo: null }] },
   { name: 'Dave', baseSalary: 50000, bonuses: {}, assignments: [] },
 ];
 
@@ -96,13 +96,14 @@ describe('applyCalc', () => {
           { id: 'b', label: 'Spiff', formula: 'TIER([Won], "spiff")' },
           { id: 'c', label: 'OTE', formula: 'employee.base_salary + [Commission] + employee.bonus_total' },
           { id: 'd', label: 'Q4 bonus', formula: 'employee.q4_spiff_bonus' },
+          { id: 'e', label: 'Payable', formula: 'IF(employee.status = "active", [Commission], 0)' },
         ],
       },
       lookup,
     );
-    expect(r.columns.map((c) => c.name)).toEqual(['Rep', 'Won', 'Plan', 'Commission', 'Spiff', 'OTE', 'Q4 bonus']);
-    expect(r.raw[0]).toEqual({ Rep: 'Alice', Won: '50000', Plan: 'Enterprise + Q4 SPIFF (spiff)', Commission: '6800', Spiff: '1500', OTE: '99300', 'Q4 bonus': '2500' });
-    expect(r.raw[1]).toEqual({ Rep: 'bob', Won: '20000', Plan: 'SMB', Commission: '2000', Spiff: '', OTE: '', 'Q4 bonus': '' });
+    expect(r.columns.map((c) => c.name)).toEqual(['Rep', 'Won', 'Plan', 'Commission', 'Spiff', 'OTE', 'Q4 bonus', 'Payable']);
+    expect(r.raw[0]).toEqual({ Rep: 'Alice', Won: '50000', Plan: 'Enterprise + Q4 SPIFF (spiff)', Commission: '6800', Spiff: '1500', OTE: '99300', 'Q4 bonus': '2500', Payable: '6800' });
+    expect(r.raw[1]).toEqual({ Rep: 'bob', Won: '20000', Plan: 'SMB', Commission: '2000', Spiff: '', OTE: '', 'Q4 bonus': '', Payable: '0' });
     // Carol has no employee record: everything blank.
     expect(r.raw[2].Plan).toBe('');
     expect(r.raw[2].Commission).toBe('');

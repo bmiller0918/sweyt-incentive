@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { api, type ImportSummary } from './api';
 import { CompPlansView } from './components/CompPlansView';
 import { EmployeesView } from './components/EmployeesView';
+import { IncentivesView } from './components/IncentivesView';
 import { ImportView } from './components/ImportView';
 import { UploadFlow } from './components/UploadFlow';
 
@@ -9,7 +10,9 @@ export default function App() {
   const [imports, setImports] = useState<ImportSummary[]>([]);
   const [selected, setSelected] = useState<string | null>(null);
   const [uploading, setUploading] = useState(false);
-  const [page, setPage] = useState<'imports' | 'plans' | 'employees'>('imports');
+  const [page, setPage] = useState<'imports' | 'plans' | 'employees' | 'incentives'>('imports');
+  /** Incentive to load when an import is opened from the register. */
+  const [openSetId, setOpenSetId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   const refresh = useCallback(async () => {
@@ -71,6 +74,13 @@ export default function App() {
         </nav>
         <div className="space-y-1 border-t border-slate-200 p-2">
           <button
+            onClick={() => setPage('incentives')}
+            className={`block w-full rounded-md px-2 py-1.5 text-left text-sm hover:bg-slate-100 ${page === 'incentives' ? 'bg-indigo-50 text-indigo-700' : 'text-slate-700'}`}
+          >
+            <div className="font-medium">Incentives</div>
+            <div className="text-xs text-slate-400">saved filters, summaries, calculations</div>
+          </button>
+          <button
             onClick={() => setPage('employees')}
             className={`block w-full rounded-md px-2 py-1.5 text-left text-sm hover:bg-slate-100 ${page === 'employees' ? 'bg-indigo-50 text-indigo-700' : 'text-slate-700'}`}
           >
@@ -100,6 +110,15 @@ export default function App() {
           <CompPlansView />
         ) : page === 'employees' ? (
           <EmployeesView />
+        ) : page === 'incentives' ? (
+          <IncentivesView
+            onOpen={(importId, setId) => {
+              setOpenSetId(setId);
+              setSelected(importId);
+              setUploading(false);
+              setPage('imports');
+            }}
+          />
         ) : uploading || !selected ? (
           <UploadFlow
             onDone={async (imp) => {
@@ -111,8 +130,9 @@ export default function App() {
           />
         ) : (
           <ImportView
-            key={selected}
+            key={`${selected}:${openSetId ?? ''}`}
             importId={selected}
+            initialSetId={openSetId}
             onDeleted={async () => {
               const list = await refresh();
               setSelected(list[0]?.id ?? null);
