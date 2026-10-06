@@ -1,0 +1,1 @@
+DROP TABLE "rep_plan_assignments" CASCADE;

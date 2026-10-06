@@ -1,8 +1,8 @@
 import { emptyTiers, tierPayout, type PlanTiers } from '@commissions/shared';
 import { useCallback, useEffect, useState } from 'react';
-import { api, type CompPlan, type ImportSummary, type PlanParams, type RepAssignment } from '../api';
+import { api, type CompPlan, type PlanParams } from '../api';
 
-type Draft = Omit<CompPlan, 'id' | 'updatedAt' | 'repCount'>;
+type Draft = Omit<CompPlan, 'id' | 'updatedAt' | 'employeeCount'>;
 
 const emptyDraft = (): Draft => ({ name: '', description: '', params: { rate: 0.1, quota: 100000 }, tiers: emptyTiers(), effectiveFrom: null, effectiveTo: null });
 
@@ -30,7 +30,6 @@ function parseParam(s: string): PlanParams[string] {
 
 export function CompPlansView() {
   const [plans, setPlans] = useState<CompPlan[]>([]);
-  const [assignments, setAssignments] = useState<RepAssignment[]>([]);
   const [selectedId, setSelectedId] = useState<string | 'new' | null>(null);
   const [draft, setDraft] = useState<Draft>(emptyDraft());
   const [paramRows, setParamRows] = useState<{ key: string; value: string }[]>([]);
@@ -38,9 +37,8 @@ export function CompPlansView() {
   const [saving, setSaving] = useState(false);
 
   const refresh = useCallback(async () => {
-    const [p, a] = await Promise.all([api.listPlans(), api.listAssignments()]);
+    const p = await api.listPlans();
     setPlans(p);
-    setAssignments(a);
     return p;
   }, []);
 
@@ -87,14 +85,12 @@ export function CompPlansView() {
   const remove = async () => {
     if (!selectedId || selectedId === 'new') return;
     const p = plans.find((x) => x.id === selectedId);
-    if (!p || !window.confirm(`Delete plan "${p.name}" and its ${p.repCount ?? 0} rep assignment(s)?`)) return;
+    if (!p || !window.confirm(`Delete plan "${p.name}"? ${p.employeeCount ?? 0} employee(s) are assigned to it.`)) return;
     await api.deletePlan(selectedId);
     const list = await refresh();
     if (list.length) select(list[0]);
     else select('new');
   };
-
-  const planAssignments = assignments.filter((a) => a.compPlanId === selectedId);
 
   return (
     <div className="flex h-full">
@@ -115,7 +111,8 @@ export function CompPlansView() {
             >
               <div className="truncate font-medium">{p.name}</div>
               <div className="text-xs text-slate-400">
-                {p.repCount ?? 0} rep{p.repCount === 1 ? '' : 's'} · {Object.keys(p.params).length} param{Object.keys(p.params).length === 1 ? '' : 's'}
+                {p.employeeCount ?? 0} employee{p.employeeCount === 1 ? '' : 's'} · {Object.keys(p.params).length} param{Object.keys(p.params).length === 1 ? '' : 's'}
+                {p.tiers?.rows.length ? ` · ${p.tiers.rows.length} tiers` : ''}
               </div>
             </button>
           ))}
@@ -208,7 +205,9 @@ export function CompPlansView() {
           </section>
 
           {selectedId && selectedId !== 'new' && (
-            <AssignmentsSection planId={selectedId} planName={draft.name} assignments={planAssignments} plans={plans} onChanged={refresh} onError={setError} />
+            <p className="text-xs text-slate-500">
+              {plans.find((p) => p.id === selectedId)?.employeeCount ?? 0} employee(s) are on this plan. Assign plans to people under <strong>Employees</strong>.
+            </p>
           )}
         </div>
       </div>
@@ -296,182 +295,3 @@ function TierEditor({ tiers, quota, onChange }: { tiers: PlanTiers; quota: numbe
   );
 }
 
-// -- Rep assignments ---------------------------------------------------------
-
-interface AssignProps {
-  planId: string;
-  planName: string;
-  assignments: RepAssignment[];
-  plans: CompPlan[];
-  onChanged: () => Promise<unknown>;
-  onError: (m: string) => void;
-}
-
-function AssignmentsSection({ planId, planName, assignments, plans, onChanged, onError }: AssignProps) {
-  const [names, setNames] = useState('');
-  const [imports, setImports] = useState<ImportSummary[]>([]);
-  const [pickImport, setPickImport] = useState('');
-  const [pickColumn, setPickColumn] = useState('');
-  const [columns, setColumns] = useState<string[]>([]);
-  const [candidates, setCandidates] = useState<{ value: string; count: number }[]>([]);
-  const [ticked, setTicked] = useState<Set<string>>(new Set());
-
-  useEffect(() => {
-    api.listImports().then(setImports).catch(() => {});
-  }, []);
-  useEffect(() => {
-    if (!pickImport) return;
-    api.getImport(pickImport).then((imp) => {
-      const names = imp.columns.map((c) => c.name);
-      setColumns(names);
-      const guess = names.find((n) => /rep|owner|sales|employee|name/i.test(n)) ?? names[0] ?? '';
-      setPickColumn(guess);
-    });
-  }, [pickImport]);
-  useEffect(() => {
-    if (!pickImport || !pickColumn) return;
-    api.values(pickImport, { field: pickColumn, limit: 500 }).then((r) => {
-      setCandidates(r.values.filter((v) => v.value !== ''));
-      setTicked(new Set());
-    });
-  }, [pickImport, pickColumn]);
-
-  const assigned = new Set(assignments.map((a) => a.repName.toLowerCase()));
-
-  const addTyped = async () => {
-    const list = names
-      .split(/[\n,]/)
-      .map((s) => s.trim())
-      .filter(Boolean);
-    if (!list.length) return;
-    try {
-      await api.bulkAssign({ compPlanId: planId, repNames: list });
-      setNames('');
-      await onChanged();
-    } catch (e) {
-      onError((e as Error).message);
-    }
-  };
-  const addTicked = async () => {
-    if (!ticked.size) return;
-    try {
-      await api.bulkAssign({ compPlanId: planId, repNames: [...ticked] });
-      setTicked(new Set());
-      await onChanged();
-    } catch (e) {
-      onError((e as Error).message);
-    }
-  };
-
-  return (
-    <section className="space-y-3">
-      <h3 className="text-sm font-semibold">
-        Reps on {planName || 'this plan'} <span className="font-normal text-slate-400">({assignments.length})</span>
-      </h3>
-      <p className="text-xs text-slate-500">
-        Names must match the rep column in your data (case-insensitive). Effective dates are optional; leave blank for always.
-      </p>
-
-      <table className="w-full text-xs">
-        <tbody>
-          {assignments.map((a) => (
-            <tr key={a.id} className="border-b border-slate-100">
-              <td className="py-1 font-medium">{a.repName}</td>
-              <td className="py-1 text-slate-500">
-                <input
-                  type="date"
-                  className="input"
-                  value={a.effectiveFrom ?? ''}
-                  onChange={(e) => api.updateAssignment(a.id, { ...a, effectiveFrom: e.target.value || null }).then(onChanged)}
-                />
-                <span className="mx-1">→</span>
-                <input
-                  type="date"
-                  className="input"
-                  value={a.effectiveTo ?? ''}
-                  onChange={(e) => api.updateAssignment(a.id, { ...a, effectiveTo: e.target.value || null }).then(onChanged)}
-                />
-              </td>
-              <td className="py-1">
-                <select className="select" value={a.compPlanId} onChange={(e) => api.updateAssignment(a.id, { ...a, compPlanId: e.target.value }).then(onChanged)}>
-                  {plans.map((p) => (
-                    <option key={p.id} value={p.id}>
-                      {p.name}
-                    </option>
-                  ))}
-                </select>
-              </td>
-              <td className="py-1 text-right">
-                <button className="text-slate-400 hover:text-rose-600" onClick={() => api.deleteAssignment(a.id).then(onChanged)}>
-                  ✕
-                </button>
-              </td>
-            </tr>
-          ))}
-          {assignments.length === 0 && (
-            <tr>
-              <td className="py-2 text-slate-400">No reps assigned yet.</td>
-            </tr>
-          )}
-        </tbody>
-      </table>
-
-      <div className="grid grid-cols-2 gap-4">
-        <div className="rounded-lg border border-slate-200 bg-white p-3 text-xs">
-          <div className="mb-1 font-semibold text-slate-600">Add reps by name</div>
-          <textarea className="input block h-20 w-full" placeholder={'One per line, or comma-separated'} value={names} onChange={(e) => setNames(e.target.value)} />
-          <button className="btn btn-sm mt-2" onClick={addTyped} disabled={!names.trim()}>
-            Add
-          </button>
-        </div>
-        <div className="rounded-lg border border-slate-200 bg-white p-3 text-xs">
-          <div className="mb-1 font-semibold text-slate-600">Pick reps from an import</div>
-          <div className="flex gap-1">
-            <select className="select flex-1" value={pickImport} onChange={(e) => setPickImport(e.target.value)}>
-              <option value="">— import —</option>
-              {imports.map((i) => (
-                <option key={i.id} value={i.id}>
-                  {i.name}
-                </option>
-              ))}
-            </select>
-            <select className="select flex-1" value={pickColumn} onChange={(e) => setPickColumn(e.target.value)} disabled={!pickImport}>
-              {columns.map((c) => (
-                <option key={c} value={c}>
-                  {c}
-                </option>
-              ))}
-            </select>
-          </div>
-          <div className="mt-2 max-h-40 overflow-auto">
-            {candidates.map((c) => {
-              const done = assigned.has(c.value.toLowerCase());
-              return (
-                <label key={c.value} className={`flex items-center gap-2 py-0.5 ${done ? 'text-slate-400' : ''}`}>
-                  <input
-                    type="checkbox"
-                    disabled={done}
-                    checked={done || ticked.has(c.value)}
-                    onChange={() =>
-                      setTicked((t) => {
-                        const n = new Set(t);
-                        if (n.has(c.value)) n.delete(c.value);
-                        else n.add(c.value);
-                        return n;
-                      })
-                    }
-                  />
-                  <span className="flex-1 truncate">{c.value}</span>
-                  <span className="text-slate-400">{done ? 'assigned' : c.count}</span>
-                </label>
-              );
-            })}
-          </div>
-          <button className="btn btn-sm mt-2" onClick={addTicked} disabled={!ticked.size}>
-            Add {ticked.size || ''} selected
-          </button>
-        </div>
-      </div>
-    </section>
-  );
-}

@@ -18,10 +18,34 @@ export interface ResolvedPlan {
   tiers?: PlanTiers;
 }
 
-/** Finds the plan in force for a rep name (already trimmed), or null. */
-export type PlanLookup = (repName: string) => ResolvedPlan | null;
+export interface EmployeeInfo {
+  name: string;
+  baseSalary: number | null;
+  /** label -> amount */
+  bonuses: Record<string, number>;
+}
+
+/** What a formula can see for one rep: the employee record and a plan per slot. */
+export interface ResolvedRep {
+  employee: EmployeeInfo;
+  /** slot name ("plan", "spiff", ...) -> the plan in force for that slot. */
+  plans: Record<string, ResolvedPlan>;
+}
+
+/** Finds the employee + plans in force for a rep name (already trimmed), or null. */
+export type PlanLookup = (repName: string) => ResolvedRep | null;
 
 export const PLAN_COLUMN = 'Plan';
+export const DEFAULT_SLOT = 'plan';
+
+/** "Q4 SPIFF bonus" -> "q4_spiff_bonus", so bonuses are addressable as employee.<key>. */
+export function scopeKey(label: string): string {
+  return label
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '_')
+    .replace(/^_+|_+$/g, '');
+}
 
 export interface CalcResult extends SummaryResult {
   /** Per-item compile errors, keyed by item id. */
@@ -53,21 +77,27 @@ export function applyCalc(res: SummaryResult, calc: CalcSpec, lookup: PlanLookup
   const errors: Record<string, string> = {};
   let noPlan = 0;
 
-  // Resolve each row's plan once.
-  const plans: (ResolvedPlan | null)[] = res.typed.map((row, i) => {
+  // Resolve each row's employee + plans once.
+  const reps: (ResolvedRep | null)[] = res.typed.map((_, i) => {
     if (!calc.repField || !lookup) return null;
     const rep = String(raw[i][calc.repField] ?? '').trim();
-    const p = rep ? lookup(rep) : null;
-    if (!p) noPlan++;
-    return p;
+    const r = rep ? lookup(rep) : null;
+    if (!r || Object.keys(r.plans).length === 0) noPlan++;
+    return r;
   });
 
   if (calc.repField && lookup) {
     const name = unique(PLAN_COLUMN, taken);
     columns.push({ name, index: columns.length, type: 'text', inferredType: 'text' });
-    plans.forEach((p, i) => {
-      raw[i][name] = p?.planName ?? '';
-      typed[i][name] = p?.planName ?? null;
+    reps.forEach((r, i) => {
+      const label = r
+        ? Object.entries(r.plans)
+            .sort(([a], [b]) => (a === DEFAULT_SLOT ? -1 : b === DEFAULT_SLOT ? 1 : a.localeCompare(b)))
+            .map(([slot, p]) => (slot === DEFAULT_SLOT ? p.planName : `${p.planName} (${slot})`))
+            .join(' + ')
+        : '';
+      raw[i][name] = label;
+      typed[i][name] = label || null;
     });
   }
 
@@ -89,8 +119,7 @@ export function applyCalc(res: SummaryResult, calc: CalcSpec, lookup: PlanLookup
   for (const { fn, name } of compiled) {
     const values: FormulaValue[] = typed.map((row, i) => {
       if (!fn) return null;
-      const p = plans[i];
-      const scope: Scope = { ...(row as Record<string, FormulaValue>), plan: p ? { ...p.params, tiers: p.tiers } : {} };
+      const scope: Scope = { ...(row as Record<string, FormulaValue>), ...repScope(reps[i]) };
       try {
         return fn.evaluate(scope);
       } catch {
@@ -107,6 +136,21 @@ export function applyCalc(res: SummaryResult, calc: CalcSpec, lookup: PlanLookup
   }
 
   return { columns, raw, typed, groupCount: res.groupCount, errors, noPlan };
+}
+
+/** Namespaces a formula can reference for one rep: employee.*, plan.*, <slot>.* */
+export function repScope(r: ResolvedRep | null): Record<string, Record<string, unknown>> {
+  const out: Record<string, Record<string, unknown>> = { plan: {}, employee: {} };
+  if (!r) return out;
+  const bonusTotal = Object.values(r.employee.bonuses).reduce((a, b) => a + b, 0);
+  out.employee = {
+    name: r.employee.name,
+    base_salary: r.employee.baseSalary,
+    bonus_total: bonusTotal,
+    ...Object.fromEntries(Object.entries(r.employee.bonuses).map(([label, amt]) => [scopeKey(label), amt])),
+  };
+  for (const [slot, p] of Object.entries(r.plans)) out[slot] = { ...p.params, name: p.planName, tiers: p.tiers };
+  return out;
 }
 
 /**
@@ -129,28 +173,35 @@ export function asOfFromCriteria(criteria: { root: { children: CriteriaNode[] } 
   return toIso(today);
 }
 
+export interface EmployeeRecord extends EmployeeInfo {
+  assignments: {
+    slot: string;
+    planName: string;
+    params: PlanParams;
+    tiers?: PlanTiers;
+    effectiveFrom: string | null;
+    effectiveTo: string | null;
+  }[];
+}
+
 /**
- * Build a lookup from plan assignments. Rep names match case-insensitively
- * after trimming; when several assignments cover the as-of date, the one
- * with the latest start wins.
+ * Build a lookup from employees and their plan assignments. Names match
+ * case-insensitively after trimming. Per slot, when several assignments
+ * cover the as-of date, the one with the latest start wins.
  */
-export function makePlanLookup(
-  assignments: { repName: string; planName: string; params: PlanParams; tiers?: PlanTiers; effectiveFrom: string | null; effectiveTo: string | null }[],
-  asOf: string,
-): PlanLookup {
-  const byRep = new Map<string, typeof assignments>();
-  for (const a of assignments) {
-    const k = a.repName.trim().toLowerCase();
-    const list = byRep.get(k) ?? [];
-    list.push(a);
-    byRep.set(k, list);
-  }
+export function makePlanLookup(employees: EmployeeRecord[], asOf: string): PlanLookup {
+  const byName = new Map<string, EmployeeRecord>();
+  for (const e of employees) byName.set(e.name.trim().toLowerCase(), e);
   return (rep) => {
-    const list = byRep.get(rep.trim().toLowerCase());
-    if (!list) return null;
-    const live = list.filter((a) => (!a.effectiveFrom || a.effectiveFrom <= asOf) && (!a.effectiveTo || a.effectiveTo >= asOf));
-    if (!live.length) return null;
+    const e = byName.get(rep.trim().toLowerCase());
+    if (!e) return null;
+    const plans: Record<string, ResolvedPlan> = {};
+    const live = e.assignments.filter((a) => (!a.effectiveFrom || a.effectiveFrom <= asOf) && (!a.effectiveTo || a.effectiveTo >= asOf));
     live.sort((a, b) => (b.effectiveFrom ?? '').localeCompare(a.effectiveFrom ?? ''));
-    return { planName: live[0].planName, params: live[0].params, tiers: live[0].tiers };
+    for (const a of live) {
+      const slot = scopeKey(a.slot) || DEFAULT_SLOT;
+      if (!(slot in plans)) plans[slot] = { planName: a.planName, params: a.params, tiers: a.tiers };
+    }
+    return { employee: { name: e.name, baseSalary: e.baseSalary, bonuses: e.bonuses }, plans };
   };
 }

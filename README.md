@@ -15,8 +15,10 @@ Drag-and-drop CSV/Excel import with a NetSuite-style (and beyond) filter and cri
 - **Summarize** (stage 2): group by any columns, aggregates (sum / count / count distinct / avg / min / max) with custom labels. Toggle Detail / Summary; export either. A totals bar always shows sums of the filtered rows. (A HAVING filter on summary rows is supported by the engine and saved sets; its editor is hidden for now.)
 - **Drill-down**: expand any summary row to see the detail rows behind it — pick which columns to show and drag them into the order you want — with a subtotal, so you can audit how a number was built.
 - **Calculate** (stage 3): formulas over the summary rows — `[Sum of Amount] * 12%`, `IF([Won] > plan.quota, …)`, tiered payouts with `MIN`/`MAX` — using a safe expression language (`shared/src/formula.ts`: arithmetic, comparisons, AND/OR/NOT, IF, MIN, MAX, ROUND, ABS, COALESCE, FLOOR, CEIL, ISBLANK; `12%` literals; later rows can reference earlier results). Pick a **rep column** and each row looks up that rep's comp plan, exposing its parameters as `plan.rate`, `plan.quota`, etc., plus a `Plan` column. Rows whose rep has no plan are flagged.
-- **Comp plans**: named plans with free-form parameters (rate, quota, accelerator…), a **tier table** (from → rate rows; *marginal* or *whole-amount* mode; thresholds in dollars or as % of `plan.quota`), effective dates, and rep assignments (by the name that appears in the data, case-insensitive, with optional effective dates). Add reps by typing names or by ticking them from an import's column.
-- **Tiered payouts**: `TIER([Sum of Amount])` in Calculate applies the row's rep's tier table; `TIER_RATE(...)` returns the rate reached. "+ Tiered payout" adds both in one click.
+- **Comp plans**: named plans with free-form parameters (rate, quota, accelerator…), a **tier table** (from → rate rows; *marginal* or *whole-amount* mode; thresholds in dollars or as % of `plan.quota`), and effective dates.
+- **Employees**: the people who earn commission — name (as it appears in the data, matched case-insensitively), title, base salary, named bonuses, start/end dates — and their **plan assignments**. An employee can be on several plans at once, each in a **slot**: `plan` is the core plan, extras are `spiff`, `bonus`, etc. Assignments carry effective dates; the one in force at the end of the Period wins per slot. Add employees one at a time or tick names from an import column.
+- **Tiered payouts**: `TIER([Sum of Amount])` in Calculate applies the rep's core-plan tier table; `TIER([Sum of Amount], "spiff")` uses the plan in the `spiff` slot. `TIER_RATE(...)` returns the rate reached. "+ Tiered payout" adds both in one click.
+- **Formula scope per rep**: `plan.<param>`, `<slot>.<param>`, `employee.base_salary`, `employee.bonus_total`, and each bonus by label (`employee.car_allowance`). Missing values yield blank, never zero.
 - **Saved criteria sets** (filter + summary together = a reusable *measure*) with automatic version history and an audit log.
 - **Export** filtered rows to CSV or XLSX with formula-injection sanitising.
 - **Deploy**: single Docker image, `/health` endpoint, Railway config.
@@ -119,8 +121,9 @@ web/src/
 | POST   | `/api/imports/:id/explain`   | `{criteria, rowIndex}` → which conditions passed     |
 | POST   | `/api/imports/:id/export`    | `{criteria, format: csv|xlsx}` → file                |
 | CRUD   | `/api/criteria-sets[/:id]`   | saved criteria; `GET /:id/versions` for history      |
-| CRUD   | `/api/comp-plans[/:id]`      | plans with `params` (used as `plan.<key>` in formulas) |
-| CRUD   | `/api/rep-assignments[/:id]` | rep name → plan with effective dates; `POST /bulk` assigns many |
+| CRUD   | `/api/comp-plans[/:id]`      | plans with `params` and `tiers`                      |
+| CRUD   | `/api/employees[/:id]`       | employees with assignments; `POST /bulk` creates many by name |
+| POST   | `/api/employees/:id/assignments` | add a plan to an employee in a slot; `PUT`/`DELETE /api/assignments/:id` |
 
 ## Not yet built (planned)
 

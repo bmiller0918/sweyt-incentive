@@ -250,9 +250,9 @@ function lookup(name: string, scope: Scope): FormulaValue {
   return null;
 }
 
-/** The current row's plan tier table and quota, if the scope has them. */
-function planTiers(scope: Scope) {
-  const plan = scope.plan;
+/** A slot's (default "plan") tier table and quota, if the scope has them. */
+function planTiers(scope: Scope, slot: string) {
+  const plan = scope[slot];
   if (!plan || typeof plan !== 'object') return null;
   const parsed = planTiersSchema.safeParse((plan as Record<string, unknown>).tiers);
   if (!parsed.success || !parsed.data.rows.length) return null;
@@ -368,7 +368,8 @@ export function evaluateNode(n: Node, scope: Scope): FormulaValue {
         case 'TIER':
         case 'TIER_RATE': {
           const v = num(arg(0));
-          const t = planTiers(scope);
+          const slotArg = arg(1);
+          const t = planTiers(scope, typeof slotArg === 'string' && slotArg ? slotArg : 'plan');
           if (v === null || !t) return null;
           return fn === 'TIER' ? tierPayout(v, t.tiers, t.quota) : tierRate(v, t.tiers, t.quota);
         }
@@ -405,17 +406,17 @@ export interface CompiledFormula {
 
 /**
  * Parse and check a formula. `knownNames` are the column names the formula
- * may reference directly; `namespaces` (e.g. ["plan"]) may be referenced with
- * any key since their contents are only known at run time.
+ * may reference directly. Dotted references (plan.rate, spiff.rate,
+ * employee.base_salary) are namespace lookups whose contents are only known
+ * at run time, so they are always accepted and yield null when missing.
  */
-export function compileFormula(src: string, knownNames: string[], namespaces: string[] = ['plan']): CompiledFormula {
+export function compileFormula(src: string, knownNames: string[]): CompiledFormula {
   if (!src.trim()) throw new FormulaError('Formula is empty', 0);
   const node = parseFormula(src);
   const refs = formulaRefs(node);
   const lower = new Set(knownNames.map((k) => k.toLowerCase()));
   for (const r of refs) {
-    const ns = r.includes('.') ? r.slice(0, r.indexOf('.')) : null;
-    if (ns && namespaces.includes(ns)) continue;
+    if (r.includes('.')) continue;
     if (!lower.has(r.toLowerCase())) throw new FormulaError(`Unknown field "${r}"`, 0);
   }
   return { evaluate: (scope) => evaluateNode(node, scope), refs };

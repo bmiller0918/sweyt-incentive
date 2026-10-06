@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { applyCalc, asOfFromCriteria, makePlanLookup } from './calc.js';
+import { applyCalc, asOfFromCriteria, makePlanLookup, scopeKey, type EmployeeRecord } from './calc.js';
 import type { SummaryResult } from './summary.js';
 
 const summary: SummaryResult = {
@@ -20,26 +20,46 @@ const summary: SummaryResult = {
   groupCount: 3,
 };
 
-const lookup = makePlanLookup(
-  [
-    { repName: 'Alice', planName: 'Enterprise', params: { rate: 0.12, quota: 40000, accel: 0.2 }, effectiveFrom: '2025-01-01', effectiveTo: null },
-    { repName: 'Alice', planName: 'Old plan', params: { rate: 0.05 }, effectiveFrom: '2024-01-01', effectiveTo: '2024-12-31' },
-    { repName: 'Bob', planName: 'SMB', params: { rate: 0.1, quota: 30000, accel: 0.15 }, effectiveFrom: null, effectiveTo: null },
-  ],
-  '2025-11-15',
-);
+const employees: EmployeeRecord[] = [
+  {
+    name: 'Alice',
+    baseSalary: 90000,
+    bonuses: { 'Q4 SPIFF bonus': 2500 },
+    assignments: [
+      { slot: 'plan', planName: 'Enterprise', params: { rate: 0.12, quota: 40000, accel: 0.2 }, effectiveFrom: '2025-01-01', effectiveTo: null },
+      { slot: 'plan', planName: 'Old plan', params: { rate: 0.05 }, effectiveFrom: '2024-01-01', effectiveTo: '2024-12-31' },
+      {
+        slot: 'spiff',
+        planName: 'Q4 SPIFF',
+        params: { rate: 0.02 },
+        tiers: { mode: 'whole', basis: 'amount', rows: [{ from: 0, rate: 0.01 }, { from: 40000, rate: 0.03 }] },
+        effectiveFrom: '2025-10-01',
+        effectiveTo: '2025-12-31',
+      },
+    ],
+  },
+  { name: 'Bob', baseSalary: null, bonuses: {}, assignments: [{ slot: 'plan', planName: 'SMB', params: { rate: 0.1, quota: 30000, accel: 0.15 }, effectiveFrom: null, effectiveTo: null }] },
+  { name: 'Dave', baseSalary: 50000, bonuses: {}, assignments: [] },
+];
+
+const lookup = makePlanLookup(employees, '2025-11-15');
 
 describe('makePlanLookup', () => {
-  it('matches case-insensitively and by effective date', () => {
-    expect(lookup('alice')?.planName).toBe('Enterprise');
-    expect(lookup(' BOB ')?.planName).toBe('SMB');
+  it('matches case-insensitively, by effective date, per slot', () => {
+    const alice = lookup('alice')!;
+    expect(alice.plans.plan.planName).toBe('Enterprise');
+    expect(alice.plans.spiff.planName).toBe('Q4 SPIFF');
+    expect(alice.employee.baseSalary).toBe(90000);
+    expect(lookup(' BOB ')?.plans.plan.planName).toBe('SMB');
     expect(lookup('Carol')).toBeNull();
-    const past = makePlanLookup(
-      [{ repName: 'Alice', planName: 'Old plan', params: { rate: 0.05 }, effectiveFrom: '2024-01-01', effectiveTo: '2024-12-31' }],
-      '2024-06-01',
-    );
-    expect(past('Alice')?.planName).toBe('Old plan');
-    expect(past('Alice')?.params.rate).toBe(0.05);
+    expect(Object.keys(lookup('Dave')!.plans)).toEqual([]);
+    const past = makePlanLookup(employees, '2024-06-01');
+    expect(past('Alice')?.plans.plan.planName).toBe('Old plan');
+    expect(past('Alice')?.plans.spiff).toBeUndefined();
+  });
+  it('scopeKey normalises bonus labels', () => {
+    expect(scopeKey('Q4 SPIFF bonus')).toBe('q4_spiff_bonus');
+    expect(scopeKey('  Car allowance! ')).toBe('car_allowance');
   });
 });
 
@@ -66,25 +86,26 @@ describe('asOfFromCriteria', () => {
 });
 
 describe('applyCalc', () => {
-  it('adds a Plan column and formula outputs using plan params', () => {
+  it('adds a Plan column and formula outputs using plan, slot and employee scopes', () => {
     const r = applyCalc(
       summary,
       {
         repField: 'Rep',
         items: [
           { id: 'a', label: 'Commission', formula: 'MIN([Won], plan.quota) * plan.rate + MAX(0, [Won] - plan.quota) * plan.accel' },
-          { id: 'b', label: 'Over quota', formula: '[Won] > plan.quota' },
-          { id: 'c', label: 'Doubled', formula: '[Commission] * 2' },
+          { id: 'b', label: 'Spiff', formula: 'TIER([Won], "spiff")' },
+          { id: 'c', label: 'OTE', formula: 'employee.base_salary + [Commission] + employee.bonus_total' },
+          { id: 'd', label: 'Q4 bonus', formula: 'employee.q4_spiff_bonus' },
         ],
       },
       lookup,
     );
-    expect(r.columns.map((c) => c.name)).toEqual(['Rep', 'Won', 'Plan', 'Commission', 'Over quota', 'Doubled']);
-    expect(r.columns.map((c) => c.type)).toEqual(['text', 'currency', 'text', 'decimal', 'text', 'decimal']);
-    expect(r.raw[0]).toEqual({ Rep: 'Alice', Won: '50000', Plan: 'Enterprise', Commission: '6800', 'Over quota': 'true', Doubled: '13600' });
-    expect(r.raw[1].Commission).toBe('2000');
-    // Carol has no plan: plan.* is null, arithmetic yields blank.
-    expect(r.raw[2]).toEqual({ Rep: 'Carol', Won: '1000', Plan: '', Commission: '', 'Over quota': '', Doubled: '' });
+    expect(r.columns.map((c) => c.name)).toEqual(['Rep', 'Won', 'Plan', 'Commission', 'Spiff', 'OTE', 'Q4 bonus']);
+    expect(r.raw[0]).toEqual({ Rep: 'Alice', Won: '50000', Plan: 'Enterprise + Q4 SPIFF (spiff)', Commission: '6800', Spiff: '1500', OTE: '99300', 'Q4 bonus': '2500' });
+    expect(r.raw[1]).toEqual({ Rep: 'bob', Won: '20000', Plan: 'SMB', Commission: '2000', Spiff: '', OTE: '', 'Q4 bonus': '' });
+    // Carol has no employee record: everything blank.
+    expect(r.raw[2].Plan).toBe('');
+    expect(r.raw[2].Commission).toBe('');
     expect(r.noPlan).toBe(1);
     expect(r.errors).toEqual({});
   });

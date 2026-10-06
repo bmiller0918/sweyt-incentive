@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { api, type ImportSummary } from './api';
 import { CompPlansView } from './components/CompPlansView';
+import { EmployeesView } from './components/EmployeesView';
 import { ImportView } from './components/ImportView';
 import { UploadFlow } from './components/UploadFlow';
 
@@ -8,7 +9,7 @@ export default function App() {
   const [imports, setImports] = useState<ImportSummary[]>([]);
   const [selected, setSelected] = useState<string | null>(null);
   const [uploading, setUploading] = useState(false);
-  const [page, setPage] = useState<'imports' | 'plans'>('imports');
+  const [page, setPage] = useState<'imports' | 'plans' | 'employees'>('imports');
   const [error, setError] = useState<string | null>(null);
 
   const refresh = useCallback(async () => {
@@ -68,13 +69,20 @@ export default function App() {
             </button>
           ))}
         </nav>
-        <div className="border-t border-slate-200 p-2">
+        <div className="space-y-1 border-t border-slate-200 p-2">
+          <button
+            onClick={() => setPage('employees')}
+            className={`block w-full rounded-md px-2 py-1.5 text-left text-sm hover:bg-slate-100 ${page === 'employees' ? 'bg-indigo-50 text-indigo-700' : 'text-slate-700'}`}
+          >
+            <div className="font-medium">Employees</div>
+            <div className="text-xs text-slate-400">salary, bonuses, plan assignments</div>
+          </button>
           <button
             onClick={() => setPage('plans')}
             className={`block w-full rounded-md px-2 py-1.5 text-left text-sm hover:bg-slate-100 ${page === 'plans' ? 'bg-indigo-50 text-indigo-700' : 'text-slate-700'}`}
           >
             <div className="font-medium">Comp plans</div>
-            <div className="text-xs text-slate-400">rates, quotas, rep assignments</div>
+            <div className="text-xs text-slate-400">rates, quotas, tiers</div>
           </button>
         </div>
       </aside>
@@ -90,6 +98,8 @@ export default function App() {
         )}
         {page === 'plans' ? (
           <CompPlansView />
+        ) : page === 'employees' ? (
+          <EmployeesView />
         ) : uploading || !selected ? (
           <UploadFlow
             onDone={async (imp) => {

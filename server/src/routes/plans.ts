@@ -1,9 +1,9 @@
-import { makePlanLookup, planTiersSchema, type PlanLookup } from '@commissions/shared';
+import { makePlanLookup, planTiersSchema, type EmployeeRecord, type PlanLookup } from '@commissions/shared';
 import { asc, eq, sql } from 'drizzle-orm';
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import type { Db } from '../db/client.js';
-import { auditLog, compPlans, repPlanAssignments } from '../db/schema.js';
+import { auditLog, compPlans, employees, planAssignments } from '../db/schema.js';
 
 const paramValue = z.union([z.number(), z.string(), z.boolean(), z.null()]);
 const dateStr = z.string().regex(/^\d{4}-\d{2}-\d{2}$/).nullable().optional();
@@ -17,49 +17,74 @@ const planSchema = z.object({
   effectiveTo: dateStr,
 });
 
+const employeeSchema = z.object({
+  name: z.string().min(1),
+  title: z.string().nullable().optional(),
+  email: z.string().nullable().optional(),
+  baseSalary: z.number().nullable().optional(),
+  bonuses: z.array(z.object({ label: z.string().min(1), amount: z.number() })).default([]),
+  notes: z.string().nullable().optional(),
+  startDate: dateStr,
+  endDate: dateStr,
+});
+
 const assignmentSchema = z.object({
-  repName: z.string().min(1),
   compPlanId: z.string().uuid(),
+  slot: z.string().min(1).default('plan'),
   effectiveFrom: dateStr,
   effectiveTo: dateStr,
 });
 
-/** Load every assignment joined to its plan and build the lookup used by stage 3. */
+/** Load employees with their assignments + plans and build the stage-3 lookup. */
 export async function loadPlanLookup(db: Db, asOf: string): Promise<PlanLookup> {
+  const emps = await db.select().from(employees);
   const rows = await db
     .select({
-      repName: repPlanAssignments.repName,
-      effectiveFrom: repPlanAssignments.effectiveFrom,
-      effectiveTo: repPlanAssignments.effectiveTo,
+      employeeId: planAssignments.employeeId,
+      slot: planAssignments.slot,
+      effectiveFrom: planAssignments.effectiveFrom,
+      effectiveTo: planAssignments.effectiveTo,
       planName: compPlans.name,
       params: compPlans.params,
       tiers: compPlans.tiers,
       planFrom: compPlans.effectiveFrom,
       planTo: compPlans.effectiveTo,
     })
-    .from(repPlanAssignments)
-    .innerJoin(compPlans, eq(repPlanAssignments.compPlanId, compPlans.id));
-  // A plan's own effective window also bounds its assignments.
-  const narrowed = rows.map((r) => ({
-    repName: r.repName,
-    planName: r.planName,
-    params: r.params,
-    tiers: r.tiers,
-    effectiveFrom: [r.effectiveFrom, r.planFrom].filter(Boolean).sort().pop() ?? null,
-    effectiveTo: [r.effectiveTo, r.planTo].filter(Boolean).sort().shift() ?? null,
+    .from(planAssignments)
+    .innerJoin(compPlans, eq(planAssignments.compPlanId, compPlans.id));
+  const byEmployee = new Map<string, EmployeeRecord['assignments']>();
+  for (const r of rows) {
+    const list = byEmployee.get(r.employeeId) ?? [];
+    // A plan's own effective window also bounds its assignments.
+    list.push({
+      slot: r.slot,
+      planName: r.planName,
+      params: r.params,
+      tiers: r.tiers,
+      effectiveFrom: [r.effectiveFrom, r.planFrom].filter(Boolean).sort().pop() ?? null,
+      effectiveTo: [r.effectiveTo, r.planTo].filter(Boolean).sort().shift() ?? null,
+    });
+    byEmployee.set(r.employeeId, list);
+  }
+  const records: EmployeeRecord[] = emps.map((e) => ({
+    name: e.name,
+    baseSalary: e.baseSalary,
+    bonuses: Object.fromEntries(e.bonuses.map((b) => [b.label, b.amount])),
+    assignments: byEmployee.get(e.id) ?? [],
   }));
-  return makePlanLookup(narrowed, asOf);
+  return makePlanLookup(records, asOf);
 }
 
 export async function planRoutes(app: FastifyInstance, db: Db) {
+  // -- Comp plans ------------------------------------------------------------
   app.get('/api/comp-plans', async () => {
     const plans = await db.select().from(compPlans).orderBy(asc(compPlans.name));
     const counts = await db
-      .select({ compPlanId: repPlanAssignments.compPlanId, n: sql<number>`count(*)::int` })
-      .from(repPlanAssignments)
-      .groupBy(repPlanAssignments.compPlanId);
+      .select({ compPlanId: planAssignments.compPlanId, n: sql<number>`count(distinct ${planAssignments.employeeId})::int` })
+      .from(planAssignments)
+      .groupBy(planAssignments.compPlanId);
     const byId = new Map(counts.map((c) => [c.compPlanId, c.n]));
-    return plans.map((p) => ({ ...p, repCount: byId.get(p.id) ?? 0 }));
+    return plans.map((p) => ({ ...p, employeeCount: byId.get(p.id) ?? 0 }));
   });
 
   app.post('/api/comp-plans', async (req) => {
@@ -89,62 +114,94 @@ export async function planRoutes(app: FastifyInstance, db: Db) {
     return reply.code(204).send();
   });
 
-  // -- Assignments -----------------------------------------------------------
-  app.get('/api/rep-assignments', async () => {
-    return db
+  // -- Employees -------------------------------------------------------------
+  const withAssignments = async (ids?: string[]) => {
+    const emps = ids ? await db.select().from(employees).where(sql`${employees.id} in ${ids}`) : await db.select().from(employees).orderBy(asc(employees.name));
+    const rows = await db
       .select({
-        id: repPlanAssignments.id,
-        repName: repPlanAssignments.repName,
-        compPlanId: repPlanAssignments.compPlanId,
+        id: planAssignments.id,
+        employeeId: planAssignments.employeeId,
+        compPlanId: planAssignments.compPlanId,
         planName: compPlans.name,
-        effectiveFrom: repPlanAssignments.effectiveFrom,
-        effectiveTo: repPlanAssignments.effectiveTo,
+        slot: planAssignments.slot,
+        effectiveFrom: planAssignments.effectiveFrom,
+        effectiveTo: planAssignments.effectiveTo,
       })
-      .from(repPlanAssignments)
-      .innerJoin(compPlans, eq(repPlanAssignments.compPlanId, compPlans.id))
-      .orderBy(asc(repPlanAssignments.repName));
+      .from(planAssignments)
+      .innerJoin(compPlans, eq(planAssignments.compPlanId, compPlans.id));
+    const byEmp = new Map<string, typeof rows>();
+    for (const r of rows) byEmp.set(r.employeeId, [...(byEmp.get(r.employeeId) ?? []), r]);
+    return emps.map((e) => ({ ...e, assignments: (byEmp.get(e.id) ?? []).sort((a, b) => a.slot.localeCompare(b.slot)) }));
+  };
+
+  app.get('/api/employees', async () => withAssignments());
+
+  app.post('/api/employees', async (req) => {
+    const body = employeeSchema.parse(req.body);
+    const [row] = await db.insert(employees).values({ ...body, name: body.name.trim() }).returning();
+    await db.insert(auditLog).values({ action: 'employee.create', entityType: 'employee', entityId: row.id });
+    return (await withAssignments([row.id]))[0];
   });
 
-  app.post('/api/rep-assignments', async (req) => {
-    const body = assignmentSchema.parse(req.body);
-    const [row] = await db.insert(repPlanAssignments).values({ ...body, repName: body.repName.trim() }).returning();
-    await db.insert(auditLog).values({ action: 'assignment.create', entityType: 'rep_plan_assignment', entityId: row.id });
-    return row;
-  });
-
-  /** Assign many reps to one plan at once (skips names already on that plan). */
-  const bulkSchema = z.object({ compPlanId: z.string().uuid(), repNames: z.array(z.string().min(1)), effectiveFrom: dateStr, effectiveTo: dateStr });
-  app.post('/api/rep-assignments/bulk', async (req) => {
+  /** Create many employees by name (skips names that already exist, case-insensitively). */
+  const bulkSchema = z.object({ names: z.array(z.string().min(1)) });
+  app.post('/api/employees/bulk', async (req) => {
     const body = bulkSchema.parse(req.body);
-    const existing = await db
-      .select({ repName: repPlanAssignments.repName })
-      .from(repPlanAssignments)
-      .where(eq(repPlanAssignments.compPlanId, body.compPlanId));
-    const have = new Set(existing.map((e) => e.repName.toLowerCase()));
-    const names = [...new Set(body.repNames.map((n) => n.trim()).filter(Boolean))].filter((n) => !have.has(n.toLowerCase()));
+    const existing = await db.select({ name: employees.name }).from(employees);
+    const have = new Set(existing.map((e) => e.name.trim().toLowerCase()));
+    const names = [...new Set(body.names.map((n) => n.trim()).filter(Boolean))].filter((n) => !have.has(n.toLowerCase()));
     if (!names.length) return { created: 0 };
-    await db.insert(repPlanAssignments).values(
-      names.map((repName) => ({ repName, compPlanId: body.compPlanId, effectiveFrom: body.effectiveFrom ?? null, effectiveTo: body.effectiveTo ?? null })),
-    );
-    await db.insert(auditLog).values({ action: 'assignment.bulk', entityType: 'comp_plan', entityId: body.compPlanId, detail: { created: names.length } });
+    await db.insert(employees).values(names.map((name) => ({ name })));
+    await db.insert(auditLog).values({ action: 'employee.bulk', entityType: 'employee', detail: { created: names.length } });
     return { created: names.length };
   });
 
-  app.put('/api/rep-assignments/:id', async (req, reply) => {
+  app.put('/api/employees/:id', async (req, reply) => {
+    const { id } = req.params as { id: string };
+    const body = employeeSchema.parse(req.body);
+    const [row] = await db
+      .update(employees)
+      .set({ ...body, name: body.name.trim(), updatedAt: new Date() })
+      .where(eq(employees.id, id))
+      .returning();
+    if (!row) return reply.code(404).send({ error: 'Employee not found' });
+    await db.insert(auditLog).values({ action: 'employee.update', entityType: 'employee', entityId: id });
+    return (await withAssignments([id]))[0];
+  });
+
+  app.delete('/api/employees/:id', async (req, reply) => {
+    const { id } = req.params as { id: string };
+    await db.delete(employees).where(eq(employees.id, id));
+    await db.insert(auditLog).values({ action: 'employee.delete', entityType: 'employee', entityId: id });
+    return reply.code(204).send();
+  });
+
+  // -- Plan assignments ------------------------------------------------------
+  app.post('/api/employees/:id/assignments', async (req, reply) => {
+    const { id } = req.params as { id: string };
+    const body = assignmentSchema.parse(req.body);
+    const [emp] = await db.select({ id: employees.id }).from(employees).where(eq(employees.id, id));
+    if (!emp) return reply.code(404).send({ error: 'Employee not found' });
+    const [row] = await db.insert(planAssignments).values({ ...body, employeeId: id, slot: body.slot.trim().toLowerCase() }).returning();
+    await db.insert(auditLog).values({ action: 'assignment.create', entityType: 'plan_assignment', entityId: row.id });
+    return row;
+  });
+
+  app.put('/api/assignments/:id', async (req, reply) => {
     const { id } = req.params as { id: string };
     const body = assignmentSchema.parse(req.body);
     const [row] = await db
-      .update(repPlanAssignments)
-      .set({ ...body, repName: body.repName.trim(), updatedAt: new Date() })
-      .where(eq(repPlanAssignments.id, id))
+      .update(planAssignments)
+      .set({ ...body, slot: body.slot.trim().toLowerCase(), updatedAt: new Date() })
+      .where(eq(planAssignments.id, id))
       .returning();
     if (!row) return reply.code(404).send({ error: 'Assignment not found' });
     return row;
   });
 
-  app.delete('/api/rep-assignments/:id', async (req, reply) => {
+  app.delete('/api/assignments/:id', async (req, reply) => {
     const { id } = req.params as { id: string };
-    await db.delete(repPlanAssignments).where(eq(repPlanAssignments.id, id));
+    await db.delete(planAssignments).where(eq(planAssignments.id, id));
     return reply.code(204).send();
   });
 }

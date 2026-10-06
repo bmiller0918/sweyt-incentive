@@ -26,6 +26,7 @@ export function CalcPanel({ spec, summaryColumns, errors, noPlan, asOf, onChange
   }, []);
 
   const paramKeys = useMemo(() => [...new Set(plans.flatMap((p) => Object.keys(p.params)))].sort(), [plans]);
+  const EMPLOYEE_KEYS = ['employee.base_salary', 'employee.bonus_total'];
   const textGroupCols = summaryColumns.filter((c) => familyOf(c.type) === 'text');
 
   // Names a formula may reference: summary columns, Plan, and earlier calc labels.
@@ -172,6 +173,12 @@ export function CalcPanel({ spec, summaryColumns, errors, noPlan, asOf, onChange
                   plan.{k}
                 </button>
               ))}
+            {spec.repField &&
+              EMPLOYEE_KEYS.map((k) => (
+                <button key={k} className="rounded-full border border-sky-300 bg-sky-50 px-2 py-0.5 font-mono text-sky-800 hover:bg-sky-100" onClick={() => insert(Math.min(active, spec.items.length - 1), k)}>
+                  {k}
+                </button>
+              ))}
             {FUNCTION_HINTS.map((f) => (
               <button key={f} className="rounded-full border border-slate-300 bg-white px-2 py-0.5 font-mono text-slate-600 hover:bg-indigo-50" onClick={() => insert(Math.min(active, spec.items.length - 1), f.replace(/\(.*\)/, '('))}>
                 {f}
@@ -180,7 +187,8 @@ export function CalcPanel({ spec, summaryColumns, errors, noPlan, asOf, onChange
           </div>
           <div className="text-[11px] text-slate-400">
             Operators: + − × ÷ ^, comparisons, AND / OR / NOT. Percentages work: <code>12%</code>. Later rows can reference earlier results by name.{' '}
-            <code>TIER(x)</code> applies the rep's plan tier table (set under Comp plans); <code>TIER_RATE(x)</code> is the rate reached.
+            <code>TIER(x)</code> applies the rep's core plan tier table; <code>TIER(x, "spiff")</code> uses the plan in their <code>spiff</code> slot, and <code>spiff.rate</code> reads its
+            parameters. <code>employee.base_salary</code>, <code>employee.bonus_total</code> and each bonus by label come from Employees.
           </div>
         </div>
       )}

@@ -56,18 +56,36 @@ export interface CompPlan {
   tiers: PlanTiers;
   effectiveFrom: string | null;
   effectiveTo: string | null;
-  repCount?: number;
+  employeeCount?: number;
   updatedAt: string;
 }
 
-export interface RepAssignment {
+export interface PlanAssignment {
   id: string;
-  repName: string;
+  employeeId: string;
   compPlanId: string;
   planName: string;
+  /** "plan" for the core plan; "spiff", "bonus", ... referenced as <slot>.<param> in formulas. */
+  slot: string;
   effectiveFrom: string | null;
   effectiveTo: string | null;
 }
+
+export interface Employee {
+  id: string;
+  name: string;
+  title: string | null;
+  email: string | null;
+  baseSalary: number | null;
+  bonuses: { label: string; amount: number }[];
+  notes: string | null;
+  startDate: string | null;
+  endDate: string | null;
+  assignments: PlanAssignment[];
+  updatedAt: string;
+}
+
+export type EmployeeInput = Omit<Employee, 'id' | 'assignments' | 'updatedAt'>;
 
 export interface CriteriaSet {
   id: string;
@@ -177,15 +195,18 @@ export const api = {
   deleteCriteriaSet: (id: string) => request<void>(`/api/criteria-sets/${id}`, { method: 'DELETE' }),
 
   listPlans: () => request<CompPlan[]>('/api/comp-plans'),
-  createPlan: (body: Omit<CompPlan, 'id' | 'updatedAt' | 'repCount'>) => request<CompPlan>('/api/comp-plans', json('POST', body)),
-  updatePlan: (id: string, body: Omit<CompPlan, 'id' | 'updatedAt' | 'repCount'>) => request<CompPlan>(`/api/comp-plans/${id}`, json('PUT', body)),
+  createPlan: (body: Omit<CompPlan, 'id' | 'updatedAt' | 'employeeCount'>) => request<CompPlan>('/api/comp-plans', json('POST', body)),
+  updatePlan: (id: string, body: Omit<CompPlan, 'id' | 'updatedAt' | 'employeeCount'>) => request<CompPlan>(`/api/comp-plans/${id}`, json('PUT', body)),
   deletePlan: (id: string) => request<void>(`/api/comp-plans/${id}`, { method: 'DELETE' }),
-  listAssignments: () => request<RepAssignment[]>('/api/rep-assignments'),
-  createAssignment: (body: { repName: string; compPlanId: string; effectiveFrom?: string | null; effectiveTo?: string | null }) =>
-    request<RepAssignment>('/api/rep-assignments', json('POST', body)),
-  bulkAssign: (body: { compPlanId: string; repNames: string[]; effectiveFrom?: string | null; effectiveTo?: string | null }) =>
-    request<{ created: number }>('/api/rep-assignments/bulk', json('POST', body)),
-  updateAssignment: (id: string, body: { repName: string; compPlanId: string; effectiveFrom?: string | null; effectiveTo?: string | null }) =>
-    request<RepAssignment>(`/api/rep-assignments/${id}`, json('PUT', body)),
-  deleteAssignment: (id: string) => request<void>(`/api/rep-assignments/${id}`, { method: 'DELETE' }),
+
+  listEmployees: () => request<Employee[]>('/api/employees'),
+  createEmployee: (body: EmployeeInput) => request<Employee>('/api/employees', json('POST', body)),
+  bulkCreateEmployees: (names: string[]) => request<{ created: number }>('/api/employees/bulk', json('POST', { names })),
+  updateEmployee: (id: string, body: EmployeeInput) => request<Employee>(`/api/employees/${id}`, json('PUT', body)),
+  deleteEmployee: (id: string) => request<void>(`/api/employees/${id}`, { method: 'DELETE' }),
+  addAssignment: (employeeId: string, body: { compPlanId: string; slot: string; effectiveFrom?: string | null; effectiveTo?: string | null }) =>
+    request<PlanAssignment>(`/api/employees/${employeeId}/assignments`, json('POST', body)),
+  updateAssignment: (id: string, body: { compPlanId: string; slot: string; effectiveFrom?: string | null; effectiveTo?: string | null }) =>
+    request<PlanAssignment>(`/api/assignments/${id}`, json('PUT', body)),
+  deleteAssignment: (id: string) => request<void>(`/api/assignments/${id}`, { method: 'DELETE' }),
 };

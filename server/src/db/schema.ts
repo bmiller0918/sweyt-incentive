@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { index, integer, jsonb, pgTable, text, timestamp, uuid } from 'drizzle-orm/pg-core';
+import { doublePrecision, index, integer, jsonb, pgTable, text, timestamp, uuid } from 'drizzle-orm/pg-core';
 import type { ColumnDef, Criteria, PlanTiers, RawRow } from '@commissions/shared';
 
 // Every table carries timestamps and a nullable organization_id so multi-
@@ -79,19 +79,43 @@ export const compPlans = pgTable('comp_plans', {
   effectiveTo: text('effective_to'),
 });
 
-/** Which plan a rep (by the name that appears in the data) is on, and when. */
-export const repPlanAssignments = pgTable(
-  'rep_plan_assignments',
+/** A person who earns commission. `name` must match the rep column in the data. */
+export const employees = pgTable(
+  'employees',
   {
     ...base,
-    repName: text('rep_name').notNull(),
+    name: text('name').notNull(),
+    title: text('title'),
+    email: text('email'),
+    baseSalary: doublePrecision('base_salary'),
+    /** Named recurring/fixed bonuses: [{label, amount}]. */
+    bonuses: jsonb('bonuses').$type<{ label: string; amount: number }[]>().notNull().default([]),
+    notes: text('notes'),
+    startDate: text('start_date'),
+    endDate: text('end_date'),
+  },
+  (t) => [index('employees_name_idx').on(t.name)],
+);
+
+/**
+ * An employee's plan for a slot ("plan" = core plan; "spiff", "bonus", ...
+ * for extras). Formulas reference a slot's parameters as <slot>.<param>.
+ */
+export const planAssignments = pgTable(
+  'plan_assignments',
+  {
+    ...base,
+    employeeId: uuid('employee_id')
+      .notNull()
+      .references(() => employees.id, { onDelete: 'cascade' }),
     compPlanId: uuid('comp_plan_id')
       .notNull()
       .references(() => compPlans.id, { onDelete: 'cascade' }),
+    slot: text('slot').notNull().default('plan'),
     effectiveFrom: text('effective_from'),
     effectiveTo: text('effective_to'),
   },
-  (t) => [index('rep_plan_assignments_rep_idx').on(t.repName)],
+  (t) => [index('plan_assignments_employee_idx').on(t.employeeId)],
 );
 
 export const auditLog = pgTable('audit_log', {
