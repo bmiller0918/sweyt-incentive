@@ -108,6 +108,17 @@ describe('evaluate', () => {
     expect(countMatches(rows, c, ctx)).toBe(5);
   });
 
+  it('incomplete conditions (blank value) are ignored until filled in', () => {
+    expect(countMatches(rows, crit(group('and', [cond('rep', 'is', [lit('')])])), ctx)).toBe(5);
+    expect(countMatches(rows, crit(group('and', [cond('amount', 'between', [lit('1'), lit('')])])), ctx)).toBe(5);
+    expect(countMatches(rows, crit(group('and', [cond('rep', 'any_of', [])])), ctx)).toBe(5);
+    expect(countMatches(rows, crit(group('and', [cond('rep', 'regex', [lit('')])])), ctx)).toBe(5);
+    // zero-arity operators are never "incomplete"
+    expect(countMatches(rows, crit(group('and', [cond('amount', 'empty')])), ctx)).toBe(1);
+    const blank = cond('rep', 'is', [lit('')]);
+    expect(conditionImpact(rows, crit(group('and', [blank])), ctx).impact[blank.id]).toBe(0);
+  });
+
   it('impact and explain', () => {
     const a = cond('type', 'is', [lit('New Business')]);
     const b = cond('amount', 'gt', [lit('10000')]);

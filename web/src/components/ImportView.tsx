@@ -13,8 +13,18 @@ import {
 } from '@commissions/shared';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { api, type CriteriaSet, type ImportDetail, type QueryResult } from '../api';
+import {
+  activeHeaderFields,
+  clearHeaderFilters,
+  hasAdvancedNodes,
+  headerFilterLabel,
+  readHeaderFilter,
+  setHeaderFilter,
+  type HeaderFilterState,
+} from '../headerFilters';
 import { CriteriaBuilder } from './CriteriaBuilder';
 import { DataGrid, type GridRow } from './DataGrid';
+import { HeaderFilterPopover } from './HeaderFilterPopover';
 import { SummaryGrid, groupValuesOf, type GroupState } from './SummaryGrid';
 import { SummaryPanel } from './SummaryPanel';
 
@@ -42,6 +52,8 @@ export function ImportView({ importId, onDeleted, onRenamed }: Props) {
   const [viewMode, setViewMode] = useState<'detail' | 'summary'>('detail');
   const [summaryColumns, setSummaryColumns] = useState<ColumnDef[]>([]);
   const [expanded, setExpanded] = useState<Record<string, GroupState>>({});
+  const [filterPopover, setFilterPopover] = useState<{ field: string; anchor: DOMRect } | null>(null);
+  const [advanced, setAdvanced] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [sets, setSets] = useState<CriteriaSet[]>([]);
@@ -124,6 +136,11 @@ export function ImportView({ importId, onDeleted, onRenamed }: Props) {
 
   const setRoot = (root: Group) => setCriteria((c) => ({ ...c, root }));
   const setSummary = (summary: SummarySpec) => setCriteria((c) => ({ ...c, summary }));
+  const setFieldFilter = (col: ColumnDef, state: HeaderFilterState) => setRoot(setHeaderFilter(criteria.root, col, state));
+  const headerFields = activeHeaderFields(criteria.root);
+  const popoverColumn = filterPopover ? imp?.columns.find((c) => c.name === filterPopover.field) : undefined;
+  // Anything the header filters can't express forces the advanced builder open.
+  const showAdvanced = advanced || hasAdvancedNodes(criteria.root);
 
   // Sorting by a column that doesn't exist in the other view would be ignored
   // server-side; clear it when the view flips.
@@ -322,11 +339,35 @@ export function ImportView({ importId, onDeleted, onRenamed }: Props) {
             <div className="flex-1 overflow-auto p-3">
               <div className="mb-1 flex items-center text-xs">
                 <span className="font-semibold text-slate-600">1 · Filter rows</span>
+                <div className="flex-1" />
+                <label className="inline-flex items-center gap-1 text-slate-500" title="Nested AND/OR/NOT groups, field-to-field comparisons, parameters">
+                  <input type="checkbox" checked={showAdvanced} disabled={hasAdvancedNodes(criteria.root)} onChange={(e) => setAdvanced(e.target.checked)} />
+                  Advanced
+                </label>
               </div>
-              <CriteriaBuilder root={criteria.root} columns={imp.columns} impact={meta.impact} errors={meta.errors} onChange={setRoot} />
-              <p className="mt-2 text-[11px] leading-relaxed text-slate-400">
-                The amber badge shows rows a condition removes. Click a row in the grid to see why it did or didn't match.
-              </p>
+              {showAdvanced ? (
+                <>
+                  <CriteriaBuilder root={criteria.root} columns={imp.columns} impact={meta.impact} errors={meta.errors} onChange={setRoot} />
+                  <p className="mt-2 text-[11px] leading-relaxed text-slate-400">
+                    Header filters appear here too (ids starting with <code>hf:</code>). The amber badge shows rows a condition removes; click a grid row to see why it
+                    did or didn't match.
+                  </p>
+                </>
+              ) : (
+                <div className="rounded-lg border border-dashed border-slate-300 bg-white px-3 py-2 text-[11px] leading-relaxed text-slate-500">
+                  {headerFields.length === 0 ? (
+                    <>
+                      Click the <span className="font-semibold">funnel</span> on any column header to filter by its values or a condition. Filters on different columns
+                      combine with AND.
+                    </>
+                  ) : (
+                    <>
+                      {headerFields.length} column filter{headerFields.length === 1 ? '' : 's'} active — see the chips above the grid. Tick <em>Advanced</em> for
+                      OR groups, NOT, or field-to-field rules.
+                    </>
+                  )}
+                </div>
+              )}
 
               <div className="mt-4 mb-1 flex items-center text-xs">
                 <span className="font-semibold text-slate-600">2 · Summarize</span>
@@ -360,6 +401,33 @@ export function ImportView({ importId, onDeleted, onRenamed }: Props) {
 
         {/* Grid + totals */}
         <div className="flex min-w-0 flex-1 flex-col">
+          {mode === 'detail' && headerFields.length > 0 && (
+            <div className="flex flex-wrap items-center gap-1.5 border-b border-slate-200 bg-white px-3 py-1.5 text-xs">
+              <span className="text-slate-400">Filters:</span>
+              {headerFields.map((f) => {
+                const col = imp.columns.find((c) => c.name === f);
+                if (!col) return null;
+                const st = readHeaderFilter(criteria.root, f);
+                return (
+                  <span key={f} className="inline-flex items-center overflow-hidden rounded-full border border-indigo-200 bg-indigo-50 text-indigo-800">
+                    <button
+                      className="px-2 py-0.5 hover:bg-indigo-100"
+                      onClick={(e) => setFilterPopover({ field: f, anchor: e.currentTarget.getBoundingClientRect() })}
+                      title="Edit filter"
+                    >
+                      <span className="font-semibold">{f}</span>: {headerFilterLabel(st)}
+                    </button>
+                    <button className="px-1.5 py-0.5 text-indigo-400 hover:bg-indigo-100 hover:text-rose-600" onClick={() => setFieldFilter(col, { selected: null, op: null })} title="Remove">
+                      ✕
+                    </button>
+                  </span>
+                );
+              })}
+              <button className="ml-1 text-slate-500 hover:text-rose-600" onClick={() => setRoot(clearHeaderFilters(criteria.root))}>
+                Clear all
+              </button>
+            </div>
+          )}
           <div className="min-h-0 flex-1">
             {mode === 'summary' ? (
               <SummaryGrid
@@ -386,9 +454,24 @@ export function ImportView({ importId, onDeleted, onRenamed }: Props) {
                 onEndReached={loadMore}
                 hasMore={hasMore}
                 loading={loading}
+                activeFilters={new Set(headerFields)}
+                onOpenFilter={(field, anchor) => setFilterPopover((p) => (p?.field === field ? null : { field, anchor }))}
               />
             )}
           </div>
+          {filterPopover && popoverColumn && (
+            <HeaderFilterPopover
+              importId={importId}
+              column={popoverColumn}
+              columns={imp.columns}
+              criteria={criteria}
+              params={params}
+              state={readHeaderFilter(criteria.root, popoverColumn.name)}
+              anchor={filterPopover.anchor}
+              onChange={(st) => setFieldFilter(popoverColumn, st)}
+              onClose={() => setFilterPopover(null)}
+            />
+          )}
           {totalEntries.length > 0 && (
             <div className="flex flex-wrap items-center gap-x-4 gap-y-1 border-t border-slate-200 bg-slate-50 px-3 py-1.5 text-xs tabular-nums">
               <span className="font-semibold text-slate-500">Totals{mode === 'detail' ? ' (filtered rows)' : ' (summary rows)'}:</span>

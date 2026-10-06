@@ -26,7 +26,7 @@ import type { Db } from '../db/client.js';
 import { auditLog, importRows, imports } from '../db/schema.js';
 import { toCsv, toXlsx } from '../export.js';
 import { applyHeaderRow, parseBuffer, type ParsedFile } from '../parse.js';
-import { getRows, invalidate } from '../rowcache.js';
+import { getRows, invalidate, typesOf } from '../rowcache.js';
 
 // Uploads wait here (in memory, 15 min) between "parse" and "commit", so the
 // user can pick a sheet and header row without us touching local disk.
@@ -279,6 +279,40 @@ export async function importRoutes(app: FastifyInstance, db: Db) {
       errors,
       totals: columnTotals(cached.typed, indices, cached.types),
     };
+  });
+
+  // -- Distinct values for a column (header filter dropdown) -----------------
+  const valuesSchema = z.object({
+    field: z.string(),
+    /** Other active filters; the client strips this field's own header filter first. */
+    criteria: criteriaSchema.optional(),
+    params: z.record(z.string()).optional(),
+    search: z.string().optional(),
+    limit: z.number().int().min(1).max(1000).default(200),
+  });
+  app.post('/api/imports/:id/values', async (req, reply) => {
+    const { id } = req.params as { id: string };
+    const body = valuesSchema.parse(req.body);
+    const [imp] = await db.select().from(imports).where(eq(imports.id, id));
+    if (!imp) return reply.code(404).send({ error: 'Import not found' });
+    if (!(body.field in typesOf(imp.columns))) return reply.code(400).send({ error: 'Unknown field' });
+    const cached = await getRows(db, id, imp.columns);
+    const ctx = evalCtx(cached.types, body.params);
+    let matches: ((row: TypedRow) => boolean) | null = null;
+    if (body.criteria && !Object.keys(validateCriteria(body.criteria, ctx)).length) {
+      matches = compileCriteria(body.criteria, ctx).matches;
+    }
+    const counts = new Map<string, number>();
+    for (let i = 0; i < cached.raw.length; i++) {
+      if (matches && !matches(cached.typed[i])) continue;
+      const v = (cached.raw[i][body.field] ?? '').trim();
+      counts.set(v, (counts.get(v) ?? 0) + 1);
+    }
+    const needle = body.search?.trim().toLowerCase();
+    let values = [...counts.entries()].map(([value, count]) => ({ value, count }));
+    if (needle) values = values.filter((v) => v.value.toLowerCase().includes(needle));
+    values.sort((a, b) => b.count - a.count || a.value.localeCompare(b.value, undefined, { numeric: true, sensitivity: 'base' }));
+    return { values: values.slice(0, body.limit), distinct: counts.size, truncated: values.length > body.limit };
   });
 
   // -- Drill-down: the detail rows behind one summary row -------------------

@@ -2,7 +2,7 @@
 // preview counts, per-condition impact, row explanations, and export.
 import { coerceValue } from './coerce.js';
 import type { Condition, Criteria, CriteriaNode, Group, Operand, Operator } from './criteria.js';
-import { listConditions, withoutCondition } from './criteria.js';
+import { listConditions, operandArity, withoutCondition } from './criteria.js';
 import { endOfDayUtc, resolveRelativeRange, startOfDayUtc, type DateContext } from './dates.js';
 import { familyOf, type ColumnType, type TypedRow, type TypedValue } from './types.js';
 
@@ -68,20 +68,33 @@ function compileOperand(op: Operand, type: ColumnType, ctx: EvalContext, cond: C
   }
 }
 
+/**
+ * A condition whose required value hasn't been typed yet. These are ignored
+ * (treated as "match all") so a half-built filter doesn't blank the grid.
+ */
+export function isIncomplete(cond: Condition): boolean {
+  const arity = operandArity(cond.operator);
+  if (arity === 0) return false;
+  if (arity === 'list') return cond.values.length === 0;
+  const blank = (v: Operand | undefined) => !v || (v.kind === 'literal' && v.value.trim() === '') || (v.kind === 'param' && v.name.trim() === '');
+  if (arity === 2) return blank(cond.values[0]) || blank(cond.values[1]);
+  return blank(cond.values[0]);
+}
+
 function compileCondition(cond: Condition, ctx: EvalContext): CompiledCondition {
   const type = ctx.types[cond.field];
   if (!type) throw new CriteriaError(`Unknown field "${cond.field}"`, cond.id);
   const caseSensitive = cond.caseSensitive ?? false;
   const compiled: CompiledCondition = {
     id: cond.id,
-    enabled: cond.enabled !== false,
+    enabled: cond.enabled !== false && !isIncomplete(cond),
     field: cond.field,
     operator: cond.operator,
     type,
     caseSensitive,
     operands: cond.values.map((v) => compileOperand(v, type, ctx, cond)),
   };
-  if (cond.operator === 'regex') {
+  if (cond.operator === 'regex' && compiled.enabled) {
     const src = cond.values[0];
     if (!src || src.kind !== 'literal') throw new CriteriaError('Regex needs a pattern', cond.id);
     try {
@@ -329,7 +342,7 @@ export function conditionImpact(
   const total = countMatches(rows, criteria, ctx);
   const impact: Record<string, number> = {};
   for (const cond of listConditions(criteria.root)) {
-    if (cond.enabled === false) {
+    if (cond.enabled === false || isIncomplete(cond)) {
       impact[cond.id] = 0;
       continue;
     }

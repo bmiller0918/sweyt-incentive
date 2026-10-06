@@ -119,6 +119,15 @@ export const api = {
     },
     signal?: AbortSignal,
   ) => request<QueryResult>(`/api/imports/${id}/query`, { ...json('POST', body), signal }),
+  values: (
+    id: string,
+    body: { field: string; criteria?: Criteria; params?: Record<string, string>; search?: string; limit?: number },
+    signal?: AbortSignal,
+  ) =>
+    request<{ values: { value: string; count: number }[]; distinct: number; truncated: boolean }>(`/api/imports/${id}/values`, {
+      ...json('POST', body),
+      signal,
+    }),
   groupRows: (id: string, body: { criteria: Criteria; params?: Record<string, string>; groupValues: Record<string, string>; limit?: number }) =>
     request<GroupRowsResult>(`/api/imports/${id}/group-rows`, json('POST', body)),
   explain: (id: string, body: { criteria: Criteria; params?: Record<string, string>; rowIndex: number }) =>

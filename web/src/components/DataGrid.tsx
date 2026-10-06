@@ -18,6 +18,10 @@ interface Props {
   onEndReached?: () => void;
   hasMore: boolean;
   loading: boolean;
+  /** Columns with an active header filter (funnel shown highlighted). */
+  activeFilters?: Set<string>;
+  /** Open the header filter popover for a column, anchored at the funnel button. */
+  onOpenFilter?: (field: string, anchor: DOMRect) => void;
 }
 
 const TYPE_BADGE: Record<ColumnType, string> = {
@@ -34,7 +38,7 @@ const TYPE_BADGE: Record<ColumnType, string> = {
 const ROW_HEIGHT = 28;
 const COL_WIDTH = 160;
 
-export function DataGrid({ columns, rows, sort, onSort, onTypeChange, onRowClick, onEndReached, hasMore, loading }: Props) {
+export function DataGrid({ columns, rows, sort, onSort, onTypeChange, onRowClick, onEndReached, hasMore, loading, activeFilters, onOpenFilter }: Props) {
   const parentRef = useRef<HTMLDivElement>(null);
 
   const virtualizer = useVirtualizer({
@@ -61,11 +65,26 @@ export function DataGrid({ columns, rows, sort, onSort, onTypeChange, onRowClick
             #
           </div>
           {columns.map((c) => (
-            <div key={c.name} className="flex shrink-0 flex-col justify-center border-r border-slate-200 px-2" style={{ width: COL_WIDTH }}>
-              <button className="flex items-center gap-1 truncate text-left hover:text-indigo-700" onClick={() => onSort(c.name)} title={c.name}>
-                <span className="truncate">{c.name}</span>
-                {sort?.field === c.name && <span className="text-indigo-600">{sort.dir === 'asc' ? '▲' : '▼'}</span>}
-              </button>
+            <div key={c.name} className="group flex shrink-0 flex-col justify-center border-r border-slate-200 px-2" style={{ width: COL_WIDTH }}>
+              <div className="flex items-center gap-1">
+                <button className="flex min-w-0 flex-1 items-center gap-1 truncate text-left hover:text-indigo-700" onClick={() => onSort(c.name)} title={c.name}>
+                  <span className="truncate">{c.name}</span>
+                  {sort?.field === c.name && <span className="text-indigo-600">{sort.dir === 'asc' ? '▲' : '▼'}</span>}
+                </button>
+                {onOpenFilter && (
+                  <button
+                    className={`shrink-0 rounded px-1 ${
+                      activeFilters?.has(c.name) ? 'bg-indigo-100 text-indigo-700' : 'text-slate-300 hover:bg-slate-200 hover:text-slate-600 group-hover:text-slate-400'
+                    }`}
+                    onClick={(e) => onOpenFilter(c.name, e.currentTarget.getBoundingClientRect())}
+                    title={activeFilters?.has(c.name) ? 'Filtered — click to edit' : 'Filter this column'}
+                  >
+                    <svg width="10" height="10" viewBox="0 0 10 10" fill="currentColor" aria-hidden>
+                      <path d="M0 0h10L6 5v4l-2 1V5z" />
+                    </svg>
+                  </button>
+                )}
+              </div>
               {onTypeChange ? (
                 <select
                   className={`mt-0.5 w-fit rounded border-0 bg-transparent px-0 py-0 text-[10px] uppercase tracking-wide ${

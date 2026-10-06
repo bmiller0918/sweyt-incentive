@@ -272,7 +272,7 @@ interface OperandProps {
   isRelative?: boolean;
 }
 
-function OperandInput({ value, onChange, columns, col, isRelative }: OperandProps) {
+export function OperandInput({ value, onChange, columns, col, isRelative }: OperandProps) {
   if (isRelative) {
     const v = value.kind === 'relative' ? value : { kind: 'relative' as const, preset: 'this_quarter' as const };
     return (
