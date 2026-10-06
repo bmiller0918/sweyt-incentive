@@ -1,7 +1,9 @@
 // Stage 3: evaluate formulas per summary row, with each rep's comp-plan
 // parameters exposed as `plan.<name>`. Appends output columns to the summary
 // so the grid, totals, export and HAVING-style tooling see ordinary columns.
-import type { CalcSpec } from './criteria.js';
+import { parseDate } from './coerce.js';
+import type { CalcSpec, CriteriaNode } from './criteria.js';
+import { resolveRelativeRange, type DateContext } from './dates.js';
 import { FormulaError, compileFormula, type CompiledFormula, type FormulaValue, type Scope } from './formula.js';
 import type { SummaryResult } from './summary.js';
 import type { ColumnDef, ColumnType, RawRow, TypedRow } from './types.js';
@@ -101,6 +103,26 @@ export function applyCalc(res: SummaryResult, calc: CalcSpec, lookup: PlanLookup
   }
 
   return { columns, raw, typed, groupCount: res.groupCount, errors, noPlan };
+}
+
+/**
+ * The "as of" date for plan lookup: the end of the period filter when one
+ * is set (a condition whose id starts with "period:"), else today.
+ */
+export function asOfFromCriteria(criteria: { root: { children: CriteriaNode[] } }, ctx: DateContext, today = Date.now()): string {
+  const toIso = (ms: number) => new Date(ms).toISOString().slice(0, 10);
+  const node = criteria.root.children.find((c) => c.type === 'condition' && c.id.startsWith('period:'));
+  if (node && node.type === 'condition') {
+    const v = node.values[0];
+    if ((node.operator === 'relative' || node.operator === 'not_relative') && v?.kind === 'relative') {
+      return toIso(resolveRelativeRange(v.preset, v.n, { ...ctx, now: today })[1]);
+    }
+    if (node.operator === 'between' || node.operator === 'on_or_before' || node.operator === 'before') {
+      const ends = node.values.flatMap((x) => (x.kind === 'literal' ? [parseDate(x.value)] : [])).filter((n): n is number => n !== null);
+      if (ends.length) return toIso(Math.max(...ends));
+    }
+  }
+  return toIso(today);
 }
 
 /**

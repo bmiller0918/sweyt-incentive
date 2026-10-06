@@ -45,6 +45,15 @@ describe('resolveRelativeRange', () => {
       endOf(2026, 1, 31),
     ]);
   });
+  it('next periods', () => {
+    expect(resolveRelativeRange('next_month', undefined, { now: NOW })).toEqual([d(2025, 12, 1), endOf(2025, 12, 31)]);
+    expect(resolveRelativeRange('next_quarter', undefined, { now: NOW })).toEqual([d(2026, 1, 1), endOf(2026, 3, 31)]);
+    expect(resolveRelativeRange('next_year', undefined, { now: NOW })).toEqual([d(2026, 1, 1), endOf(2026, 12, 31)]);
+    const ctx = { now: NOW, fiscalYearStartMonth: 2 };
+    expect(resolveRelativeRange('next_fiscal_quarter', undefined, ctx)).toEqual([d(2026, 2, 1), endOf(2026, 4, 30)]);
+    expect(resolveRelativeRange('next_fiscal_year', undefined, ctx)).toEqual([d(2026, 2, 1), endOf(2027, 1, 31)]);
+  });
+
   it('last/next N days', () => {
     expect(resolveRelativeRange('last_n_days', 7, { now: NOW })).toEqual([d(2025, 11, 6), endOf(2025, 11, 12)]);
     expect(resolveRelativeRange('next_n_days', 3, { now: NOW })).toEqual([d(2025, 11, 12), endOf(2025, 11, 14)]);

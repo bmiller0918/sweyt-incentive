@@ -36,7 +36,7 @@ export interface QueryResult {
   errors: Record<string, string>;
   totals: Record<string, { sum: number; count: number }>;
   /** Summary mode with a calc stage: rows whose rep had no plan. */
-  calc?: { noPlan: number };
+  calc?: { noPlan: number; asOf: string | null };
 }
 
 export interface GroupRowsResult {

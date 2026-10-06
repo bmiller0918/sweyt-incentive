@@ -1,22 +1,54 @@
-import {
-  AGG_FNS,
-  AGG_LABELS,
-  aggregateLabel,
-  familyOf,
-  summaryColumns,
-  type AggFn,
-  type Aggregate,
-  type ColumnDef,
-  type Group,
-  type SummarySpec,
-} from '@commissions/shared';
-import { CriteriaBuilder, newId } from './CriteriaBuilder';
+import { AGG_FNS, AGG_LABELS, aggregateLabel, familyOf, type AggFn, type Aggregate, type ColumnDef, type Group, type SummarySpec } from '@commissions/shared';
+import { useState } from 'react';
+import { newId } from './CriteriaBuilder';
 
 interface Props {
   spec: SummarySpec;
   columns: ColumnDef[];
   errors: Record<string, string>;
   onChange: (spec: SummarySpec) => void;
+}
+
+/** Selected chips first (numbered, draggable to reorder), then the rest. */
+function DrillDownPicker({ available, selected, onChange }: { available: string[]; selected: string[]; onChange: (s: string[]) => void }) {
+  const [dragging, setDragging] = useState<string | null>(null);
+  const move = (from: string, to: string) => {
+    if (from === to) return;
+    const next = selected.filter((s) => s !== from);
+    next.splice(next.indexOf(to), 0, from);
+    onChange(next);
+  };
+  const rest = available.filter((a) => !selected.includes(a));
+  return (
+    <div className="flex flex-wrap gap-1">
+      {selected.map((name, i) => (
+        <button
+          key={name}
+          draggable
+          onDragStart={() => setDragging(name)}
+          onDragEnd={() => setDragging(null)}
+          onDragOver={(e) => e.preventDefault()}
+          onDrop={() => dragging && move(dragging, name)}
+          onClick={() => onChange(selected.filter((s) => s !== name))}
+          className={`cursor-grab rounded-full border border-emerald-600 bg-emerald-600 px-2 py-0.5 text-white active:cursor-grabbing ${dragging === name ? 'opacity-40' : ''}`}
+          title="Drag to reorder · click to remove"
+        >
+          <span className="mr-1 opacity-70">{i + 1}</span>
+          {name}
+        </button>
+      ))}
+      {rest.map((name) => (
+        <button
+          key={name}
+          onClick={() => onChange([...selected, name])}
+          className="rounded-full border border-slate-300 bg-white px-2 py-0.5 text-slate-600 hover:bg-slate-100"
+          title="Click to show in the drill-down"
+        >
+          {name}
+        </button>
+      ))}
+    </div>
+  );
 }
 
 /** Which source columns an aggregate function accepts. */
@@ -26,9 +58,8 @@ function fieldsFor(fn: AggFn, columns: ColumnDef[]): ColumnDef[] {
 }
 
 export function SummaryPanel({ spec, columns, errors, onChange }: Props) {
-  const types = Object.fromEntries(columns.map((c) => [c.name, c.type]));
-  const outColumns = summaryColumns(spec, types);
   const detailFields = spec.detailFields ?? [];
+  const hasHaving = !!spec.having && spec.having.children.length > 0;
   const numeric = columns.filter((c) => familyOf(c.type) === 'number');
 
   const setAgg = (i: number, patch: Partial<Aggregate>) =>
@@ -135,47 +166,25 @@ export function SummaryPanel({ spec, columns, errors, onChange }: Props) {
       {spec.groupBy.length > 0 && (
         <div>
           <div className="mb-1 font-semibold text-slate-600">
-            Drill-down columns <span className="font-normal text-slate-400">(shown when you expand a group)</span>
+            Drill-down columns <span className="font-normal text-slate-400">(shown when you expand a group — drag to reorder)</span>
           </div>
-          <div className="flex flex-wrap gap-1">
-            {columns
-              .filter((c) => !spec.groupBy.includes(c.name))
-              .map((c) => {
-                const on = detailFields.includes(c.name);
-                return (
-                  <button
-                    key={c.name}
-                    onClick={() =>
-                      onChange({
-                        ...spec,
-                        detailFields: on ? detailFields.filter((f) => f !== c.name) : [...detailFields, c.name],
-                      })
-                    }
-                    className={`rounded-full border px-2 py-0.5 ${
-                      on ? 'border-emerald-600 bg-emerald-600 text-white' : 'border-slate-300 bg-white text-slate-600 hover:bg-slate-100'
-                    }`}
-                  >
-                    {c.name}
-                  </button>
-                );
-              })}
-          </div>
+          <DrillDownPicker
+            available={columns.filter((c) => !spec.groupBy.includes(c.name)).map((c) => c.name)}
+            selected={detailFields}
+            onChange={(detailFields) => onChange({ ...spec, detailFields })}
+          />
           {detailFields.length === 0 && <div className="mt-1 text-slate-400">None selected: all columns are shown.</div>}
         </div>
       )}
 
-      {outColumns.length > 0 && (
-        <div>
-          <div className="mb-1 font-semibold text-slate-600">
-            Having <span className="font-normal text-slate-400">(filter the summary rows)</span>
-          </div>
-          <CriteriaBuilder
-            root={spec.having ?? { type: 'group', id: 'having', conjunction: 'and', children: [] }}
-            columns={outColumns}
-            impact={{}}
-            errors={errors}
-            onChange={setHaving}
-          />
+      {/* HAVING is still supported by the engine and saved sets; the editor is
+          hidden for now to keep this section simple. */}
+      {hasHaving && (
+        <div className="rounded-md border border-amber-200 bg-amber-50 px-2 py-1 text-[11px] text-amber-800">
+          This saved set has a HAVING filter on the summary rows ({spec.having!.children.length} condition{spec.having!.children.length === 1 ? '' : 's'}).{' '}
+          <button className="underline" onClick={() => setHaving({ type: 'group', id: 'having', conjunction: 'and', children: [] })}>
+            Remove it
+          </button>
         </div>
       )}
     </div>

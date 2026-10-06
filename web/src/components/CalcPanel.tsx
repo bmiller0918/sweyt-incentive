@@ -10,12 +10,14 @@ interface Props {
   /** Server-side per-item errors (merged with local validation). */
   errors: Record<string, string>;
   noPlan?: number;
+  /** Date the server used to pick each rep's plan (end of the period filter, else today). */
+  asOf?: string;
   onChange: (spec: CalcSpec) => void;
 }
 
 const FUNCTION_HINTS = ['IF(cond, a, b)', 'MIN(a, b)', 'MAX(a, b)', 'ROUND(x, 2)', 'ABS(x)', 'COALESCE(a, b)', 'ISBLANK(x)'];
 
-export function CalcPanel({ spec, summaryColumns, errors, noPlan, onChange }: Props) {
+export function CalcPanel({ spec, summaryColumns, errors, noPlan, asOf, onChange }: Props) {
   const [plans, setPlans] = useState<CompPlan[]>([]);
   const inputs = useRef<Record<string, HTMLInputElement | null>>({});
 
@@ -75,11 +77,10 @@ export function CalcPanel({ spec, summaryColumns, errors, noPlan, onChange }: Pr
             ))}
           </select>
         </label>
-        {spec.repField && (
-          <label className="text-slate-600">
-            As of
-            <input type="date" className="input mt-1 block" value={spec.asOf ?? ''} onChange={(e) => onChange({ ...spec, asOf: e.target.value || undefined })} />
-          </label>
+        {spec.repField && asOf && (
+          <span className="text-slate-400" title="Plans are picked by the end of the Period filter in stage 1 (or today when no period is set)">
+            plans as of {asOf}
+          </span>
         )}
         {spec.repField && plans.length === 0 && <span className="text-amber-700">No comp plans exist yet — create one under Comp plans.</span>}
         {spec.repField && noPlan !== undefined && noPlan > 0 && (

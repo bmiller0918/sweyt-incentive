@@ -13,13 +13,65 @@ import {
   type Condition,
   type CriteriaNode,
   type Group,
+  type RelativePreset,
 } from '@commissions/shared';
 
 export const valuesId = (field: string) => `hf:${field}`;
 export const opId = (field: string) => `hfo:${field}`;
+/** The period filter: one date column, a relative preset or a custom range. */
+export const periodId = (field: string) => `period:${field}`;
 
 export function isHeaderNode(node: CriteriaNode): boolean {
-  return node.id.startsWith('hf:') || node.id.startsWith('hfo:');
+  return node.id.startsWith('hf:') || node.id.startsWith('hfo:') || node.id.startsWith('period:');
+}
+
+export interface PeriodState {
+  field: string;
+  /** A relative preset, or 'custom' for an explicit range. */
+  preset: RelativePreset | 'custom';
+  n?: number;
+  from?: string;
+  to?: string;
+}
+
+export function readPeriod(root: Group): PeriodState | null {
+  const node = root.children.find((c) => c.type === 'condition' && c.id.startsWith('period:'));
+  if (!node || node.type !== 'condition') return null;
+  const v = node.values[0];
+  if (node.operator === 'relative' && v?.kind === 'relative') return { field: node.field, preset: v.preset, n: v.n };
+  if (node.operator === 'between') {
+    const [a, b] = node.values;
+    return { field: node.field, preset: 'custom', from: a?.kind === 'literal' ? a.value : '', to: b?.kind === 'literal' ? b.value : '' };
+  }
+  return null;
+}
+
+/** Replace the period filter (null removes it). */
+export function setPeriod(root: Group, state: PeriodState | null): Group {
+  const children = root.children.filter((c) => !c.id.startsWith('period:'));
+  if (state) {
+    const cond: Condition =
+      state.preset === 'custom'
+        ? {
+            type: 'condition',
+            id: periodId(state.field),
+            field: state.field,
+            operator: 'between',
+            values: [
+              { kind: 'literal', value: state.from ?? '' },
+              { kind: 'literal', value: state.to ?? '' },
+            ],
+          }
+        : { type: 'condition', id: periodId(state.field), field: state.field, operator: 'relative', values: [{ kind: 'relative', preset: state.preset, n: state.n }] };
+    // Keep the period first so it reads as the primary filter.
+    children.unshift(cond);
+  }
+  return { ...root, children };
+}
+
+/** Remove every header-level filter on one field (values, condition, period). */
+export function clearField(root: Group, field: string): Group {
+  return { ...root, children: root.children.filter((c) => c.id !== valuesId(field) && c.id !== opId(field) && c.id !== periodId(field)) };
 }
 
 export interface HeaderFilterState {
@@ -31,7 +83,8 @@ export interface HeaderFilterState {
 
 export function readHeaderFilter(root: Group, field: string): HeaderFilterState {
   const v = root.children.find((c) => c.id === valuesId(field));
-  const o = root.children.find((c) => c.id === opId(field));
+  // The period filter shows in the chip for its column when no other condition is set.
+  const o = root.children.find((c) => c.id === opId(field)) ?? root.children.find((c) => c.id === periodId(field));
   let selected: string[] | null = null;
   if (v && v.type === 'group') {
     selected = [];
@@ -98,7 +151,7 @@ export function clearHeaderFilters(root: Group): Group {
 export function activeHeaderFields(root: Group): string[] {
   const out: string[] = [];
   for (const c of root.children) {
-    const m = /^hfo?:(.+)$/.exec(c.id);
+    const m = /^(?:hfo?|period):(.+)$/.exec(c.id);
     if (m && !out.includes(m[1])) out.push(m[1]);
   }
   return out;

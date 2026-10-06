@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import {
   COLUMN_TYPES,
   applyCalc,
+  asOfFromCriteria,
   columnTotals,
   isCalcActive,
   compileCriteria,
@@ -40,10 +41,11 @@ async function summarizeWithCalc(
   ctx: Parameters<typeof summarize>[4],
 ) {
   const s = summarize(cached.raw, cached.typed, indices, criteria.summary, ctx);
-  if (!isCalcActive(criteria.calc)) return { ...s, errors: {} as Record<string, string>, noPlan: 0 };
-  const asOf = criteria.calc.asOf || new Date().toISOString().slice(0, 10);
+  if (!isCalcActive(criteria.calc)) return { ...s, errors: {} as Record<string, string>, noPlan: 0, asOf: null as string | null };
+  // Plans are resolved as of the end of the period filter (or today).
+  const asOf = criteria.calc.asOf || asOfFromCriteria(criteria, ctx);
   const lookup = criteria.calc.repField ? await loadPlanLookup(db, asOf) : null;
-  return applyCalc(s, criteria.calc, lookup);
+  return { ...applyCalc(s, criteria.calc, lookup), asOf };
 }
 
 // Uploads wait here (in memory, 15 min) between "parse" and "commit", so the
@@ -282,7 +284,7 @@ export async function importRoutes(app: FastifyInstance, db: Db) {
         rows: page,
         impact,
         errors: { ...errors, ...s.errors },
-        calc: { noPlan: s.noPlan },
+        calc: { noPlan: s.noPlan, asOf: s.asOf },
         totals: columnTotals(s.typed, sIdx, outTypes),
       };
     }

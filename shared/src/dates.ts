@@ -8,14 +8,19 @@ export const RELATIVE_PRESETS = [
   'last_week',
   'this_month',
   'last_month',
+  'next_month',
   'this_quarter',
   'last_quarter',
+  'next_quarter',
   'this_year',
   'last_year',
+  'next_year',
   'this_fiscal_quarter',
   'last_fiscal_quarter',
+  'next_fiscal_quarter',
   'this_fiscal_year',
   'last_fiscal_year',
+  'next_fiscal_year',
   'last_n_days',
   'next_n_days',
   'year_to_date',
@@ -32,14 +37,19 @@ export const RELATIVE_LABELS: Record<RelativePreset, string> = {
   last_week: 'Last week',
   this_month: 'This month',
   last_month: 'Last month',
+  next_month: 'Next month',
   this_quarter: 'This quarter',
   last_quarter: 'Last quarter',
+  next_quarter: 'Next quarter',
   this_year: 'This year',
   last_year: 'Last year',
+  next_year: 'Next year',
   this_fiscal_quarter: 'This fiscal quarter',
   last_fiscal_quarter: 'Last fiscal quarter',
+  next_fiscal_quarter: 'Next fiscal quarter',
   this_fiscal_year: 'This fiscal year',
   last_fiscal_year: 'Last fiscal year',
+  next_fiscal_year: 'Next fiscal year',
   last_n_days: 'Last N days',
   next_n_days: 'Next N days',
   year_to_date: 'Year to date',
@@ -112,6 +122,8 @@ export function resolveRelativeRange(
       return monthRange(y, m);
     case 'last_month':
       return monthRange(y, m - 1);
+    case 'next_month':
+      return monthRange(y, m + 1);
     case 'month_to_date':
       return range(Date.UTC(y, m, 1), today + MS_PER_DAY);
     case 'this_quarter': {
@@ -122,6 +134,10 @@ export function resolveRelativeRange(
       const qm = Math.floor(m / 3) * 3 - 3;
       return monthRange(y, qm, 3);
     }
+    case 'next_quarter': {
+      const qm = Math.floor(m / 3) * 3 + 3;
+      return monthRange(y, qm, 3);
+    }
     case 'quarter_to_date': {
       const qm = Math.floor(m / 3) * 3;
       return range(Date.UTC(y, qm, 1), today + MS_PER_DAY);
@@ -130,21 +146,25 @@ export function resolveRelativeRange(
       return monthRange(y, 0, 12);
     case 'last_year':
       return monthRange(y - 1, 0, 12);
+    case 'next_year':
+      return monthRange(y + 1, 0, 12);
     case 'year_to_date':
       return range(Date.UTC(y, 0, 1), today + MS_PER_DAY);
     case 'this_fiscal_year':
-    case 'last_fiscal_year': {
+    case 'last_fiscal_year':
+    case 'next_fiscal_year': {
       // The fiscal year is named by the calendar year it starts in.
       const fyStartYear = y - (m < fyStart ? 1 : 0);
-      const shift = preset === 'last_fiscal_year' ? -1 : 0;
+      const shift = preset === 'last_fiscal_year' ? -1 : preset === 'next_fiscal_year' ? 1 : 0;
       return monthRange(fyStartYear + shift, fyStart, 12);
     }
     case 'this_fiscal_quarter':
-    case 'last_fiscal_quarter': {
+    case 'last_fiscal_quarter':
+    case 'next_fiscal_quarter': {
       const sinceStart = (m - fyStart + 12) % 12;
       const qIndex = Math.floor(sinceStart / 3);
       const fyStartYear = y - (m < fyStart ? 1 : 0);
-      const shift = preset === 'last_fiscal_quarter' ? -1 : 0;
+      const shift = preset === 'last_fiscal_quarter' ? -1 : preset === 'next_fiscal_quarter' ? 1 : 0;
       return monthRange(fyStartYear, fyStart + (qIndex + shift) * 3, 3);
     }
     case 'last_n_days': {

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { applyCalc, makePlanLookup } from './calc.js';
+import { applyCalc, asOfFromCriteria, makePlanLookup } from './calc.js';
 import type { SummaryResult } from './summary.js';
 
 const summary: SummaryResult = {
@@ -40,6 +40,28 @@ describe('makePlanLookup', () => {
     );
     expect(past('Alice')?.planName).toBe('Old plan');
     expect(past('Alice')?.params.rate).toBe(0.05);
+  });
+});
+
+describe('asOfFromCriteria', () => {
+  const today = Date.UTC(2025, 10, 12);
+  const root = (children: Parameters<typeof asOfFromCriteria>[0]['root']['children']) => ({ root: { children } });
+  it('uses the period end, else today', () => {
+    expect(asOfFromCriteria(root([]), {}, today)).toBe('2025-11-12');
+    expect(
+      asOfFromCriteria(
+        root([{ type: 'condition', id: 'period:Close Date', field: 'Close Date', operator: 'relative', values: [{ kind: 'relative', preset: 'last_quarter' }] }]),
+        {},
+        today,
+      ),
+    ).toBe('2025-09-30');
+    expect(
+      asOfFromCriteria(
+        root([{ type: 'condition', id: 'period:Close Date', field: 'Close Date', operator: 'between', values: [{ kind: 'literal', value: '2025-01-01' }, { kind: 'literal', value: '2025-06-30' }] }]),
+        {},
+        today,
+      ),
+    ).toBe('2025-06-30');
   });
 });
 

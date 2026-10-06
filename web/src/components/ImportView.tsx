@@ -19,13 +19,17 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { api, type CriteriaSet, type ImportDetail, type QueryResult } from '../api';
 import {
   activeHeaderFields,
+  clearField,
   clearHeaderFilters,
   hasAdvancedNodes,
   headerFilterLabel,
   readHeaderFilter,
+  readPeriod,
   setHeaderFilter,
+  setPeriod,
   type HeaderFilterState,
 } from '../headerFilters';
+import { PeriodBar } from './PeriodBar';
 import { CalcPanel } from './CalcPanel';
 import { CriteriaBuilder } from './CriteriaBuilder';
 import { DataGrid, type GridRow } from './DataGrid';
@@ -352,6 +356,7 @@ export function ImportView({ importId, onDeleted, onRenamed }: Props) {
                   Advanced
                 </label>
               </div>
+              <PeriodBar columns={imp.columns} period={readPeriod(criteria.root)} onChange={(p) => setRoot(setPeriod(criteria.root, p))} />
               {showAdvanced ? (
                 <>
                   <CriteriaBuilder root={criteria.root} columns={imp.columns} impact={meta.impact} errors={meta.errors} onChange={setRoot} importId={importId} />
@@ -434,6 +439,7 @@ export function ImportView({ importId, onDeleted, onRenamed }: Props) {
                         summaryColumns={summaryColumnsOf(criteria.summary ?? emptySummary(), Object.fromEntries(imp.columns.map((c) => [c.name, c.type])))}
                         errors={meta.errors}
                         noPlan={meta.calc?.noPlan}
+                        asOf={meta.calc?.asOf ?? undefined}
                         onChange={setCalc}
                       />
                     </div>
@@ -462,7 +468,7 @@ export function ImportView({ importId, onDeleted, onRenamed }: Props) {
                     >
                       <span className="font-semibold">{f}</span>: {headerFilterLabel(st)}
                     </button>
-                    <button className="px-1.5 py-0.5 text-indigo-400 hover:bg-indigo-100 hover:text-rose-600" onClick={() => setFieldFilter(col, { selected: null, op: null })} title="Remove">
+                    <button className="px-1.5 py-0.5 text-indigo-400 hover:bg-indigo-100 hover:text-rose-600" onClick={() => setRoot(clearField(criteria.root, f))} title="Remove">
                       ✕
                     </button>
                   </span>
