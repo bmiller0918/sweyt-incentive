@@ -2,3 +2,9 @@ packages:
   - shared
   - server
   - web
+
+# Packages whose install scripts may run. pnpm 12 refuses to run any others
+# and fails non-interactive installs (CI/Docker) if one is needed.
+allowBuilds:
+  '@electric-sql/pglite': true
+  esbuild: true
