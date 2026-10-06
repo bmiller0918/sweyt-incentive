@@ -1,4 +1,4 @@
-import type { ColumnDef, ColumnType, Criteria, PlanTiers, RawRow } from '@commissions/shared';
+import type { Aggregate, ColumnDef, ColumnType, Criteria, PlanTiers, RawRow } from '@commissions/shared';
 
 export interface ImportSummary {
   id: string;
@@ -9,10 +9,32 @@ export interface ImportSummary {
   createdAt: string;
 }
 
+/** A column contributed by a linked import carries the source import's name. */
+export type ImportColumn = ColumnDef & { linked?: string };
+
 export interface ImportDetail extends ImportSummary {
   headerRow: number;
-  columns: ColumnDef[];
+  columns: ImportColumn[];
   warnings: string[];
+}
+
+export interface ImportLink {
+  id: string;
+  childImportId: string;
+  parentImportId: string;
+  childKey: string;
+  parentKey: string;
+  parentFields: string[];
+  aggregates: Aggregate[];
+  parentName: string;
+  childName: string;
+  parentColumns: string[];
+  childColumns: string[];
+}
+
+export interface LinkSummary {
+  parent: ImportLink | null;
+  children: ImportLink[];
 }
 
 export interface UploadResult {
@@ -206,6 +228,11 @@ export const api = {
   deleteImport: (id: string) => request<void>(`/api/imports/${id}`, { method: 'DELETE' }),
   patchImport: (id: string, body: { name?: string; columns?: { name: string; type: ColumnType }[] }) =>
     request<ImportDetail>(`/api/imports/${id}`, json('PATCH', body)),
+  getLinks: (id: string) => request<LinkSummary>(`/api/imports/${id}/links`),
+  setParentLink: (id: string, body: { parentImportId: string; childKey: string; parentKey: string; parentFields?: string[]; aggregates?: Aggregate[] }) =>
+    request<LinkSummary>(`/api/imports/${id}/link`, json('PUT', body)),
+  updateLink: (linkId: string, body: { parentFields?: string[]; aggregates?: Aggregate[] }) => request<ImportLink>(`/api/links/${linkId}`, json('PUT', body)),
+  deleteLink: (linkId: string) => request<void>(`/api/links/${linkId}`, { method: 'DELETE' }),
   query: (
     id: string,
     body: {

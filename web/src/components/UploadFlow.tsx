@@ -1,6 +1,6 @@
-import { useCallback, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { useDropzone, type FileRejection } from 'react-dropzone';
-import { api, type ImportDetail, type UploadResult } from '../api';
+import { api, type ImportDetail, type ImportSummary, type UploadResult } from '../api';
 
 const ACCEPT = {
   'text/csv': ['.csv'],
@@ -23,6 +23,23 @@ export function UploadFlow({ onDone, onCancel }: Props) {
   const [headerRow, setHeaderRow] = useState(0);
   const [name, setName] = useState('');
   const [committing, setCommitting] = useState(false);
+  // Optional parent link, applied right after the import is created.
+  const [imports, setImports] = useState<ImportSummary[]>([]);
+  const [parentId, setParentId] = useState('');
+  const [parentCols, setParentCols] = useState<string[]>([]);
+  const [childKey, setChildKey] = useState('');
+  const [parentKey, setParentKey] = useState('');
+  useEffect(() => {
+    api.listImports().then(setImports).catch(() => {});
+  }, []);
+  useEffect(() => {
+    if (!parentId) return;
+    api.getImport(parentId).then((imp) => {
+      const cols = imp.columns.filter((c) => !c.linked).map((c) => c.name);
+      setParentCols(cols);
+      setParentKey(cols.find((c) => /(^|[^a-z])id$/i.test(c)) ?? cols[0] ?? '');
+    });
+  }, [parentId]);
 
   const onDrop = useCallback(async (accepted: File[], rejected: FileRejection[]) => {
     setError(null);
@@ -69,6 +86,7 @@ export function UploadFlow({ onDone, onCancel }: Props) {
               setError(null);
               try {
                 const imp = await api.commit(upload.uploadId, { sheet: s.name, headerRow, name: name.trim() });
+                if (parentId && childKey && parentKey) await api.setParentLink(imp.id, { parentImportId: parentId, childKey, parentKey });
                 onDone(imp);
               } catch (e) {
                 setError((e as Error).message);
@@ -118,6 +136,42 @@ export function UploadFlow({ onDone, onCancel }: Props) {
             {Math.max(0, s.rowCount - headerRow - 1).toLocaleString()} data rows will be imported. Click a row below to use it as the header.
           </div>
         </div>
+        {imports.length > 0 && (
+          <div className="flex flex-wrap items-center gap-2 border-b border-slate-200 bg-indigo-50/50 px-4 py-2 text-xs">
+            <span className="font-semibold text-indigo-900">Link to parent</span>
+            <span className="text-slate-500">(optional)</span>
+            <select className="select" value={parentId} onChange={(e) => setParentId(e.target.value)}>
+              <option value="">— none —</option>
+              {imports.map((i) => (
+                <option key={i.id} value={i.id}>
+                  {i.name}
+                </option>
+              ))}
+            </select>
+            {parentId && (
+              <>
+                <span className="text-slate-500">where this file's</span>
+                <select className="select" value={childKey} onChange={(e) => setChildKey(e.target.value)}>
+                  <option value="">— key column —</option>
+                  {(preview[headerRow] ?? []).map((h, i) => (
+                    <option key={i} value={(h || `Column ${i + 1}`).trim()}>
+                      {(h || `Column ${i + 1}`).trim()}
+                    </option>
+                  ))}
+                </select>
+                <span className="text-slate-500">=</span>
+                <select className="select" value={parentKey} onChange={(e) => setParentKey(e.target.value)}>
+                  {parentCols.map((c) => (
+                    <option key={c} value={c}>
+                      {c}
+                    </option>
+                  ))}
+                </select>
+                <span className="text-slate-400">The parent's fields appear on these rows; this file's roll-ups appear on the parent (edit under Links).</span>
+              </>
+            )}
+          </div>
+        )}
         <div className="flex-1 overflow-auto p-4">
           <table className="min-w-full border-collapse text-xs">
             <tbody>

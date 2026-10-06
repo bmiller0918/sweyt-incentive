@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { doublePrecision, index, integer, jsonb, pgTable, text, timestamp, uuid } from 'drizzle-orm/pg-core';
-import type { ColumnDef, Criteria, PlanTiers, RawRow } from '@commissions/shared';
+import type { Aggregate, ColumnDef, Criteria, PlanTiers, RawRow } from '@commissions/shared';
 
 // Every table carries timestamps and a nullable organization_id so multi-
 // tenancy can be added later without a migration of existing rows.
@@ -37,6 +37,30 @@ export const importRows = pgTable(
   },
   (t) => [index('import_rows_import_idx').on(t.importId, t.rowIndex)],
 );
+
+/**
+ * Parent/child relationship between imports on a key column. The child's
+ * rows gain the parent's fields; the parent's rows gain roll-ups of the
+ * child's rows. One parent per child; a parent may have many children.
+ */
+export const importLinks = pgTable('import_links', {
+  ...base,
+  childImportId: uuid('child_import_id')
+    .notNull()
+    .unique()
+    .references(() => imports.id, { onDelete: 'cascade' }),
+  parentImportId: uuid('parent_import_id')
+    .notNull()
+    .references(() => imports.id, { onDelete: 'cascade' }),
+  /** Key column in the child, e.g. "Deal ID". */
+  childKey: text('child_key').notNull(),
+  /** Key column in the parent, e.g. "ID". */
+  parentKey: text('parent_key').notNull(),
+  /** Parent columns to expose on the child; empty = all. */
+  parentFields: jsonb('parent_fields').$type<string[]>().notNull().default([]),
+  /** Roll-ups of child rows exposed on the parent. */
+  aggregates: jsonb('aggregates').$type<Aggregate[]>().notNull().default([]),
+});
 
 export const criteriaSets = pgTable('criteria_sets', {
   ...base,

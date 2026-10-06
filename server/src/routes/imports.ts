@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import {
+  AGG_FNS,
   COLUMN_TYPES,
   applyCalc,
   asOfFromCriteria,
@@ -21,15 +22,15 @@ import {
   type TypedRow,
   type TypedValue,
 } from '@commissions/shared';
-import { desc, eq } from 'drizzle-orm';
+import { desc, eq, inArray, or } from 'drizzle-orm';
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { config } from '../config.js';
 import type { Db } from '../db/client.js';
-import { auditLog, importRows, imports } from '../db/schema.js';
+import { auditLog, importLinks, importRows, imports } from '../db/schema.js';
 import { toCsv, toXlsx } from '../export.js';
 import { applyHeaderRow, parseBuffer, type ParsedFile } from '../parse.js';
-import { getRows, invalidate, typesOf } from '../rowcache.js';
+import { getRows, invalidate, invalidateAll } from '../rowcache.js';
 import { loadPlanLookup } from './plans.js';
 
 /** Stage 2 + optional stage 3 over the filtered row indices. */
@@ -204,7 +205,92 @@ export async function importRoutes(app: FastifyInstance, db: Db) {
     const { id } = req.params as { id: string };
     const [row] = await db.select().from(imports).where(eq(imports.id, id));
     if (!row) return reply.code(404).send({ error: 'Import not found' });
+    // Columns include those contributed by linked imports.
+    const cached = await getRows(db, row);
+    return { ...row, columns: cached.columns };
+  });
+
+  // -- Links: parent/child relationships between imports ---------------------
+  const linkSummary = async (importId: string) => {
+    const links = await db
+      .select()
+      .from(importLinks)
+      .where(or(eq(importLinks.childImportId, importId), eq(importLinks.parentImportId, importId)));
+    const ids = [...new Set(links.flatMap((l) => [l.childImportId, l.parentImportId]))];
+    const names = ids.length ? await db.select({ id: imports.id, name: imports.name, columns: imports.columns }).from(imports).where(inArray(imports.id, ids)) : [];
+    const byId = new Map(names.map((n) => [n.id, n]));
+    const decorate = (l: typeof links[number]) => ({
+      ...l,
+      parentName: byId.get(l.parentImportId)?.name ?? '?',
+      childName: byId.get(l.childImportId)?.name ?? '?',
+      parentColumns: byId.get(l.parentImportId)?.columns.map((c) => c.name) ?? [],
+      childColumns: byId.get(l.childImportId)?.columns.map((c) => c.name) ?? [],
+    });
+    return {
+      parent: links.filter((l) => l.childImportId === importId).map(decorate)[0] ?? null,
+      children: links.filter((l) => l.parentImportId === importId).map(decorate),
+    };
+  };
+
+  app.get('/api/imports/:id/links', async (req) => linkSummary((req.params as { id: string }).id));
+
+  const aggregateListSchema = z.array(z.object({ id: z.string().min(1), fn: z.enum(AGG_FNS), field: z.string().optional(), label: z.string().optional() }));
+  const linkSchema = z.object({
+    parentImportId: z.string().uuid(),
+    childKey: z.string().min(1),
+    parentKey: z.string().min(1),
+    parentFields: z.array(z.string()).optional(),
+    aggregates: aggregateListSchema.optional(),
+  });
+  /** Set (or replace) this import's parent. */
+  app.put('/api/imports/:id/link', async (req, reply) => {
+    const { id } = req.params as { id: string };
+    const body = linkSchema.parse(req.body);
+    if (body.parentImportId === id) return reply.code(400).send({ error: 'An import cannot be its own parent' });
+    const [parent] = await db.select({ id: imports.id }).from(imports).where(eq(imports.id, body.parentImportId));
+    if (!parent) return reply.code(404).send({ error: 'Parent import not found' });
+    // Refuse cycles: the parent must not (transitively) be a child of this import.
+    let cursor: string | null = body.parentImportId;
+    for (let hops = 0; cursor && hops < 20; hops++) {
+      const [up] = await db.select({ parentImportId: importLinks.parentImportId }).from(importLinks).where(eq(importLinks.childImportId, cursor));
+      cursor = up?.parentImportId ?? null;
+      if (cursor === id) return reply.code(400).send({ error: 'That would create a cycle of links' });
+    }
+    const [existing] = await db.select().from(importLinks).where(eq(importLinks.childImportId, id));
+    const values = {
+      parentImportId: body.parentImportId,
+      childKey: body.childKey,
+      parentKey: body.parentKey,
+      parentFields: body.parentFields ?? existing?.parentFields ?? [],
+      aggregates: body.aggregates ?? existing?.aggregates ?? [{ id: 'count', fn: 'count' as const }],
+    };
+    if (existing) await db.update(importLinks).set({ ...values, updatedAt: new Date() }).where(eq(importLinks.id, existing.id));
+    else await db.insert(importLinks).values({ ...values, childImportId: id });
+    invalidateAll();
+    await db.insert(auditLog).values({ action: 'import.link', entityType: 'import', entityId: id, detail: { parent: body.parentImportId } });
+    return linkSummary(id);
+  });
+
+  /** Edit what a link exposes (parent fields on the child, roll-ups on the parent). */
+  const linkPatchSchema = z.object({ parentFields: z.array(z.string()).optional(), aggregates: aggregateListSchema.optional() });
+  app.put('/api/links/:id', async (req, reply) => {
+    const { id } = req.params as { id: string };
+    const body = linkPatchSchema.parse(req.body);
+    const [row] = await db
+      .update(importLinks)
+      .set({ ...body, updatedAt: new Date() })
+      .where(eq(importLinks.id, id))
+      .returning();
+    if (!row) return reply.code(404).send({ error: 'Link not found' });
+    invalidateAll();
     return row;
+  });
+
+  app.delete('/api/links/:id', async (req, reply) => {
+    const { id } = req.params as { id: string };
+    await db.delete(importLinks).where(eq(importLinks.id, id));
+    invalidateAll();
+    return reply.code(204).send();
   });
 
   app.delete('/api/imports/:id', async (req, reply) => {
@@ -246,7 +332,7 @@ export async function importRoutes(app: FastifyInstance, db: Db) {
     const [imp] = await db.select().from(imports).where(eq(imports.id, id));
     if (!imp) return reply.code(404).send({ error: 'Import not found' });
 
-    const cached = await getRows(db, id, imp.columns);
+    const cached = await getRows(db, imp);
     const ctx = evalCtx(cached.types, q.params);
 
     let indices: number[];
@@ -316,8 +402,8 @@ export async function importRoutes(app: FastifyInstance, db: Db) {
     const body = valuesSchema.parse(req.body);
     const [imp] = await db.select().from(imports).where(eq(imports.id, id));
     if (!imp) return reply.code(404).send({ error: 'Import not found' });
-    if (!(body.field in typesOf(imp.columns))) return reply.code(400).send({ error: 'Unknown field' });
-    const cached = await getRows(db, id, imp.columns);
+    const cached = await getRows(db, imp);
+    if (!(body.field in cached.types)) return reply.code(400).send({ error: 'Unknown field' });
     const ctx = evalCtx(cached.types, body.params);
     let matches: ((row: TypedRow) => boolean) | null = null;
     if (body.criteria && !Object.keys(validateCriteria(body.criteria, ctx)).length) {
@@ -350,7 +436,7 @@ export async function importRoutes(app: FastifyInstance, db: Db) {
     const [imp] = await db.select().from(imports).where(eq(imports.id, id));
     if (!imp) return reply.code(404).send({ error: 'Import not found' });
     if (!isSummaryActive(body.criteria.summary)) return reply.code(400).send({ error: 'Criteria has no summary' });
-    const cached = await getRows(db, id, imp.columns);
+    const cached = await getRows(db, imp);
     const ctx = evalCtx(cached.types, body.params);
     const errors = validateCriteria(body.criteria, ctx);
     if (Object.keys(errors).length) return reply.code(400).send({ error: 'Criteria has errors', errors });
@@ -363,8 +449,8 @@ export async function importRoutes(app: FastifyInstance, db: Db) {
     for (let i = 0; i < cached.typed.length; i++) {
       if (compiled.matches(cached.typed[i]) && groupKey(cached.raw[i], cached.typed[i], groupBy, cached.types) === wanted) indices.push(i);
     }
-    const fields = detailFields.length ? detailFields : imp.columns.map((c) => c.name).filter((n) => !groupBy.includes(n));
-    const columns = imp.columns.filter((c) => fields.includes(c.name));
+    const fields = detailFields.length ? detailFields : cached.columns.map((c) => c.name).filter((n) => !groupBy.includes(n));
+    const columns = cached.columns.filter((c) => fields.includes(c.name));
     const subTypes = Object.fromEntries(columns.map((c) => [c.name, c.type]));
     return {
       columns,
@@ -381,7 +467,7 @@ export async function importRoutes(app: FastifyInstance, db: Db) {
     const body = explainSchema.parse(req.body);
     const [imp] = await db.select().from(imports).where(eq(imports.id, id));
     if (!imp) return reply.code(404).send({ error: 'Import not found' });
-    const cached = await getRows(db, id, imp.columns);
+    const cached = await getRows(db, imp);
     const row = cached.typed[body.rowIndex];
     if (!row) return reply.code(404).send({ error: 'Row not found' });
     const ctx = evalCtx(cached.types, body.params);
@@ -402,9 +488,9 @@ export async function importRoutes(app: FastifyInstance, db: Db) {
     const body = exportSchema.parse(req.body ?? {});
     const [imp] = await db.select().from(imports).where(eq(imports.id, id));
     if (!imp) return reply.code(404).send({ error: 'Import not found' });
-    const cached = await getRows(db, id, imp.columns);
+    const cached = await getRows(db, imp);
     let indices = cached.raw.map((_, i) => i);
-    let columns = imp.columns;
+    let columns: ColumnDef[] = cached.columns;
     let rows = cached.raw;
     let suffix = '';
     if (body.criteria) {

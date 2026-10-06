@@ -5,6 +5,7 @@ Drag-and-drop CSV/Excel import with a NetSuite-style (and beyond) filter and cri
 ## What's here
 
 - **Upload**: `.csv .tsv .xlsx .xls .xlsm`, sheet picker, header-row picker with preview, delimiter and encoding sniffing, file type validated by content.
+- **Linked imports (parent / child)**: make one import a child of another on a key (`Deal ID` = `ID`), at upload time or later via **Links**. The child's rows gain the parent's fields (`Deals: Rep`, `Deals: Close Date`…); the parent's rows gain roll-ups of the child you choose (`Payments: Sum of Amount`, `Payments: Count`). Linked columns work everywhere — filters, summaries, calculations, drill-down, export, saved incentives — and are marked ↗ in the grid. Keys match case-insensitively after trimming; cycles are refused.
 - **Column typing**: text / integer / decimal / currency / percent / date / datetime / boolean, inferred and overridable per column. Handles `$1,234.50`, `(500)`, `500-`, `12/31/25`, Excel serials, `Y/N`.
 - **Grid**: virtualized, sortable, type badges in headers.
 - **Period filter**: pick the date column (e.g. Close Date) and a period — this / last / next quarter, fiscal quarter, fiscal year, year, month, YTD, QTD, last N days, or a custom start–end. It is an ordinary criteria node (`period:<field>`), shows as a chip, and the Calculate stage resolves comp plans as of the period's end date.
@@ -116,6 +117,9 @@ web/src/
 | GET    | `/api/imports`               | list                                                 |
 | GET    | `/api/imports/:id`           | detail incl. columns + warnings                      |
 | PATCH  | `/api/imports/:id`           | rename / override column types                       |
+| GET    | `/api/imports/:id/links`     | this import's parent link and child links            |
+| PUT    | `/api/imports/:id/link`      | `{parentImportId, childKey, parentKey}` set/replace the parent |
+| PUT/DELETE | `/api/links/:id`         | edit exposed parent fields / child roll-ups; unlink  |
 | DELETE | `/api/imports/:id`           |                                                      |
 | POST   | `/api/imports/:id/query`     | `{criteria, params, mode: detail\|summary, offset, limit, sort}` → rows, counts, per-condition impact, errors, totals; summary mode returns the summary's `columns` |
 | POST   | `/api/imports/:id/values`    | `{field, criteria?, search?}` → distinct values with counts for a header filter |
@@ -134,7 +138,7 @@ web/src/
 
 - Computed columns on detail rows (the formula engine exists; only summary-row calculations are wired up)
 - Splits / credit rules, clawbacks, SPIFs, period close and statements
-- Lookup / join against a second file
+- Multi-level link chains (a child's child) and many-to-many links
 - Fuzzy name matching
 - Canonical field mapping UI (table exists)
 - Import profiles (re-import same layout in one click)

@@ -1,0 +1,9 @@
+Payment ID,Deal ID,Customer,Paid Date,Amount,Method
+P-1001,D-001,Acme Corp,2025-11-20,"$6,250.00",ACH
+P-1002,D-001,Acme Corp,2025-12-20,"$6,250.00",ACH
+P-1003,D-003,Initech,2025-11-15,"4,000",Card
+P-1004,D-005,Hooli,2025-09-01,25000,Wire
+P-1005,D-007,Stark Industries,2025-11-30,"$15,000",Wire
+P-1006,D-007,Stark Industries,2025-12-31,"$15,000",Wire
+P-1007,D-006,Vehement,2025-10-05,"$3,200.50",Card
+P-1008,D-999,Unknown Co,2025-10-01,100,Card

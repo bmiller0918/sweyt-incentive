@@ -85,7 +85,11 @@ export function DataGrid({ columns, rows, sort, onSort, onTypeChange, onRowClick
                   </button>
                 )}
               </div>
-              {onTypeChange ? (
+              {'linked' in c && (c as { linked?: string }).linked ? (
+                <span className="mt-0.5 truncate text-[10px] text-indigo-500" title={`From linked import ${(c as { linked?: string }).linked}`}>
+                  ↗ {(c as { linked?: string }).linked} · {c.type}
+                </span>
+              ) : onTypeChange ? (
                 <select
                   className={`mt-0.5 w-fit rounded border-0 bg-transparent px-0 py-0 text-[10px] uppercase tracking-wide ${
                     c.type !== c.inferredType ? 'text-amber-700' : 'text-slate-400'
