@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { doublePrecision, index, integer, jsonb, pgTable, text, timestamp, uuid } from 'drizzle-orm/pg-core';
-import type { Aggregate, ColumnDef, Criteria, HoldRule, PlanTiers, RawRow } from '@commissions/shared';
+import type { Aggregate, AmortizationMethod, ColumnDef, CostTreatment, Criteria, HoldRule, PlanTiers, RawRow } from '@commissions/shared';
 
 // Every table carries timestamps and a nullable organization_id so multi-
 // tenancy can be added later without a migration of existing rows.
@@ -123,6 +123,8 @@ export const employeeTypes = pgTable('employee_types', {
   description: text('description'),
   defaultBaseSalary: doublePrecision('default_base_salary'),
   defaultQuota: doublePrecision('default_quota'),
+  /** capitalize (contract acquisition cost) | expense (e.g. BDRs paid to generate leads). */
+  costTreatment: text('cost_treatment').$type<CostTreatment>().notNull().default('capitalize'),
 });
 
 /** Default plan for a slot, for every employee of a type (unless they override it). */
@@ -206,7 +208,20 @@ export interface CommissionRunConfig {
   holdRules?: HoldRule[];
   /** Months between a deal's close (or release) and the payroll it pays on. */
   payLagMonths?: number;
+  /** Subscription start date column, for amortization over the contract term. */
+  contractStartField?: string | null;
+  /** Contract term in months, or an end date to derive it from. */
+  termMonthsField?: string | null;
+  contractEndField?: string | null;
 }
+
+/** Company-wide amortization policy (one row). */
+export const accountingPolicy = pgTable('accounting_policy', {
+  ...base,
+  method: text('method').$type<AmortizationMethod>().notNull().default('contract_term'),
+  customerLifeMonths: integer('customer_life_months').notNull().default(48),
+  defaultTermMonths: integer('default_term_months').notNull().default(12),
+});
 
 /** Why a commission can be held rather than paid on the next payroll. */
 export const holdReasons = pgTable('hold_reasons', {
@@ -269,6 +284,9 @@ export const commissionLines = pgTable(
     releasedAt: text('released_at'),
     /** YYYY-MM payroll month this line pays on; null while on hold. */
     payMonth: text('pay_month'),
+    /** From the deal: subscription start and term, for amortization. */
+    contractStart: text('contract_start'),
+    termMonths: doublePrecision('term_months'),
   },
   (t) => [index('commission_lines_run_idx').on(t.runId, t.rowIndex), index('commission_lines_payee_idx').on(t.runId, t.payee)],
 );

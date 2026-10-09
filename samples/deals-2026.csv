@@ -1,0 +1,6 @@
+Deal ID,Rep,SE,BDR,Customer,Amount,Close Date,Subscription Start,Term Months,Billing,TFC
+P-001,Maya Chen,Sam Okafor,Bea Lead,Acme,900000,2026-01-20,2026-02-01,36,Upfront,N
+P-002,Maya Chen,Sam Okafor,,Globex,200000,2026-02-14,2026-03-01,36,Upfront,N
+P-003,Jordan Ruiz,Sam Okafor,Bea Lead,Initech,150000,2026-02-27,2026-07-15,24,Upfront,N
+P-004,Jordan Ruiz,,,Umbrella,80000,2026-03-05,2026-04-01,12,Quarterly,N
+P-005,Maya Chen,,Bea Lead,Hooli,50000,2026-03-18,2026-04-01,36,Upfront,Y

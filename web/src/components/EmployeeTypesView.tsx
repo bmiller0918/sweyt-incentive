@@ -2,7 +2,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { api, type CompPlan, type EmployeeType, type EmployeeTypeInput } from '../api';
 import { PlanAssignmentsEditor } from './PlanAssignmentsEditor';
 
-const empty = (): EmployeeTypeInput => ({ name: '', description: '', defaultBaseSalary: null, defaultQuota: null });
+const empty = (): EmployeeTypeInput => ({ name: '', description: '', defaultBaseSalary: null, defaultQuota: null, costTreatment: 'capitalize' });
 
 function parseMoney(s: string): number | null {
   const t = s.trim().replace(/[$,\s]/g, '');
@@ -44,7 +44,7 @@ export function EmployeeTypesView() {
       return;
     }
     setSelectedId(t.id);
-    setDraft({ name: t.name, description: t.description ?? '', defaultBaseSalary: t.defaultBaseSalary, defaultQuota: t.defaultQuota });
+    setDraft({ name: t.name, description: t.description ?? '', defaultBaseSalary: t.defaultBaseSalary, defaultQuota: t.defaultQuota, costTreatment: t.costTreatment ?? 'capitalize' });
     setSalaryText(t.defaultBaseSalary == null ? '' : String(t.defaultBaseSalary));
     setQuotaText(t.defaultQuota == null ? '' : String(t.defaultQuota));
   };
@@ -145,6 +145,13 @@ export function EmployeeTypesView() {
               <label className="text-slate-600">
                 Default quota <span className="text-slate-400">(overrides plan.quota)</span>
                 <input className="input mt-1 block w-full" placeholder="$500,000" value={quotaText} onChange={(e) => setQuotaText(e.target.value)} />
+              </label>
+              <label className="col-span-2 text-slate-600">
+                Accounting treatment of commissions <span className="text-slate-400">(this type is a department in the accrual report)</span>
+                <select className="select mt-1 block w-full" value={draft.costTreatment} onChange={(e) => setDraft({ ...draft, costTreatment: e.target.value as EmployeeTypeInput['costTreatment'] })}>
+                  <option value="capitalize">Capitalize and amortize (contract acquisition cost)</option>
+                  <option value="expense">Expense when paid (e.g. BDRs paid to generate leads)</option>
+                </select>
               </label>
             </div>
           </section>
