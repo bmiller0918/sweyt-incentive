@@ -50,6 +50,10 @@ export function tierScaleParam(tiers: PlanTiers): string | null {
 }
 
 /** Sorted tiers with thresholds converted to absolute values; null if unusable. */
+export function tierBands(tiers: PlanTiers, scale: number | null): { from: number; rate: number }[] | null {
+  return normalize(tiers, scale);
+}
+
 function normalize(tiers: PlanTiers, scale: number | null): { from: number; rate: number }[] | null {
   if (!tiers.rows.length) return null;
   const param = tierScaleParam(tiers);

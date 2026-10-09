@@ -190,6 +190,68 @@ export const planAssignments = pgTable(
   (t) => [index('plan_assignments_employee_idx').on(t.employeeId)],
 );
 
+/** How a run reads deals out of an import. */
+export interface CommissionRunConfig {
+  /** Column naming the primary rep. */
+  repField: string;
+  /** Further people paid on each deal: SE, manager, partner, BDR... */
+  payees: { role: string; field: string }[];
+  amountField: string;
+  dateField: string | null;
+  dealKeyField: string | null;
+  /** Inclusive YYYY-MM-DD bounds on the date column; null = unbounded. */
+  from: string | null;
+  to: string | null;
+}
+
+/** One calculation of commission lines over an import's deals. */
+export const commissionRuns = pgTable('commission_runs', {
+  ...base,
+  name: text('name').notNull(),
+  importId: uuid('import_id').references(() => imports.id, { onDelete: 'set null' }),
+  importName: text('import_name').notNull(),
+  config: jsonb('config').$type<CommissionRunConfig>().notNull(),
+  dealCount: integer('deal_count').notNull().default(0),
+  lineCount: integer('line_count').notNull().default(0),
+  totalPayout: doublePrecision('total_payout').notNull().default(0),
+  warnings: jsonb('warnings').$type<string[]>().notNull().default([]),
+});
+
+/**
+ * One line per person per deal (per tier band when a deal is split). The
+ * engine's output verbatim, plus a status the pay/hold workflow will drive.
+ */
+export const commissionLines = pgTable(
+  'commission_lines',
+  {
+    id: integer('id').primaryKey().generatedAlwaysAsIdentity(),
+    runId: uuid('run_id')
+      .notNull()
+      .references(() => commissionRuns.id, { onDelete: 'cascade' }),
+    rowIndex: integer('row_index').notNull(),
+    dealKey: text('deal_key'),
+    dealDate: text('deal_date'),
+    dealAmount: doublePrecision('deal_amount'),
+    payee: text('payee').notNull(),
+    role: text('role').notNull(),
+    planName: text('plan_name'),
+    /** tier | whole | flat | none */
+    method: text('method').notNull(),
+    tierFrom: doublePrecision('tier_from'),
+    tierTo: doublePrecision('tier_to'),
+    amount: doublePrecision('amount'),
+    rate: doublePrecision('rate'),
+    payout: doublePrecision('payout'),
+    cumulativeBefore: doublePrecision('cumulative_before').notNull().default(0),
+    cumulativeAfter: doublePrecision('cumulative_after').notNull().default(0),
+    split: integer('split').notNull().default(0),
+    note: text('note'),
+    /** calculated for now; the pay-now / on-hold workflow adds more. */
+    status: text('status').notNull().default('calculated'),
+  },
+  (t) => [index('commission_lines_run_idx').on(t.runId, t.rowIndex), index('commission_lines_payee_idx').on(t.runId, t.payee)],
+);
+
 export const auditLog = pgTable('audit_log', {
   ...base,
   actor: text('actor').notNull().default('system'),

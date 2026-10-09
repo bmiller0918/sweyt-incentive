@@ -80,6 +80,11 @@ function bounded(r: { effectiveFrom: string | null; effectiveTo: string | null; 
 
 /** Load employees (+ type defaults) with their assignments and build the stage-3 lookup. */
 export async function loadPlanLookup(db: Db, asOf: string): Promise<PlanLookup> {
+  return makePlanLookup(await loadEmployeeRecords(db), asOf);
+}
+
+/** Employees (+ type defaults) with every assignment, own and inherited, for the engine. */
+export async function loadEmployeeRecords(db: Db): Promise<EmployeeRecord[]> {
   const ttypes = new Map((await db.select().from(thresholdTypes)).map((t) => [t.key, { scaleParam: t.scaleParam }]));
   const emps = await db
     .select({ e: employees, typeName: employeeTypes.name, typeSalary: employeeTypes.defaultBaseSalary, typeQuota: employeeTypes.defaultQuota })
@@ -102,7 +107,7 @@ export async function loadPlanLookup(db: Db, asOf: string): Promise<PlanLookup> 
   const ownBy = group(own);
   const typeBy = group(inherited);
 
-  const records: EmployeeRecord[] = emps.map(({ e, typeName, typeSalary, typeQuota }) => ({
+  return emps.map(({ e, typeName, typeSalary, typeQuota }) => ({
     name: e.name,
     status: e.status,
     type: typeName,
@@ -114,7 +119,6 @@ export async function loadPlanLookup(db: Db, asOf: string): Promise<PlanLookup> 
       ...(e.employeeTypeId ? (typeBy.get(e.employeeTypeId) ?? []) : []).map((r) => ({ source: 'type' as const, slot: r.slot, planName: r.planName, params: r.params, tiers: resolveTiers(r.tiers, ttypes), ...bounded(r) })),
     ],
   }));
-  return makePlanLookup(records, asOf);
 }
 
 export async function planRoutes(app: FastifyInstance, db: Db) {
