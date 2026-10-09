@@ -208,10 +208,18 @@ export interface EmployeeRecord extends EmployeeInfo {
  * the one with the latest start wins.
  */
 export function makePlanLookup(employees: EmployeeRecord[], asOf: string): PlanLookup {
+  const dated = makeDatedPlanLookup(employees);
+  return (rep) => dated(rep, asOf);
+}
+
+/** Same lookup, but the "as of" date is chosen per call (e.g. each deal's close date). */
+export type DatedPlanLookup = (repName: string, asOf: string) => ResolvedRep | null;
+
+export function makeDatedPlanLookup(employees: EmployeeRecord[]): DatedPlanLookup {
   const byName = new Map<string, EmployeeRecord>();
   for (const e of employees) byName.set(e.name.trim().toLowerCase(), e);
   const rank = (a: AssignmentRecord) => (a.source === 'type' ? 1 : 0);
-  return (rep) => {
+  return (rep, asOf) => {
     const e = byName.get(rep.trim().toLowerCase());
     if (!e) return null;
     const plans: Record<string, ResolvedPlan> = {};

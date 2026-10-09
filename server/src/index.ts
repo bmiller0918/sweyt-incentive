@@ -8,6 +8,7 @@ import Fastify from 'fastify';
 import { ZodError } from 'zod';
 import { config } from './config.js';
 import { createDb } from './db/client.js';
+import { commissionRoutes } from './routes/commissions.js';
 import { criteriaRoutes } from './routes/criteria.js';
 import { importRoutes } from './routes/imports.js';
 import { planRoutes } from './routes/plans.js';
@@ -34,6 +35,7 @@ async function main() {
   await importRoutes(app, db);
   await criteriaRoutes(app, db);
   await planRoutes(app, db);
+  await commissionRoutes(app, db);
 
   // In production the server also serves the built web app.
   const webDist = [path.resolve(here, '../../web/dist'), path.resolve(here, '../web/dist')].find((p) => fs.existsSync(p));

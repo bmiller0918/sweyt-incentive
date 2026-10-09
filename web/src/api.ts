@@ -175,6 +175,53 @@ export interface CriteriaSet {
   updatedAt: string;
 }
 
+export interface CommissionRunConfig {
+  repField: string;
+  payees: { role: string; field: string }[];
+  amountField: string;
+  dateField: string | null;
+  dealKeyField: string | null;
+  from: string | null;
+  to: string | null;
+}
+
+export interface CommissionRun {
+  id: string;
+  name: string;
+  importId: string | null;
+  importName: string;
+  config: CommissionRunConfig;
+  dealCount: number;
+  lineCount: number;
+  totalPayout: number;
+  warnings: string[];
+  createdAt: string;
+}
+
+export interface CommissionLine {
+  id: number;
+  rowIndex: number;
+  dealKey: string | null;
+  dealDate: string | null;
+  dealAmount: number | null;
+  payee: string;
+  role: string;
+  planName: string | null;
+  method: 'tier' | 'whole' | 'flat' | 'none';
+  tierFrom: number | null;
+  tierTo: number | null;
+  amount: number | null;
+  rate: number | null;
+  payout: number | null;
+  cumulativeBefore: number;
+  cumulativeAfter: number;
+  split: number;
+  note: string | null;
+  status: string;
+}
+
+export type CommissionRunInput = Omit<CommissionRunConfig, 'payees'> & { name: string; importId: string; payees: { role: string; field: string }[] };
+
 async function request<T>(url: string, init?: RequestInit): Promise<T> {
   const res = await fetch(url, init);
   if (!res.ok) {
@@ -308,4 +355,14 @@ export const api = {
   updateAssignment: (id: string, body: { compPlanId: string; slot: string; effectiveFrom?: string | null; effectiveTo?: string | null }) =>
     request<PlanAssignment>(`/api/assignments/${id}`, json('PUT', body)),
   deleteAssignment: (id: string) => request<void>(`/api/assignments/${id}`, { method: 'DELETE' }),
+
+  listCommissionRuns: () => request<CommissionRun[]>('/api/commission-runs'),
+  getCommissionRun: (id: string) => request<CommissionRun & { lines: CommissionLine[] }>(`/api/commission-runs/${id}`),
+  createCommissionRun: (body: CommissionRunInput) => request<CommissionRun>('/api/commission-runs', json('POST', body)),
+  deleteCommissionRun: (id: string) => request<void>(`/api/commission-runs/${id}`, { method: 'DELETE' }),
+  exportCommissionRun(id: string) {
+    const a = document.createElement('a');
+    a.href = `/api/commission-runs/${id}/export`;
+    a.click();
+  },
 };

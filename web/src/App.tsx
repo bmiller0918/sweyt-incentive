@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import { api, type ImportSummary } from './api';
+import { CommissionsView } from './components/CommissionsView';
 import { CompPlansView } from './components/CompPlansView';
 import { EmployeeTypesView } from './components/EmployeeTypesView';
 import { EmployeesView } from './components/EmployeesView';
@@ -11,7 +12,7 @@ export default function App() {
   const [imports, setImports] = useState<ImportSummary[]>([]);
   const [selected, setSelected] = useState<string | null>(null);
   const [uploading, setUploading] = useState(false);
-  const [page, setPage] = useState<'imports' | 'plans' | 'employees' | 'types' | 'incentives'>('imports');
+  const [page, setPage] = useState<'imports' | 'plans' | 'employees' | 'types' | 'incentives' | 'commissions'>('imports');
   const [peopleOpen, setPeopleOpen] = useState(false);
   const peoplePages = ['employees', 'types', 'plans'] as const;
   /** Incentive to load when an import is opened from the register. */
@@ -77,6 +78,13 @@ export default function App() {
         </nav>
         <div className="space-y-1 border-t border-slate-200 p-2">
           <button
+            onClick={() => setPage('commissions')}
+            className={`block w-full rounded-md px-2 py-1.5 text-left text-sm hover:bg-slate-100 ${page === 'commissions' ? 'bg-indigo-50 text-indigo-700' : 'text-slate-700'}`}
+          >
+            <div className="font-medium">Commissions</div>
+            <div className="text-xs text-slate-400">one line per person per deal</div>
+          </button>
+          <button
             onClick={() => setPage('incentives')}
             className={`block w-full rounded-md px-2 py-1.5 text-left text-sm hover:bg-slate-100 ${page === 'incentives' ? 'bg-indigo-50 text-indigo-700' : 'text-slate-700'}`}
           >
@@ -126,7 +134,9 @@ export default function App() {
             </button>
           </div>
         )}
-        {page === 'plans' ? (
+        {page === 'commissions' ? (
+          <CommissionsView />
+        ) : page === 'plans' ? (
           <CompPlansView />
         ) : page === 'employees' ? (
           <EmployeesView />

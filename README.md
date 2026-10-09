@@ -24,6 +24,7 @@ Drag-and-drop CSV/Excel import with a NetSuite-style (and beyond) filter and cri
 - **Formula scope per rep**: `plan.<param>`, `<slot>.<param>`, `employee.base_salary`, `employee.bonus_total`, and each bonus by label (`employee.car_allowance`). Missing values yield blank, never zero.
 - **Incentives** (saved pipelines): Save captures the period, filters, summary, drill-down columns and calculations for an import under a name + description, with automatic version history and an audit log. The **Incentives** register lists them all (period, filters, grouping, calculations, last updated); click one to reopen the import with everything restored.
 - **Export** filtered rows to CSV or XLSX with formula-injection sanitising.
+- **Commissions** (runs): pick a deals import, the rep column, the amount and close-date columns, optionally other people paid on each deal (SE, manager, partner, BDR columns) and a date range, and calculate **one commission line per person per deal**. Each person's rate comes from the comp plan in force on the deal's close date (effective-dated assignments, so a mid-year recast takes effect on its start date). Attainment accrues per person in close-date order over the run's deals; a deal that crosses a tier threshold is **split into one line per band** (the base rate up to quota, the accelerated rate above it), exactly as the two-row Excel approach but automatic. Credit memos unwind the bands they fall back through. Lines carry the plan, tier band, slice amount, rate, payout rounded to cents, attainment before and after, and a note when nothing could be paid (unknown person, no plan in force, no amount, tiers without a quota). Results show totals by person, the lines, and export to CSV. Lines keep a `status` so the pay-now / on-hold workflow can drive them next. Engine: `shared/src/lines.ts` (pure, unit-tested).
 - **Deploy**: single Docker image, `/health` endpoint, Railway config.
 
 ## Stack
@@ -131,13 +132,16 @@ web/src/
 | CRUD   | `/api/threshold-types[/:id]` | built-in + custom threshold types for tier tables    |
 | CRUD   | `/api/comp-plans[/:id]`      | plans with `params` and `tiers`                      |
 | CRUD   | `/api/employee-types[/:id]`  | roles with default plans; `POST /:id/assignments`, `PUT`/`DELETE /api/type-assignments/:id` |
+| GET/POST | `/api/commission-runs`     | list runs; `{name, importId, repField, payees[{role,field}], amountField, dateField?, dealKeyField?, from?, to?}` calculates and stores a run |
+| GET/DELETE | `/api/commission-runs/:id` | run with its lines; `GET /:id/export` downloads the lines as CSV |
 | CRUD   | `/api/employees[/:id]`       | employees with own + inherited assignments; `POST /bulk` creates many by name (optional type) |
 | POST   | `/api/employees/:id/assignments` | add a plan to an employee in a slot; `PUT`/`DELETE /api/assignments/:id` |
 
 ## Not yet built (planned)
 
 - Computed columns on detail rows (the formula engine exists; only summary-row calculations are wired up)
-- Splits / credit rules, clawbacks, SPIFs, period close and statements
+- Pay-now / on-hold workflow with reason codes, accounting subledger (accrual, capitalize vs expense, amortization), rep statements
+- Splits / credit rules, clawbacks, SPIFs, period close
 - Multi-level link chains (a child's child) and many-to-many links
 - Fuzzy name matching
 - Canonical field mapping UI (table exists)
