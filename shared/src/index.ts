@@ -8,3 +8,4 @@ export * from './tiers.js';
 export * from './formula.js';
 export * from './calc.js';
 export * from './lines.js';
+export * from './holds.js';
