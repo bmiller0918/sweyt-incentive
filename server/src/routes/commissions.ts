@@ -9,11 +9,14 @@ import {
   DEFAULT_HOLD_REASONS,
   LINE_STATUSES,
   applyHoldRules,
+  buildSubledger,
   computeCommissionLines,
   formatDateMs,
   holdRuleSchema,
   makeDatedPlanLookup,
   payMonthFor,
+  type AccountingLineInput,
+  type AccountingPolicy,
   type DealInput,
 } from '@commissions/shared';
 import { and, asc, desc, eq, inArray, sql } from 'drizzle-orm';
@@ -21,7 +24,7 @@ import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { config } from '../config.js';
 import type { Db } from '../db/client.js';
-import { auditLog, commissionLines, commissionRuns, holdReasons, imports, type CommissionRunConfig } from '../db/schema.js';
+import { accountingPolicy, auditLog, commissionLines, commissionRuns, employeeTypes, employees, holdReasons, imports, type CommissionRunConfig } from '../db/schema.js';
 import { toCsv } from '../export.js';
 import { getRows } from '../rowcache.js';
 import { loadEmployeeRecords } from './plans.js';
@@ -41,7 +44,18 @@ const runSchema = z.object({
   to: dateStr.nullable().optional(),
   holdRules: z.array(holdRuleSchema).default([]),
   payLagMonths: z.number().int().min(0).max(12).default(1),
+  contractStartField: z.string().nullable().optional(),
+  termMonthsField: z.string().nullable().optional(),
+  contractEndField: z.string().nullable().optional(),
 });
+
+/** Whole months between two ISO dates, rounded (a 3-year term is 36 even if the end is the 31st). */
+function monthsBetweenDates(start: string, end: string): number {
+  const [sy, sm, sd] = start.split('-').map(Number);
+  const [ey, em, ed] = end.split('-').map(Number);
+  const months = ey * 12 + em - (sy * 12 + sm);
+  return Math.max(1, Math.round(months + (ed - sd) / 30));
+}
 
 const LINE_COLUMNS = [
   'Deal',
@@ -123,7 +137,9 @@ export async function commissionRoutes(app: FastifyInstance, db: Db) {
     const [imp] = await db.select().from(imports).where(eq(imports.id, body.importId));
     if (!imp) return reply.code(404).send({ error: 'Import not found' });
     const cached = await getRows(db, imp);
-    const fields = [body.repField, body.amountField, body.dateField, body.dealKeyField, ...body.payees.map((p) => p.field)].filter((f): f is string => !!f);
+    const fields = [body.repField, body.amountField, body.dateField, body.dealKeyField, body.contractStartField, body.termMonthsField, body.contractEndField, ...body.payees.map((p) => p.field)].filter(
+      (f): f is string => !!f,
+    );
     const missing = fields.filter((f) => !(f in cached.types));
     if (missing.length) return reply.code(400).send({ error: `Column not found: ${missing.join(', ')}` });
     const knownReasons = new Set((await db.select({ key: holdReasons.key }).from(holdReasons)).map((r) => r.key));
@@ -140,6 +156,9 @@ export async function commissionRoutes(app: FastifyInstance, db: Db) {
       to: body.to ?? null,
       holdRules: body.holdRules,
       payLagMonths: body.payLagMonths,
+      contractStartField: body.contractStartField ?? null,
+      termMonthsField: body.termMonthsField ?? null,
+      contractEndField: body.contractEndField ?? null,
     };
 
     const holds = applyHoldRules(cached.typed, body.holdRules, { types: cached.types, fiscalYearStartMonth: config.fiscalYearStartMonth, weekStartsOn: config.weekStartsOn });
@@ -147,6 +166,11 @@ export async function commissionRoutes(app: FastifyInstance, db: Db) {
     if (ruleErrors.length) return reply.code(400).send({ error: `Hold rule problem: ${ruleErrors.map(([, m]) => m).join('; ')}` });
 
     const deals: DealInput[] = [];
+    const contract = new Map<number, { start: string | null; term: number | null }>();
+    const isoOf = (field: string | null | undefined, row: (typeof cached.typed)[number]) => {
+      const v = field ? row[field] : null;
+      return typeof v === 'number' ? formatDateMs(v, 'date') : null;
+    };
     cached.typed.forEach((row, i) => {
       const rawRow = cached.raw[i];
       const dateMs = config_.dateField ? row[config_.dateField] : null;
@@ -160,6 +184,11 @@ export async function commissionRoutes(app: FastifyInstance, db: Db) {
         .map((p) => ({ role: p.role, name: String(rawRow[p.field] ?? '').trim() }))
         .filter((p) => p.name);
       if (!payees.length) return;
+      const start = isoOf(config_.contractStartField, row);
+      const termRaw = config_.termMonthsField ? row[config_.termMonthsField] : null;
+      const end = isoOf(config_.contractEndField, row);
+      const term = typeof termRaw === 'number' && termRaw > 0 ? termRaw : start && end && end > start ? monthsBetweenDates(start, end) : null;
+      contract.set(i, { start, term });
       deals.push({
         rowIndex: i,
         dealKey: config_.dealKeyField ? String(rawRow[config_.dealKeyField] ?? '').trim() || null : null,
@@ -214,6 +243,8 @@ export async function commissionRoutes(app: FastifyInstance, db: Db) {
             holdReason: reason,
             heldAt: reason ? (l.dealDate ?? runDate) : null,
             payMonth: reason ? null : payMonthFor(l.dealDate, body.payLagMonths),
+            contractStart: contract.get(l.rowIndex)?.start ?? null,
+            termMonths: contract.get(l.rowIndex)?.term ?? null,
           };
         }),
       );
@@ -292,6 +323,110 @@ export async function commissionRoutes(app: FastifyInstance, db: Db) {
     }
     await db.insert(auditLog).values({ action: 'commission_line.pay', entityType: 'commission_run', entityId: id, detail: { lineIds: body.lineIds } });
     return linesOf(id, body.lineIds);
+  });
+
+  // -- Accounting ------------------------------------------------------------
+  const policySchema = z.object({
+    method: z.enum(['contract_term', 'customer_life']),
+    customerLifeMonths: z.number().int().min(1).max(240),
+    defaultTermMonths: z.number().int().min(1).max(240),
+  });
+  const getPolicy = async (): Promise<AccountingPolicy & { id: string }> => {
+    const [row] = await db.select().from(accountingPolicy).limit(1);
+    if (row) return row;
+    const [created] = await db.insert(accountingPolicy).values({}).returning();
+    return created;
+  };
+  app.get('/api/accounting-policy', async () => getPolicy());
+  app.put('/api/accounting-policy', async (req) => {
+    const body = policySchema.parse(req.body);
+    const cur = await getPolicy();
+    const [row] = await db.update(accountingPolicy).set({ ...body, updatedAt: new Date() }).where(eq(accountingPolicy.id, cur.id)).returning();
+    await db.insert(auditLog).values({ action: 'accounting_policy.update', entityType: 'accounting_policy', entityId: cur.id, detail: body });
+    return row;
+  });
+
+  /** Department and treatment for each payee, from their employee type. */
+  const subledgerFor = async (runId: string) => {
+    const lines = await db.select().from(commissionLines).where(eq(commissionLines.runId, runId)).orderBy(asc(commissionLines.id));
+    const emps = await db
+      .select({ name: employees.name, dept: employeeTypes.name, treatment: employeeTypes.costTreatment })
+      .from(employees)
+      .leftJoin(employeeTypes, eq(employees.employeeTypeId, employeeTypes.id));
+    const byName = new Map(emps.map((e) => [e.name.trim().toLowerCase(), e]));
+    const input: AccountingLineInput[] = lines.map((l) => {
+      const e = byName.get(l.payee.trim().toLowerCase());
+      return {
+        lineId: l.id,
+        dealKey: l.dealKey,
+        payee: l.payee,
+        role: l.role,
+        department: e?.dept ?? 'Unassigned',
+        treatment: e?.treatment ?? 'capitalize',
+        payout: l.payout,
+        status: l.status,
+        payMonth: l.payMonth,
+        contractStart: l.contractStart,
+        termMonths: l.termMonths,
+      };
+    });
+    const policy = await getPolicy();
+    const result = buildSubledger(input, { method: policy.method, customerLifeMonths: policy.customerLifeMonths, defaultTermMonths: policy.defaultTermMonths });
+    const untyped = new Set(input.filter((i) => i.department === 'Unassigned' && i.status !== 'hold' && i.payout !== null).map((i) => i.payee));
+    if (untyped.size) result.warnings.push(`${[...untyped].join(', ')} ${untyped.size === 1 ? 'has' : 'have'} no employee type, so their commissions were capitalized under "Unassigned".`);
+    return result;
+  };
+
+  app.get('/api/commission-runs/:id/accounting', async (req, reply) => {
+    const { id } = req.params as { id: string };
+    const [run] = await db.select({ id: commissionRuns.id }).from(commissionRuns).where(eq(commissionRuns.id, id));
+    if (!run) return reply.code(404).send({ error: 'Run not found' });
+    const res = await subledgerFor(id);
+    // The schedule's per-month map is large; the UI gets a compact version and exports the long form.
+    return { ...res, schedule: res.schedule.map(({ byMonth: _b, ...s }) => s) };
+  });
+
+  const csvCols = (names: string[]) => names.map((name, index) => ({ name, index, type: 'text' as const, inferredType: 'text' as const }));
+  app.get('/api/commission-runs/:id/accounting/schedule.csv', async (req, reply) => {
+    const { id } = req.params as { id: string };
+    const [run] = await db.select().from(commissionRuns).where(eq(commissionRuns.id, id));
+    if (!run) return reply.code(404).send({ error: 'Run not found' });
+    const res = await subledgerFor(id);
+    const months = [...new Set(res.schedule.flatMap((s) => Object.keys(s.byMonth)))].sort();
+    const cols = ['Line', 'Deal', 'Payee', 'Department', 'Capitalized Month', 'Amount', 'Start', 'End', 'Months', ...months];
+    const rows = res.schedule.map((s) => ({
+      Line: String(s.lineId),
+      Deal: s.dealKey ?? '',
+      Payee: s.payee,
+      Department: s.department,
+      'Capitalized Month': s.capitalizedMonth,
+      Amount: String(s.amount),
+      Start: s.startMonth,
+      End: s.endMonth,
+      Months: String(s.months),
+      ...Object.fromEntries(months.map((m) => [m, s.byMonth[m] === undefined ? '' : String(s.byMonth[m])])),
+    }));
+    const safe = run.name.replace(/[^\w.-]+/g, '_');
+    return reply
+      .header('Content-Type', 'text/csv; charset=utf-8')
+      .header('Content-Disposition', `attachment; filename="${safe}-amortization-schedule.csv"`)
+      .send(toCsv(csvCols(cols), rows));
+  });
+
+  app.get('/api/commission-runs/:id/accounting/entries.csv', async (req, reply) => {
+    const { id } = req.params as { id: string };
+    const [run] = await db.select().from(commissionRuns).where(eq(commissionRuns.id, id));
+    if (!run) return reply.code(404).send({ error: 'Run not found' });
+    const res = await subledgerFor(id);
+    const cols = ['Month', 'Memo', 'Account', 'Department', 'Debit', 'Credit'];
+    const rows = res.entries.flatMap((e) =>
+      e.lines.map((l) => ({ Month: e.month, Memo: e.memo, Account: l.account, Department: l.department ?? '', Debit: l.debit ? String(l.debit) : '', Credit: l.credit ? String(l.credit) : '' })),
+    );
+    const safe = run.name.replace(/[^\w.-]+/g, '_');
+    return reply
+      .header('Content-Type', 'text/csv; charset=utf-8')
+      .header('Content-Disposition', `attachment; filename="${safe}-journal-entries.csv"`)
+      .send(toCsv(csvCols(cols), rows));
   });
 
   // -- Export ----------------------------------------------------------------

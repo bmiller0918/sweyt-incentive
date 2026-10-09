@@ -1,4 +1,4 @@
-import type { Aggregate, ColumnDef, ColumnType, Criteria, HoldRule, LineStatus, PlanTiers, RawRow } from '@commissions/shared';
+import type { AccountingPolicy, Aggregate, ColumnDef, ColumnType, CostTreatment, Criteria, HoldRule, LineStatus, PlanTiers, RawRow, ScheduleLine, SubledgerResult } from '@commissions/shared';
 
 export interface ImportSummary {
   id: string;
@@ -123,11 +123,12 @@ export interface EmployeeType {
   description: string | null;
   defaultBaseSalary: number | null;
   defaultQuota: number | null;
+  costTreatment: CostTreatment;
   employeeCount: number;
   assignments: TypeAssignment[];
   updatedAt: string;
 }
-export type EmployeeTypeInput = Pick<EmployeeType, 'name' | 'description' | 'defaultBaseSalary' | 'defaultQuota'>;
+export type EmployeeTypeInput = Pick<EmployeeType, 'name' | 'description' | 'defaultBaseSalary' | 'defaultQuota' | 'costTreatment'>;
 
 export interface Employee {
   id: string;
@@ -185,7 +186,14 @@ export interface CommissionRunConfig {
   to: string | null;
   holdRules?: HoldRule[];
   payLagMonths?: number;
+  contractStartField?: string | null;
+  termMonthsField?: string | null;
+  contractEndField?: string | null;
 }
+
+/** The subledger as the API returns it: schedule lines without their per-month map. */
+export type Subledger = Omit<SubledgerResult, 'schedule'> & { schedule: Omit<ScheduleLine, 'byMonth'>[] };
+export type AccountingPolicyRow = AccountingPolicy & { id: string };
 
 export interface HoldReason {
   id: string;
@@ -385,6 +393,15 @@ export const api = {
   releaseLines: (runId: string, body: { lineIds: number[]; releasedAt?: string; note?: string | null }) =>
     request<CommissionLine[]>(`/api/commission-runs/${runId}/release`, json('POST', body)),
   payLines: (runId: string, lineIds: number[]) => request<CommissionLine[]>(`/api/commission-runs/${runId}/pay`, json('POST', { lineIds })),
+
+  getAccounting: (runId: string) => request<Subledger>(`/api/commission-runs/${runId}/accounting`),
+  exportAccounting(runId: string, what: 'schedule' | 'entries') {
+    const a = document.createElement('a');
+    a.href = `/api/commission-runs/${runId}/accounting/${what}.csv`;
+    a.click();
+  },
+  getAccountingPolicy: () => request<AccountingPolicyRow>('/api/accounting-policy'),
+  updateAccountingPolicy: (body: AccountingPolicy) => request<AccountingPolicyRow>('/api/accounting-policy', json('PUT', body)),
 
   listHoldReasons: () => request<HoldReason[]>('/api/hold-reasons'),
   createHoldReason: (name: string) => request<HoldReason>('/api/hold-reasons', json('POST', { name })),

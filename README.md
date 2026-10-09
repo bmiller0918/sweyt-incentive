@@ -26,6 +26,7 @@ Drag-and-drop CSV/Excel import with a NetSuite-style (and beyond) filter and cri
 - **Export** filtered rows to CSV or XLSX with formula-injection sanitising.
 - **Commissions** (runs): pick a deals import, the rep column, the amount and close-date columns, optionally other people paid on each deal (SE, manager, partner, BDR columns) and a date range, and calculate **one commission line per person per deal**. Each person's rate comes from the comp plan in force on the deal's close date (effective-dated assignments, so a mid-year recast takes effect on its start date). Attainment accrues per person in close-date order over the run's deals; a deal that crosses a tier threshold is **split into one line per band** (the base rate up to quota, the accelerated rate above it), exactly as the two-row Excel approach but automatic. Credit memos unwind the bands they fall back through. Lines carry the plan, tier band, slice amount, rate, payout rounded to cents, attainment before and after, and a note when nothing could be paid (unknown person, no plan in force, no amount, tiers without a quota). Results show totals by person, the lines, and export to CSV. Engine: `shared/src/lines.ts` (pure, unit-tested).
 - **Pay now / on hold**: every line is either *Pay next payroll* (the month after the close, lag configurable per run) or *On hold* with a reason. **Hold rules** on a run (column + operator + value → reason, first match wins) put deals on hold automatically from the data (e.g. `Billing is not Upfront`, `TFC is true`, `Start Date after …`); anything can also be held or released by hand, singly or in bulk. Releasing a held line pays it on the payroll after the release date, like a fresh close. The run view has an **on-hold dashboard** (total, by reason, by person) and an on-hold CSV export; every hold and release is audit-logged. **Hold reasons** are a settings list seeded with the usual five (start delayed > 4 months, can't bill upfront, termination for convenience, delayed payment terms, other). Logic: `shared/src/holds.ts`.
+- **Accounting** (subledger, the run's Accounting tab): commissions are accrued in their pay month (held lines are not booked). Each **employee type** carries a cost treatment: *capitalize* (contract acquisition cost) or *expense when paid* (e.g. BDRs), and the type is the department in the **monthly accrual by department** report (capitalized vs expensed, with the credit to accrued commissions). Capitalized lines get a **straight-line amortization schedule** at line level under a company-wide **policy**: over the contract term from the subscription start (a run can map subscription start + term or end columns from the deal data), or over one estimated customer life from the pay month (the practical expedient). The tab shows the **capitalized balance rollforward** (opening, additions, amortization, closing per month), the schedules, and the **journal entries** (accrual per pay month, amortization per month, by department), with CSV exports of the full schedule (one column per month) and the entries. Logic: `shared/src/accounting.ts`; cents are rounded per month with the remainder in the last month so every schedule ties out exactly. `samples/deals-2026.csv` has SE/BDR payees, subscription start and term columns to try it with.
 - **Deploy**: single Docker image, `/health` endpoint, Railway config.
 
 ## Stack
@@ -137,13 +138,15 @@ web/src/
 | GET/DELETE | `/api/commission-runs/:id` | run with its lines; `GET /:id/export[?status=hold]` downloads the lines as CSV |
 | POST   | `/api/commission-runs/:id/hold` | `{lineIds, reasonKey, note?, heldAt?}`; `/release` `{lineIds, releasedAt?}`; `/pay` `{lineIds}` clears a hold |
 | GET/POST/DELETE | `/api/hold-reasons[/:id]` | hold reasons (built-ins can't be deleted) |
+| GET    | `/api/commission-runs/:id/accounting` | accrual by pay month × department, schedules, rollforward, journal entries; `/accounting/schedule.csv`, `/accounting/entries.csv` |
+| GET/PUT | `/api/accounting-policy`    | `{method: contract_term\|customer_life, customerLifeMonths, defaultTermMonths}` |
 | CRUD   | `/api/employees[/:id]`       | employees with own + inherited assignments; `POST /bulk` creates many by name (optional type) |
 | POST   | `/api/employees/:id/assignments` | add a plan to an employee in a slot; `PUT`/`DELETE /api/assignments/:id` |
 
 ## Not yet built (planned)
 
 - Computed columns on detail rows (the formula engine exists; only summary-row calculations are wired up)
-- Accounting subledger (accrual, capitalize vs expense, amortization), rep statements
+- Rep statements, leadership reporting, mid-year recasts
 - Splits / credit rules, clawbacks, SPIFs, period close
 - Multi-level link chains (a child's child) and many-to-many links
 - Fuzzy name matching

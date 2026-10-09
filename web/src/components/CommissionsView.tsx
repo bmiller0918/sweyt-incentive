@@ -1,6 +1,6 @@
 import { LINE_STATUS_LABELS, OPERATOR_LABELS, familyOf, operandArity, type Condition, type HoldRule, type LineStatus, type Operator } from '@commissions/shared';
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { api, type CommissionLine, type CommissionRun, type HoldReason, type ImportColumn, type ImportDetail, type ImportSummary } from '../api';
+import { api, type AccountingPolicyRow, type CommissionLine, type CommissionRun, type HoldReason, type ImportColumn, type ImportDetail, type ImportSummary, type Subledger } from '../api';
 import { PeriodPicker } from './PeriodPicker';
 
 const money = (n: number | null | undefined) => (n === null || n === undefined ? '' : n.toLocaleString(undefined, { style: 'currency', currency: 'USD' }));
@@ -29,10 +29,13 @@ interface Draft {
   to: string | null;
   holdRules: HoldRule[];
   payLagMonths: number;
+  contractStartField: string;
+  termMonthsField: string;
+  contractEndField: string;
 }
 
 /** Guess the obvious columns so most runs are two clicks. */
-function guess(imp: ImportDetail): Pick<Draft, 'repField' | 'amountField' | 'dateField' | 'dealKeyField'> {
+function guess(imp: ImportDetail): Pick<Draft, 'repField' | 'amountField' | 'dateField' | 'dealKeyField' | 'contractStartField' | 'termMonthsField' | 'contractEndField'> {
   const names = imp.columns.map((c) => c.name);
   const find = (re: RegExp, type?: (t: string) => boolean) => names.find((n) => re.test(n) && (!type || type(imp.columns.find((c) => c.name === n)!.type))) ?? '';
   const isNum = (t: string) => ['currency', 'decimal', 'integer'].includes(t);
@@ -42,6 +45,9 @@ function guess(imp: ImportDetail): Pick<Draft, 'repField' | 'amountField' | 'dat
     amountField: find(/\b(acv|amount|arr|bookings?|value)\b/i, isNum) || find(/./, isNum),
     dateField: find(/close|booked|signed/i, isDate) || find(/./, isDate),
     dealKeyField: find(/\b(deal|opportunity|opp)\b.*\b(id|number|#)/i) || find(/^id$/i),
+    contractStartField: find(/(subscription|contract|service).*start|start.*date|go.?live/i, isDate),
+    termMonthsField: find(/term|months|duration/i, isNum),
+    contractEndField: find(/(subscription|contract|service).*end|end.*date/i, isDate),
   };
 }
 
@@ -92,7 +98,7 @@ export function CommissionsView() {
   useEffect(() => {
     if (selectedId !== 'new') return;
     const first = imports[0];
-    setDraft({ name: '', importId: first?.id ?? '', repField: '', payees: [], amountField: '', dateField: '', dealKeyField: '', from: null, to: null, holdRules: [], payLagMonths: 1 });
+    setDraft({ name: '', importId: first?.id ?? '', repField: '', payees: [], amountField: '', dateField: '', dealKeyField: '', from: null, to: null, holdRules: [], payLagMonths: 1, contractStartField: '', termMonthsField: '', contractEndField: '' });
   }, [selectedId, imports]);
 
   useEffect(() => {
@@ -126,6 +132,9 @@ export function CommissionsView() {
         to: draft.to,
         holdRules: draft.holdRules.filter((r) => r.condition.field),
         payLagMonths: draft.payLagMonths,
+        contractStartField: draft.contractStartField || null,
+        termMonthsField: draft.termMonthsField || null,
+        contractEndField: draft.contractEndField || null,
       });
       await refresh();
       setSelectedId(created.id);
@@ -248,7 +257,7 @@ function NewRunForm({
                 <select
                   className="select mt-1 w-full"
                   value={draft.importId}
-                  onChange={(e) => setDraft({ ...draft, importId: e.target.value, repField: '', amountField: '', dateField: '', dealKeyField: '', payees: [], holdRules: [] })}
+                  onChange={(e) => setDraft({ ...draft, importId: e.target.value, repField: '', amountField: '', dateField: '', dealKeyField: '', payees: [], holdRules: [], contractStartField: '', termMonthsField: '', contractEndField: '' })}
                 >
                   {imports.map((i) => (
                     <option key={i.id} value={i.id}>
@@ -267,6 +276,16 @@ function NewRunForm({
               <Field label="Amount column" value={draft.amountField} onChange={(v) => setDraft({ ...draft, amountField: v })} options={numCols.map((c) => c.name)} required />
               <Field label="Close date column" value={draft.dateField} onChange={(v) => setDraft({ ...draft, dateField: v })} options={dateCols.map((c) => c.name)} />
               <Field label="Deal ID column" value={draft.dealKeyField} onChange={(v) => setDraft({ ...draft, dealKeyField: v })} options={columns.map((c) => c.name)} />
+            </div>
+
+            <div>
+              <span className="text-xs text-slate-500">For amortization (optional)</span>
+              <div className="mt-1 text-xs text-slate-400">Where the subscription starts and how long it runs, so capitalized commissions can amortize over the contract term.</div>
+              <div className="mt-2 grid grid-cols-3 gap-3">
+                <Field label="Subscription start" value={draft.contractStartField} onChange={(v) => setDraft({ ...draft, contractStartField: v })} options={dateCols.map((c) => c.name)} />
+                <Field label="Term (months)" value={draft.termMonthsField} onChange={(v) => setDraft({ ...draft, termMonthsField: v })} options={numCols.map((c) => c.name)} />
+                <Field label="Or subscription end" value={draft.contractEndField} onChange={(v) => setDraft({ ...draft, contractEndField: v })} options={dateCols.map((c) => c.name)} />
+              </div>
             </div>
 
             <div>
@@ -415,6 +434,7 @@ function RunDetail({ run, reasons, onChanged, onDelete, onError }: { run: Commis
   const [holdNote, setHoldNote] = useState('');
   const [releaseDate, setReleaseDate] = useState(today());
   const [selected, setSelected] = useState<Set<number>>(new Set());
+  const [tab, setTab] = useState<'lines' | 'accounting'>('lines');
   const reasonName = (k: string | null) => (k ? (reasons.find((r) => r.key === k)?.name ?? k) : '');
 
   useEffect(() => setSelected(new Set()), [run]);
@@ -510,6 +530,14 @@ function RunDetail({ run, reasons, onChanged, onDelete, onError }: { run: Commis
           </div>
         </div>
         <div className="flex-1" />
+        <div className="flex rounded-md border border-slate-300 text-xs">
+          <button className={`px-2.5 py-1 ${tab === 'lines' ? 'bg-indigo-600 text-white' : 'text-slate-600 hover:bg-slate-50'}`} onClick={() => setTab('lines')}>
+            Lines & holds
+          </button>
+          <button className={`px-2.5 py-1 ${tab === 'accounting' ? 'bg-indigo-600 text-white' : 'text-slate-600 hover:bg-slate-50'}`} onClick={() => setTab('accounting')}>
+            Accounting
+          </button>
+        </div>
         <button className="btn btn-sm" onClick={() => api.exportCommissionRun(run.id)}>
           Export CSV
         </button>
@@ -518,6 +546,9 @@ function RunDetail({ run, reasons, onChanged, onDelete, onError }: { run: Commis
         </button>
       </div>
 
+      {tab === 'accounting' ? (
+        <AccountingPanel run={run} onError={onError} />
+      ) : (
       <div className="flex-1 overflow-auto">
         <div className="grid grid-cols-5 gap-3 p-4">
           <Stat label="Total calculated" value={money(run.totalPayout)} sub={`${run.dealCount.toLocaleString()} deals · ${run.lineCount.toLocaleString()} lines`} />
@@ -790,7 +821,262 @@ function RunDetail({ run, reasons, onChanged, onDelete, onError }: { run: Commis
           </table>
         </div>
       </div>
+      )}
     </>
+  );
+}
+
+// -- Accounting ----------------------------------------------------------------
+
+function AccountingPanel({ run, onError }: { run: CommissionRun & { lines: CommissionLine[] }; onError: (m: string) => void }) {
+  const [data, setData] = useState<Subledger | null>(null);
+  const [policy, setPolicy] = useState<AccountingPolicyRow | null>(null);
+  const [saving, setSaving] = useState(false);
+
+  const load = useCallback(() => api.getAccounting(run.id).then(setData).catch((e) => onError(e.message)), [run.id, onError]);
+  useEffect(() => {
+    load();
+    api.getAccountingPolicy().then(setPolicy).catch((e) => onError(e.message));
+  }, [load, run, onError]);
+
+  const savePolicy = async (p: AccountingPolicyRow) => {
+    setPolicy(p);
+    setSaving(true);
+    try {
+      await api.updateAccountingPolicy({ method: p.method, customerLifeMonths: p.customerLifeMonths, defaultTermMonths: p.defaultTermMonths });
+      await load();
+    } catch (e) {
+      onError((e as Error).message);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const months = useMemo(() => (data ? [...new Set(data.accrual.map((c) => c.payMonth))].sort() : []), [data]);
+  const depts = useMemo(() => (data ? [...new Set(data.accrual.map((c) => c.department))].sort() : []), [data]);
+  const cell = (m: string, d: string) => data?.accrual.find((c) => c.payMonth === m && c.department === d);
+  const sum = (xs: number[]) => Math.round(xs.reduce((a, b) => a + b, 0) * 100) / 100;
+  const capTotal = data ? sum(data.accrual.map((c) => c.capitalized)) : 0;
+  const expTotal = data ? sum(data.accrual.map((c) => c.expensed)) : 0;
+  const closing = data?.rollforward.length ? data.rollforward[data.rollforward.length - 1].closing : 0;
+  const thisMonth = new Date().toISOString().slice(0, 7);
+  const currentRow = data?.rollforward.find((r) => r.month === thisMonth);
+
+  if (!data || !policy) return <div className="p-6 text-sm text-slate-400">Loading…</div>;
+
+  return (
+    <div className="flex-1 overflow-auto">
+      <div className="flex flex-wrap items-center gap-3 border-b border-slate-200 bg-slate-50 px-4 py-2 text-xs">
+        <span className="font-semibold text-slate-600">Amortization policy</span>
+        <select className="select" value={policy.method} onChange={(e) => savePolicy({ ...policy, method: e.target.value as AccountingPolicyRow['method'] })}>
+          <option value="contract_term">Contract term, from the subscription start (current practice)</option>
+          <option value="customer_life">Estimated customer life, from the pay month (practical expedient)</option>
+        </select>
+        {policy.method === 'customer_life' ? (
+          <label className="flex items-center gap-1 text-slate-600">
+            Customer life
+            <input type="number" min={1} max={240} className="input w-20" value={policy.customerLifeMonths} onChange={(e) => setPolicy({ ...policy, customerLifeMonths: Number(e.target.value) || 1 })} onBlur={() => savePolicy(policy)} />
+            months
+          </label>
+        ) : (
+          <label className="flex items-center gap-1 text-slate-600">
+            Default term when the deal has none
+            <input type="number" min={1} max={240} className="input w-20" value={policy.defaultTermMonths} onChange={(e) => setPolicy({ ...policy, defaultTermMonths: Number(e.target.value) || 1 })} onBlur={() => savePolicy(policy)} />
+            months
+          </label>
+        )}
+        <span className="text-slate-400">Straight-line, rounded to cents. {saving ? 'Saving…' : 'Applies company-wide.'}</span>
+        <div className="flex-1" />
+        <button className="btn btn-sm" onClick={() => api.exportAccounting(run.id, 'schedule')}>
+          Export amortization schedule
+        </button>
+        <button className="btn btn-sm" onClick={() => api.exportAccounting(run.id, 'entries')}>
+          Export journal entries
+        </button>
+      </div>
+
+      <div className="grid grid-cols-4 gap-3 p-4">
+        <Stat label="To accrue (all pay months)" value={money(capTotal + expTotal)} sub={`${data.accrual.reduce((a, c) => a + c.lines, 0)} lines across ${months.length} payroll month${months.length === 1 ? '' : 's'}`} />
+        <Stat label="Capitalized" value={money(capTotal)} sub={`${data.schedule.length} amortization schedules`} />
+        <Stat label="Expensed when paid" value={money(expTotal)} sub={depts.filter((d) => data.accrual.some((c) => c.department === d && c.expensed)).join(', ') || 'no expensed departments'} />
+        <Stat label={`Capitalized balance ${currentRow ? `at ${monthLabel(thisMonth)}` : 'at end of schedule'}`} value={money(currentRow ? currentRow.closing : closing)} sub={`${data.excluded.length} line${data.excluded.length === 1 ? '' : 's'} not booked (on hold / no payout)`} />
+      </div>
+
+      {data.warnings.length > 0 && (
+        <div className="mx-4 mb-4 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
+          {data.warnings.map((w, i) => (
+            <div key={i}>{w}</div>
+          ))}
+        </div>
+      )}
+
+      <div className="px-4 pb-4">
+        <div className="mb-1 text-xs font-semibold text-slate-500">Monthly accrual by department</div>
+        <div className="mb-1 text-[11px] text-slate-400">Credit Accrued commissions for the total; debit Deferred commissions for the capitalized part and Commission expense for the expensed part.</div>
+        <table className="w-full bg-white text-xs">
+          <thead className="text-left text-slate-400">
+            <tr className="border-b border-slate-200">
+              <th className="py-1.5 pr-3 font-normal">Department</th>
+              {months.map((m) => (
+                <th key={m} className="py-1.5 pr-3 text-right font-normal">
+                  {monthLabel(m)}
+                </th>
+              ))}
+              <th className="py-1.5 text-right font-normal">Total</th>
+            </tr>
+          </thead>
+          <tbody>
+            {depts.map((d) => {
+              const exp = data.accrual.some((c) => c.department === d && c.expensed);
+              return (
+                <tr key={d} className="border-b border-slate-100">
+                  <td className="py-1.5 pr-3 font-medium text-slate-800">
+                    {d} <span className={`ml-1 rounded px-1 text-[10px] ${exp ? 'bg-rose-100 text-rose-700' : 'bg-emerald-100 text-emerald-700'}`}>{exp ? 'expense' : 'capitalize'}</span>
+                  </td>
+                  {months.map((m) => (
+                    <td key={m} className="py-1.5 pr-3 text-right">
+                      {money(cell(m, d)?.total ?? 0)}
+                    </td>
+                  ))}
+                  <td className="py-1.5 text-right font-medium">{money(sum(data.accrual.filter((c) => c.department === d).map((c) => c.total)))}</td>
+                </tr>
+              );
+            })}
+            <tr className="border-t border-slate-300 font-medium">
+              <td className="py-1.5 pr-3">Capitalized</td>
+              {months.map((m) => (
+                <td key={m} className="py-1.5 pr-3 text-right">
+                  {money(sum(data.accrual.filter((c) => c.payMonth === m).map((c) => c.capitalized)))}
+                </td>
+              ))}
+              <td className="py-1.5 text-right">{money(capTotal)}</td>
+            </tr>
+            <tr className="font-medium">
+              <td className="py-1.5 pr-3">Expensed</td>
+              {months.map((m) => (
+                <td key={m} className="py-1.5 pr-3 text-right">
+                  {money(sum(data.accrual.filter((c) => c.payMonth === m).map((c) => c.expensed)))}
+                </td>
+              ))}
+              <td className="py-1.5 text-right">{money(expTotal)}</td>
+            </tr>
+            <tr className="border-t border-slate-300 font-semibold">
+              <td className="py-1.5 pr-3">Accrue (credit liability)</td>
+              {months.map((m) => (
+                <td key={m} className="py-1.5 pr-3 text-right">
+                  {money(sum(data.accrual.filter((c) => c.payMonth === m).map((c) => c.total)))}
+                </td>
+              ))}
+              <td className="py-1.5 text-right">{money(capTotal + expTotal)}</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div className="grid grid-cols-2 gap-4 px-4 pb-6">
+        <div>
+          <div className="mb-1 text-xs font-semibold text-slate-500">Capitalized balance rollforward</div>
+          <table className="w-full bg-white text-xs">
+            <thead className="text-left text-slate-400">
+              <tr className="border-b border-slate-200">
+                <th className="py-1.5 pr-3 font-normal">Month</th>
+                <th className="py-1.5 pr-3 text-right font-normal">Opening</th>
+                <th className="py-1.5 pr-3 text-right font-normal">Additions</th>
+                <th className="py-1.5 pr-3 text-right font-normal">Amortization</th>
+                <th className="py-1.5 text-right font-normal">Closing</th>
+              </tr>
+            </thead>
+            <tbody>
+              {data.rollforward.map((r) => (
+                <tr key={r.month} className={`border-b border-slate-100 ${r.month === thisMonth ? 'bg-indigo-50/50' : ''}`}>
+                  <td className="py-1 pr-3 whitespace-nowrap">{monthLabel(r.month)}</td>
+                  <td className="py-1 pr-3 text-right">{money(r.opening)}</td>
+                  <td className="py-1 pr-3 text-right">{r.additions ? money(r.additions) : ''}</td>
+                  <td className="py-1 pr-3 text-right">{r.amortization ? money(r.amortization) : ''}</td>
+                  <td className="py-1 text-right font-medium">{money(r.closing)}</td>
+                </tr>
+              ))}
+              {data.rollforward.length === 0 && (
+                <tr>
+                  <td colSpan={5} className="py-4 text-center text-slate-400">
+                    Nothing capitalized yet.
+                  </td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+        <div>
+          <div className="mb-1 text-xs font-semibold text-slate-500">Amortization schedules (line level)</div>
+          <table className="w-full bg-white text-xs">
+            <thead className="text-left text-slate-400">
+              <tr className="border-b border-slate-200">
+                <th className="py-1.5 pr-3 font-normal">Deal</th>
+                <th className="py-1.5 pr-3 font-normal">Payee</th>
+                <th className="py-1.5 pr-3 font-normal">Dept</th>
+                <th className="py-1.5 pr-3 text-right font-normal">Amount</th>
+                <th className="py-1.5 pr-3 font-normal">Booked</th>
+                <th className="py-1.5 pr-3 font-normal">Amortizes</th>
+                <th className="py-1.5 text-right font-normal">Per month</th>
+              </tr>
+            </thead>
+            <tbody>
+              {data.schedule.map((s) => (
+                <tr key={s.lineId} className="border-b border-slate-100">
+                  <td className="py-1 pr-3 whitespace-nowrap">{s.dealKey ?? `line ${s.lineId}`}</td>
+                  <td className="py-1 pr-3 whitespace-nowrap">{s.payee}</td>
+                  <td className="py-1 pr-3">{s.department}</td>
+                  <td className="py-1 pr-3 text-right">{money(s.amount)}</td>
+                  <td className="py-1 pr-3 whitespace-nowrap">{monthLabel(s.capitalizedMonth)}</td>
+                  <td className="py-1 pr-3 whitespace-nowrap">
+                    {monthLabel(s.startMonth)} – {monthLabel(s.endMonth)} ({s.months} mo)
+                  </td>
+                  <td className="py-1 text-right">{money(Math.round((s.amount / s.months) * 100) / 100)}</td>
+                </tr>
+              ))}
+              {data.schedule.length === 0 && (
+                <tr>
+                  <td colSpan={7} className="py-4 text-center text-slate-400">
+                    No capitalized lines.
+                  </td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <div className="px-4 pb-6">
+        <div className="mb-1 text-xs font-semibold text-slate-500">Journal entries</div>
+        <table className="w-full bg-white text-xs">
+          <thead className="text-left text-slate-400">
+            <tr className="border-b border-slate-200">
+              <th className="py-1.5 pr-3 font-normal">Month</th>
+              <th className="py-1.5 pr-3 font-normal">Memo</th>
+              <th className="py-1.5 pr-3 font-normal">Account</th>
+              <th className="py-1.5 pr-3 font-normal">Department</th>
+              <th className="py-1.5 pr-3 text-right font-normal">Debit</th>
+              <th className="py-1.5 text-right font-normal">Credit</th>
+            </tr>
+          </thead>
+          <tbody>
+            {data.entries.slice(0, 60).map((e, i) =>
+              e.lines.map((l, j) => (
+                <tr key={`${i}-${j}`} className={`border-b border-slate-100 ${j === 0 ? 'border-t border-t-slate-200' : ''}`}>
+                  <td className="py-1 pr-3 whitespace-nowrap">{j === 0 ? monthLabel(e.month) : ''}</td>
+                  <td className="py-1 pr-3 text-slate-500">{j === 0 ? e.memo : ''}</td>
+                  <td className={`py-1 pr-3 ${l.credit ? 'pl-6' : ''}`}>{l.account}</td>
+                  <td className="py-1 pr-3">{l.department ?? ''}</td>
+                  <td className="py-1 pr-3 text-right">{l.debit ? money(l.debit) : ''}</td>
+                  <td className="py-1 text-right">{l.credit ? money(l.credit) : ''}</td>
+                </tr>
+              )),
+            )}
+          </tbody>
+        </table>
+        {data.entries.length > 60 && <div className="mt-1 text-[11px] text-slate-400">Showing the first 60 entries; export for the full list.</div>}
+      </div>
+    </div>
   );
 }
 
