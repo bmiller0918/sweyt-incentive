@@ -1,4 +1,4 @@
-import type { Aggregate, ColumnDef, ColumnType, Criteria, PlanTiers, RawRow } from '@commissions/shared';
+import type { Aggregate, ColumnDef, ColumnType, Criteria, HoldRule, LineStatus, PlanTiers, RawRow } from '@commissions/shared';
 
 export interface ImportSummary {
   id: string;
@@ -183,6 +183,16 @@ export interface CommissionRunConfig {
   dealKeyField: string | null;
   from: string | null;
   to: string | null;
+  holdRules?: HoldRule[];
+  payLagMonths?: number;
+}
+
+export interface HoldReason {
+  id: string;
+  key: string;
+  name: string;
+  builtin: number;
+  sortOrder: number;
 }
 
 export interface CommissionRun {
@@ -217,7 +227,12 @@ export interface CommissionLine {
   cumulativeAfter: number;
   split: number;
   note: string | null;
-  status: string;
+  status: LineStatus;
+  holdReason: string | null;
+  holdNote: string | null;
+  heldAt: string | null;
+  releasedAt: string | null;
+  payMonth: string | null;
 }
 
 export type CommissionRunInput = Omit<CommissionRunConfig, 'payees'> & { name: string; importId: string; payees: { role: string; field: string }[] };
@@ -360,9 +375,18 @@ export const api = {
   getCommissionRun: (id: string) => request<CommissionRun & { lines: CommissionLine[] }>(`/api/commission-runs/${id}`),
   createCommissionRun: (body: CommissionRunInput) => request<CommissionRun>('/api/commission-runs', json('POST', body)),
   deleteCommissionRun: (id: string) => request<void>(`/api/commission-runs/${id}`, { method: 'DELETE' }),
-  exportCommissionRun(id: string) {
+  exportCommissionRun(id: string, status?: LineStatus) {
     const a = document.createElement('a');
-    a.href = `/api/commission-runs/${id}/export`;
+    a.href = `/api/commission-runs/${id}/export${status ? `?status=${status}` : ''}`;
     a.click();
   },
+  holdLines: (runId: string, body: { lineIds: number[]; reasonKey: string; note?: string | null; heldAt?: string }) =>
+    request<CommissionLine[]>(`/api/commission-runs/${runId}/hold`, json('POST', body)),
+  releaseLines: (runId: string, body: { lineIds: number[]; releasedAt?: string; note?: string | null }) =>
+    request<CommissionLine[]>(`/api/commission-runs/${runId}/release`, json('POST', body)),
+  payLines: (runId: string, lineIds: number[]) => request<CommissionLine[]>(`/api/commission-runs/${runId}/pay`, json('POST', { lineIds })),
+
+  listHoldReasons: () => request<HoldReason[]>('/api/hold-reasons'),
+  createHoldReason: (name: string) => request<HoldReason>('/api/hold-reasons', json('POST', { name })),
+  deleteHoldReason: (id: string) => request<void>(`/api/hold-reasons/${id}`, { method: 'DELETE' }),
 };

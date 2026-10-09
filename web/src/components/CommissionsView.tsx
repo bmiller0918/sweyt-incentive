@@ -1,10 +1,21 @@
+import { LINE_STATUS_LABELS, OPERATOR_LABELS, familyOf, operandArity, type Condition, type HoldRule, type LineStatus, type Operator } from '@commissions/shared';
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { api, type CommissionLine, type CommissionRun, type ImportDetail, type ImportSummary } from '../api';
+import { api, type CommissionLine, type CommissionRun, type HoldReason, type ImportColumn, type ImportDetail, type ImportSummary } from '../api';
 import { PeriodPicker } from './PeriodPicker';
 
 const money = (n: number | null | undefined) => (n === null || n === undefined ? '' : n.toLocaleString(undefined, { style: 'currency', currency: 'USD' }));
 const pct = (n: number | null) => (n === null ? '' : `${Math.round(n * 10000) / 100}%`);
 const num = (n: number | null) => (n === null ? '' : n.toLocaleString());
+const today = () => new Date().toISOString().slice(0, 10);
+const monthLabel = (ym: string) => new Date(`${ym}-01T00:00:00Z`).toLocaleDateString(undefined, { month: 'short', year: 'numeric', timeZone: 'UTC' });
+
+/** Operators offered in the hold-rule editor, by column family. Enough for the usual "box not ticked" checks. */
+const RULE_OPERATORS: Record<ReturnType<typeof familyOf>, Operator[]> = {
+  text: ['is', 'is_not', 'contains', 'not_contains', 'empty', 'not_empty'],
+  number: ['eq', 'neq', 'gt', 'gte', 'lt', 'lte', 'empty', 'not_empty'],
+  date: ['before', 'after', 'on_or_before', 'on_or_after', 'empty', 'not_empty'],
+  boolean: ['is_true', 'is_false', 'empty', 'not_empty'],
+};
 
 interface Draft {
   name: string;
@@ -16,6 +27,8 @@ interface Draft {
   dealKeyField: string;
   from: string | null;
   to: string | null;
+  holdRules: HoldRule[];
+  payLagMonths: number;
 }
 
 /** Guess the obvious columns so most runs are two clicks. */
@@ -32,47 +45,54 @@ function guess(imp: ImportDetail): Pick<Draft, 'repField' | 'amountField' | 'dat
   };
 }
 
+const newRule = (reasonKey: string, field: string): HoldRule => ({
+  id: `r${Math.random().toString(36).slice(2, 8)}`,
+  reasonKey,
+  condition: { type: 'condition', id: `c${Math.random().toString(36).slice(2, 8)}`, field, operator: 'is', values: [{ kind: 'literal', value: '' }] },
+});
+
 export function CommissionsView() {
   const [runs, setRuns] = useState<CommissionRun[]>([]);
   const [imports, setImports] = useState<ImportSummary[]>([]);
+  const [reasons, setReasons] = useState<HoldReason[]>([]);
   const [selectedId, setSelectedId] = useState<string | 'new' | null>(null);
   const [run, setRun] = useState<(CommissionRun & { lines: CommissionLine[] }) | null>(null);
   const [draft, setDraft] = useState<Draft | null>(null);
   const [importDetail, setImportDetail] = useState<ImportDetail | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
-  const [filter, setFilter] = useState('');
-  const [onlySplit, setOnlySplit] = useState(false);
+  const [showReasons, setShowReasons] = useState(false);
 
   const refresh = useCallback(async () => {
     const r = await api.listCommissionRuns();
     setRuns(r);
     return r;
   }, []);
+  const refreshReasons = useCallback(() => api.listHoldReasons().then(setReasons), []);
 
   useEffect(() => {
-    Promise.all([refresh(), api.listImports()])
+    Promise.all([refresh(), api.listImports(), refreshReasons()])
       .then(([r, imps]) => {
         setImports(imps);
-        if (r.length) setSelectedId(r[0].id);
-        else setSelectedId('new');
+        setSelectedId(r.length ? r[0].id : 'new');
       })
       .catch((e) => setError(e.message));
-  }, [refresh]);
+  }, [refresh, refreshReasons]);
 
+  const loadRun = useCallback((id: string) => api.getCommissionRun(id).then(setRun).catch((e) => setError(e.message)), []);
   useEffect(() => {
     if (!selectedId || selectedId === 'new') {
       setRun(null);
       return;
     }
-    api.getCommissionRun(selectedId).then(setRun).catch((e) => setError(e.message));
-  }, [selectedId]);
+    loadRun(selectedId);
+  }, [selectedId, loadRun]);
 
   // A fresh draft points at the first import and guesses its columns.
   useEffect(() => {
     if (selectedId !== 'new') return;
     const first = imports[0];
-    setDraft({ name: '', importId: first?.id ?? '', repField: '', payees: [], amountField: '', dateField: '', dealKeyField: '', from: null, to: null });
+    setDraft({ name: '', importId: first?.id ?? '', repField: '', payees: [], amountField: '', dateField: '', dealKeyField: '', from: null, to: null, holdRules: [], payLagMonths: 1 });
   }, [selectedId, imports]);
 
   useEffect(() => {
@@ -89,11 +109,6 @@ export function CommissionsView() {
       .catch((e) => setError(e.message));
   }, [draft?.importId]);
 
-  const columns = importDetail?.columns ?? [];
-  const textCols = columns.filter((c) => c.type === 'text');
-  const numCols = columns.filter((c) => ['currency', 'decimal', 'integer', 'percent'].includes(c.type));
-  const dateCols = columns.filter((c) => c.type === 'date' || c.type === 'datetime');
-
   const create = async () => {
     if (!draft) return;
     setBusy(true);
@@ -109,6 +124,8 @@ export function CommissionsView() {
         dealKeyField: draft.dealKeyField || null,
         from: draft.from,
         to: draft.to,
+        holdRules: draft.holdRules.filter((r) => r.condition.field),
+        payLagMonths: draft.payLagMonths,
       });
       await refresh();
       setSelectedId(created.id);
@@ -125,36 +142,6 @@ export function CommissionsView() {
     const list = await refresh();
     setSelectedId(list[0]?.id ?? 'new');
   };
-
-  const byPayee = useMemo(() => {
-    if (!run) return [];
-    const m = new Map<string, { payee: string; role: string; plan: string; deals: Set<number>; amount: number; payout: number; unpaid: number }>();
-    for (const l of run.lines) {
-      const k = `${l.payee.toLowerCase()}|${l.role}`;
-      let t = m.get(k);
-      if (!t) {
-        t = { payee: l.payee, role: l.role, plan: l.planName ?? '', deals: new Set(), amount: 0, payout: 0, unpaid: 0 };
-        m.set(k, t);
-      }
-      if (!t.deals.has(l.rowIndex)) {
-        t.deals.add(l.rowIndex);
-        t.amount += l.dealAmount ?? 0;
-      }
-      if (l.payout === null) t.unpaid++;
-      else t.payout += l.payout;
-      if (!t.plan && l.planName) t.plan = l.planName;
-    }
-    return [...m.values()].sort((a, b) => b.payout - a.payout || a.payee.localeCompare(b.payee));
-  }, [run]);
-
-  const visibleLines = useMemo(() => {
-    if (!run) return [];
-    const q = filter.trim().toLowerCase();
-    return run.lines.filter((l) => (!onlySplit || l.split) && (!q || `${l.payee} ${l.dealKey ?? ''} ${l.planName ?? ''} ${l.note ?? ''}`.toLowerCase().includes(q)));
-  }, [run, filter, onlySplit]);
-
-  const splitCount = run ? new Set(run.lines.filter((l) => l.split).map((l) => `${l.rowIndex}|${l.payee}`)).size : 0;
-  const unpaidCount = run ? run.lines.filter((l) => l.payout === null).length : 0;
 
   return (
     <div className="flex h-full">
@@ -181,6 +168,12 @@ export function CommissionsView() {
           ))}
           {runs.length === 0 && <div className="px-2 py-4 text-xs text-slate-400">No runs yet.</div>}
         </div>
+        <div className="border-t border-slate-200 p-2">
+          <button className="block w-full rounded-md px-2 py-1.5 text-left text-sm text-slate-600 hover:bg-slate-100" onClick={() => setShowReasons((v) => !v)}>
+            <div className="font-medium">Hold reasons</div>
+            <div className="text-xs text-slate-400">{reasons.length} configured</div>
+          </button>
+        </div>
       </aside>
 
       <main className="flex min-w-0 flex-1 flex-col overflow-hidden">
@@ -193,232 +186,671 @@ export function CommissionsView() {
           </div>
         )}
 
+        {showReasons && <HoldReasonsPanel reasons={reasons} onChange={refreshReasons} onClose={() => setShowReasons(false)} onError={setError} />}
+
         {selectedId === 'new' && draft && (
-          <div className="flex-1 overflow-auto p-6">
-            <div className="max-w-2xl space-y-5">
-              <div>
-                <div className="text-base font-semibold">New commission run</div>
-                <div className="text-xs text-slate-500">
-                  One line per person per deal. Each person's rate comes from the comp plan in force on the deal's close date; a deal that crosses a tier is split
-                  into one line per band. Attainment accrues in close-date order over the deals in the run.
-                </div>
-              </div>
-              {imports.length === 0 ? (
-                <div className="rounded-lg border border-dashed border-slate-300 bg-white p-6 text-sm text-slate-400">Import a deals file first.</div>
-              ) : (
-                <>
-                  <label className="block text-sm">
-                    <span className="text-xs text-slate-500">Name</span>
-                    <input className="input mt-1 w-full" value={draft.name} onChange={(e) => setDraft({ ...draft, name: e.target.value })} placeholder="FY2026 commissions" />
-                  </label>
-                  <div className="grid grid-cols-2 gap-3">
-                    <label className="block text-sm">
-                      <span className="text-xs text-slate-500">Deals import</span>
-                      <select
-                        className="select mt-1 w-full"
-                        value={draft.importId}
-                        onChange={(e) => setDraft({ ...draft, importId: e.target.value, repField: '', amountField: '', dateField: '', dealKeyField: '', payees: [] })}
-                      >
-                        {imports.map((i) => (
-                          <option key={i.id} value={i.id}>
-                            {i.name} ({i.rowCount.toLocaleString()} rows)
-                          </option>
-                        ))}
-                      </select>
-                    </label>
-                    <label className="block text-sm">
-                      <span className="text-xs text-slate-500">Close date range</span>
-                      <div className="mt-1">
-                        <PeriodPicker from={draft.from} to={draft.to} onChange={(from, to) => setDraft({ ...draft, from, to })} compact />
-                      </div>
-                    </label>
-                    <Field label="Rep column" value={draft.repField} onChange={(v) => setDraft({ ...draft, repField: v })} options={textCols.map((c) => c.name)} required />
-                    <Field label="Amount column" value={draft.amountField} onChange={(v) => setDraft({ ...draft, amountField: v })} options={numCols.map((c) => c.name)} required />
-                    <Field label="Close date column" value={draft.dateField} onChange={(v) => setDraft({ ...draft, dateField: v })} options={dateCols.map((c) => c.name)} />
-                    <Field label="Deal ID column" value={draft.dealKeyField} onChange={(v) => setDraft({ ...draft, dealKeyField: v })} options={columns.map((c) => c.name)} />
-                  </div>
-                  <div>
-                    <div className="flex items-center">
-                      <span className="text-xs text-slate-500">Other people paid on each deal</span>
-                      <div className="flex-1" />
-                      <button className="btn btn-sm" onClick={() => setDraft({ ...draft, payees: [...draft.payees, { role: '', field: '' }] })}>
-                        + Add
-                      </button>
-                    </div>
-                    <div className="mt-1 text-xs text-slate-400">E.g. a Sales Engineer or Manager column. Each gets their own line under their own plan.</div>
-                    {draft.payees.map((p, i) => (
-                      <div key={i} className="mt-2 flex items-center gap-2">
-                        <input
-                          className="input w-40"
-                          placeholder="Role, e.g. SE"
-                          value={p.role}
-                          onChange={(e) => setDraft({ ...draft, payees: draft.payees.map((x, j) => (j === i ? { ...x, role: e.target.value } : x)) })}
-                        />
-                        <select className="select flex-1" value={p.field} onChange={(e) => setDraft({ ...draft, payees: draft.payees.map((x, j) => (j === i ? { ...x, field: e.target.value } : x)) })}>
-                          <option value="">Pick a column…</option>
-                          {textCols.map((c) => (
-                            <option key={c.name} value={c.name}>
-                              {c.name}
-                            </option>
-                          ))}
-                        </select>
-                        <button className="text-slate-400 hover:text-rose-600" onClick={() => setDraft({ ...draft, payees: draft.payees.filter((_, j) => j !== i) })}>
-                          ✕
-                        </button>
-                      </div>
-                    ))}
-                  </div>
-                  <div className="flex items-center gap-2">
-                    <button className="btn btn-primary" disabled={busy || !draft.importId || !draft.repField || !draft.amountField} onClick={create}>
-                      {busy ? 'Calculating…' : 'Calculate'}
-                    </button>
-                    {runs.length > 0 && (
-                      <button className="btn" onClick={() => setSelectedId(runs[0].id)}>
-                        Cancel
-                      </button>
-                    )}
-                  </div>
-                </>
-              )}
-            </div>
-          </div>
+          <NewRunForm draft={draft} setDraft={setDraft} imports={imports} importDetail={importDetail} reasons={reasons} busy={busy} onCreate={create} onCancel={runs.length ? () => setSelectedId(runs[0].id) : undefined} />
         )}
 
-        {selectedId !== 'new' && run && (
-          <>
-            <div className="flex items-center gap-3 border-b border-slate-200 bg-white px-4 py-2">
-              <div className="min-w-0">
-                <div className="truncate text-sm font-semibold">{run.name}</div>
-                <div className="truncate text-xs text-slate-400">
-                  {run.importName} · {run.config.repField}
-                  {run.config.payees.length ? ` + ${run.config.payees.map((p) => p.role).join(', ')}` : ''} · {run.config.amountField}
-                  {run.config.from || run.config.to ? ` · ${run.config.from ?? '…'} → ${run.config.to ?? '…'}` : ' · all dates'} · {new Date(run.createdAt).toLocaleString()}
-                </div>
-              </div>
-              <div className="flex-1" />
-              <button className="btn btn-sm" onClick={() => api.exportCommissionRun(run.id)}>
-                Export CSV
-              </button>
-              <button className="btn btn-sm" onClick={() => remove(run)}>
-                Delete
-              </button>
-            </div>
-
-            <div className="flex-1 overflow-auto">
-              <div className="grid grid-cols-4 gap-3 p-4">
-                <Stat label="Total payout" value={money(run.totalPayout)} />
-                <Stat label="Deals" value={run.dealCount.toLocaleString()} sub={`${run.lineCount.toLocaleString()} lines`} />
-                <Stat label="Split by a tier" value={splitCount.toLocaleString()} sub="person-deals crossing a threshold" />
-                <Stat label="Needs attention" value={unpaidCount.toLocaleString()} sub="lines with no payout" tone={unpaidCount ? 'warn' : undefined} />
-              </div>
-
-              {run.warnings.length > 0 && (
-                <div className="mx-4 mb-4 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
-                  {run.warnings.map((w, i) => (
-                    <div key={i}>{w}</div>
-                  ))}
-                </div>
-              )}
-
-              <div className="px-4 pb-4">
-                <div className="mb-1 text-xs font-semibold text-slate-500">By person</div>
-                <table className="w-full bg-white text-xs">
-                  <thead className="text-left text-slate-400">
-                    <tr className="border-b border-slate-200">
-                      <th className="py-1.5 pr-3 font-normal">Person</th>
-                      <th className="py-1.5 pr-3 font-normal">Role</th>
-                      <th className="py-1.5 pr-3 font-normal">Plan</th>
-                      <th className="py-1.5 pr-3 text-right font-normal">Deals</th>
-                      <th className="py-1.5 pr-3 text-right font-normal">Deal amount</th>
-                      <th className="py-1.5 pr-3 text-right font-normal">Payout</th>
-                      <th className="py-1.5 pr-3 text-right font-normal">Effective rate</th>
-                      <th className="py-1.5 text-right font-normal">Unpaid lines</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {byPayee.map((t) => (
-                      <tr key={`${t.payee}|${t.role}`} className="border-b border-slate-100 hover:bg-slate-50">
-                        <td className="py-1.5 pr-3 font-medium text-slate-800">
-                          <button className="hover:underline" onClick={() => setFilter(t.payee)}>
-                            {t.payee}
-                          </button>
-                        </td>
-                        <td className="py-1.5 pr-3">{t.role}</td>
-                        <td className="py-1.5 pr-3">{t.plan || <span className="text-rose-600">none</span>}</td>
-                        <td className="py-1.5 pr-3 text-right">{t.deals.size}</td>
-                        <td className="py-1.5 pr-3 text-right">{money(t.amount)}</td>
-                        <td className="py-1.5 pr-3 text-right font-medium">{money(t.payout)}</td>
-                        <td className="py-1.5 pr-3 text-right">{t.amount ? pct(t.payout / t.amount) : ''}</td>
-                        <td className={`py-1.5 text-right ${t.unpaid ? 'text-amber-700' : 'text-slate-400'}`}>{t.unpaid || '—'}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-
-              <div className="px-4 pb-6">
-                <div className="mb-1 flex items-center gap-2">
-                  <div className="text-xs font-semibold text-slate-500">Commission lines</div>
-                  <div className="flex-1" />
-                  <label className="flex items-center gap-1 text-xs text-slate-500">
-                    <input type="checkbox" checked={onlySplit} onChange={(e) => setOnlySplit(e.target.checked)} /> only split deals
-                  </label>
-                  <input className="input w-56" placeholder="Filter by person, deal, plan…" value={filter} onChange={(e) => setFilter(e.target.value)} />
-                </div>
-                <table className="w-full bg-white text-xs">
-                  <thead className="text-left text-slate-400">
-                    <tr className="border-b border-slate-200">
-                      <th className="py-1.5 pr-3 font-normal">Deal</th>
-                      <th className="py-1.5 pr-3 font-normal">Closed</th>
-                      <th className="py-1.5 pr-3 text-right font-normal">Deal amount</th>
-                      <th className="py-1.5 pr-3 font-normal">Person</th>
-                      <th className="py-1.5 pr-3 font-normal">Role</th>
-                      <th className="py-1.5 pr-3 font-normal">Plan</th>
-                      <th className="py-1.5 pr-3 font-normal">Tier</th>
-                      <th className="py-1.5 pr-3 text-right font-normal">Amount</th>
-                      <th className="py-1.5 pr-3 text-right font-normal">Rate</th>
-                      <th className="py-1.5 pr-3 text-right font-normal">Payout</th>
-                      <th className="py-1.5 pr-3 text-right font-normal">Attainment after</th>
-                      <th className="py-1.5 font-normal">Note</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {visibleLines.map((l) => (
-                      <tr key={l.id} className={`border-b border-slate-100 ${l.payout === null ? 'bg-amber-50/60' : l.split ? 'bg-indigo-50/40' : ''}`}>
-                        <td className="py-1 pr-3 whitespace-nowrap">{l.dealKey ?? `row ${l.rowIndex + 1}`}</td>
-                        <td className="py-1 pr-3 whitespace-nowrap">{l.dealDate ?? ''}</td>
-                        <td className="py-1 pr-3 text-right">{money(l.dealAmount)}</td>
-                        <td className="py-1 pr-3 whitespace-nowrap font-medium text-slate-800">{l.payee}</td>
-                        <td className="py-1 pr-3">{l.role}</td>
-                        <td className="py-1 pr-3">{l.planName ?? ''}</td>
-                        <td className="py-1 pr-3 whitespace-nowrap">
-                          {l.method === 'flat' ? 'flat' : l.method === 'none' ? '' : `${num(l.tierFrom)} – ${l.tierTo === null ? '∞' : num(l.tierTo)}`}
-                          {l.split ? <span className="ml-1 rounded bg-indigo-100 px-1 text-[10px] text-indigo-700">split</span> : null}
-                        </td>
-                        <td className="py-1 pr-3 text-right">{money(l.amount)}</td>
-                        <td className="py-1 pr-3 text-right">{pct(l.rate)}</td>
-                        <td className="py-1 pr-3 text-right font-medium">{money(l.payout)}</td>
-                        <td className="py-1 pr-3 text-right text-slate-500">{money(l.cumulativeAfter)}</td>
-                        <td className={`py-1 ${l.payout === null ? 'text-amber-800' : 'text-slate-400'}`}>{l.note ?? ''}</td>
-                      </tr>
-                    ))}
-                    {visibleLines.length === 0 && (
-                      <tr>
-                        <td colSpan={12} className="py-6 text-center text-slate-400">
-                          No lines match.
-                        </td>
-                      </tr>
-                    )}
-                  </tbody>
-                </table>
-              </div>
-            </div>
-          </>
-        )}
+        {selectedId !== 'new' && run && <RunDetail run={run} reasons={reasons} onChanged={() => loadRun(run.id)} onDelete={() => remove(run)} onError={setError} />}
       </main>
     </div>
   );
 }
+
+// -- New run form --------------------------------------------------------------
+
+function NewRunForm({
+  draft,
+  setDraft,
+  imports,
+  importDetail,
+  reasons,
+  busy,
+  onCreate,
+  onCancel,
+}: {
+  draft: Draft;
+  setDraft: (d: Draft) => void;
+  imports: ImportSummary[];
+  importDetail: ImportDetail | null;
+  reasons: HoldReason[];
+  busy: boolean;
+  onCreate: () => void;
+  onCancel?: () => void;
+}) {
+  const columns = importDetail?.columns ?? [];
+  const textCols = columns.filter((c) => c.type === 'text');
+  const numCols = columns.filter((c) => ['currency', 'decimal', 'integer', 'percent'].includes(c.type));
+  const dateCols = columns.filter((c) => c.type === 'date' || c.type === 'datetime');
+
+  return (
+    <div className="flex-1 overflow-auto p-6">
+      <div className="max-w-3xl space-y-5">
+        <div>
+          <div className="text-base font-semibold">New commission run</div>
+          <div className="text-xs text-slate-500">
+            One line per person per deal. Each person's rate comes from the comp plan in force on the deal's close date; a deal that crosses a tier is split into one
+            line per band. Attainment accrues in close-date order over the deals in the run. Each line then pays on the next payroll unless a hold rule puts it on hold.
+          </div>
+        </div>
+        {imports.length === 0 ? (
+          <div className="rounded-lg border border-dashed border-slate-300 bg-white p-6 text-sm text-slate-400">Import a deals file first.</div>
+        ) : (
+          <>
+            <label className="block text-sm">
+              <span className="text-xs text-slate-500">Name</span>
+              <input className="input mt-1 w-full" value={draft.name} onChange={(e) => setDraft({ ...draft, name: e.target.value })} placeholder="FY2026 commissions" />
+            </label>
+            <div className="grid grid-cols-2 gap-3">
+              <label className="block text-sm">
+                <span className="text-xs text-slate-500">Deals import</span>
+                <select
+                  className="select mt-1 w-full"
+                  value={draft.importId}
+                  onChange={(e) => setDraft({ ...draft, importId: e.target.value, repField: '', amountField: '', dateField: '', dealKeyField: '', payees: [], holdRules: [] })}
+                >
+                  {imports.map((i) => (
+                    <option key={i.id} value={i.id}>
+                      {i.name} ({i.rowCount.toLocaleString()} rows)
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label className="block text-sm">
+                <span className="text-xs text-slate-500">Close date range</span>
+                <div className="mt-1">
+                  <PeriodPicker from={draft.from} to={draft.to} onChange={(from, to) => setDraft({ ...draft, from, to })} compact />
+                </div>
+              </label>
+              <Field label="Rep column" value={draft.repField} onChange={(v) => setDraft({ ...draft, repField: v })} options={textCols.map((c) => c.name)} required />
+              <Field label="Amount column" value={draft.amountField} onChange={(v) => setDraft({ ...draft, amountField: v })} options={numCols.map((c) => c.name)} required />
+              <Field label="Close date column" value={draft.dateField} onChange={(v) => setDraft({ ...draft, dateField: v })} options={dateCols.map((c) => c.name)} />
+              <Field label="Deal ID column" value={draft.dealKeyField} onChange={(v) => setDraft({ ...draft, dealKeyField: v })} options={columns.map((c) => c.name)} />
+            </div>
+
+            <div>
+              <div className="flex items-center">
+                <span className="text-xs text-slate-500">Other people paid on each deal</span>
+                <div className="flex-1" />
+                <button className="btn btn-sm" onClick={() => setDraft({ ...draft, payees: [...draft.payees, { role: '', field: '' }] })}>
+                  + Add
+                </button>
+              </div>
+              <div className="mt-1 text-xs text-slate-400">E.g. a Sales Engineer or Manager column. Each gets their own line under their own plan.</div>
+              {draft.payees.map((p, i) => (
+                <div key={i} className="mt-2 flex items-center gap-2">
+                  <input
+                    className="input w-40"
+                    placeholder="Role, e.g. SE"
+                    value={p.role}
+                    onChange={(e) => setDraft({ ...draft, payees: draft.payees.map((x, j) => (j === i ? { ...x, role: e.target.value } : x)) })}
+                  />
+                  <select className="select flex-1" value={p.field} onChange={(e) => setDraft({ ...draft, payees: draft.payees.map((x, j) => (j === i ? { ...x, field: e.target.value } : x)) })}>
+                    <option value="">Pick a column…</option>
+                    {textCols.map((c) => (
+                      <option key={c.name} value={c.name}>
+                        {c.name}
+                      </option>
+                    ))}
+                  </select>
+                  <button className="text-slate-400 hover:text-rose-600" onClick={() => setDraft({ ...draft, payees: draft.payees.filter((_, j) => j !== i) })}>
+                    ✕
+                  </button>
+                </div>
+              ))}
+            </div>
+
+            <div>
+              <div className="flex items-center">
+                <span className="text-xs text-slate-500">Hold rules</span>
+                <div className="flex-1" />
+                <button className="btn btn-sm" disabled={!columns.length || !reasons.length} onClick={() => setDraft({ ...draft, holdRules: [...draft.holdRules, newRule(reasons[0]?.key ?? 'other', columns[0]?.name ?? '')] })}>
+                  + Add rule
+                </button>
+              </div>
+              <div className="mt-1 text-xs text-slate-400">
+                A deal that matches a rule starts on hold with that reason instead of paying next payroll. The first matching rule wins. Anything can still be held or
+                released by hand afterwards.
+              </div>
+              {draft.holdRules.map((r, i) => (
+                <HoldRuleRow
+                  key={r.id}
+                  rule={r}
+                  columns={columns}
+                  reasons={reasons}
+                  onChange={(nr) => setDraft({ ...draft, holdRules: draft.holdRules.map((x, j) => (j === i ? nr : x)) })}
+                  onRemove={() => setDraft({ ...draft, holdRules: draft.holdRules.filter((_, j) => j !== i) })}
+                />
+              ))}
+            </div>
+
+            <label className="block text-sm">
+              <span className="text-xs text-slate-500">Pay on the payroll this many months after the close (or the release)</span>
+              <input type="number" min={0} max={12} className="input mt-1 w-24" value={draft.payLagMonths} onChange={(e) => setDraft({ ...draft, payLagMonths: Math.max(0, Math.min(12, Number(e.target.value) || 0)) })} />
+            </label>
+
+            <div className="flex items-center gap-2">
+              <button className="btn btn-primary" disabled={busy || !draft.importId || !draft.repField || !draft.amountField} onClick={onCreate}>
+                {busy ? 'Calculating…' : 'Calculate'}
+              </button>
+              {onCancel && (
+                <button className="btn" onClick={onCancel}>
+                  Cancel
+                </button>
+              )}
+            </div>
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function HoldRuleRow({ rule, columns, reasons, onChange, onRemove }: { rule: HoldRule; columns: ImportColumn[]; reasons: HoldReason[]; onChange: (r: HoldRule) => void; onRemove: () => void }) {
+  const col = columns.find((c) => c.name === rule.condition.field);
+  const family = col ? familyOf(col.type) : 'text';
+  const ops = RULE_OPERATORS[family];
+  const cond = rule.condition as Condition;
+  const arity = operandArity(cond.operator);
+  const setCond = (patch: Partial<Condition>) => onChange({ ...rule, condition: { ...cond, ...patch } });
+  const value = cond.values[0]?.kind === 'literal' ? cond.values[0].value : '';
+  return (
+    <div className="mt-2 flex flex-wrap items-center gap-2 text-sm">
+      <span className="text-xs text-slate-500">Hold for</span>
+      <select className="select" value={rule.reasonKey} onChange={(e) => onChange({ ...rule, reasonKey: e.target.value })}>
+        {reasons.map((r) => (
+          <option key={r.key} value={r.key}>
+            {r.name}
+          </option>
+        ))}
+      </select>
+      <span className="text-xs text-slate-500">when</span>
+      <select
+        className="select"
+        value={cond.field}
+        onChange={(e) => {
+          const c = columns.find((x) => x.name === e.target.value);
+          const fam = c ? familyOf(c.type) : 'text';
+          setCond({ field: e.target.value, operator: RULE_OPERATORS[fam][0], values: [{ kind: 'literal', value: '' }] });
+        }}
+      >
+        {columns.map((c) => (
+          <option key={c.name} value={c.name}>
+            {c.name}
+          </option>
+        ))}
+      </select>
+      <select className="select" value={cond.operator} onChange={(e) => setCond({ operator: e.target.value as Operator })}>
+        {ops.map((o) => (
+          <option key={o} value={o}>
+            {OPERATOR_LABELS[o]}
+          </option>
+        ))}
+      </select>
+      {arity !== 0 && (
+        <input
+          type={family === 'date' ? 'date' : family === 'number' ? 'number' : 'text'}
+          className="input w-44"
+          placeholder="value"
+          value={value}
+          onChange={(e) => setCond({ values: [{ kind: 'literal', value: e.target.value }] })}
+        />
+      )}
+      <button className="text-slate-400 hover:text-rose-600" onClick={onRemove}>
+        ✕
+      </button>
+    </div>
+  );
+}
+
+// -- Run detail ----------------------------------------------------------------
+
+function RunDetail({ run, reasons, onChanged, onDelete, onError }: { run: CommissionRun & { lines: CommissionLine[] }; reasons: HoldReason[]; onChanged: () => void; onDelete: () => void; onError: (m: string) => void }) {
+  const [filter, setFilter] = useState('');
+  const [statusFilter, setStatusFilter] = useState<LineStatus | 'all' | 'unpaid'>('all');
+  const [onlySplit, setOnlySplit] = useState(false);
+  const [holdTarget, setHoldTarget] = useState<number[] | null>(null);
+  const [holdReason, setHoldReason] = useState(reasons[0]?.key ?? 'other');
+  const [holdNote, setHoldNote] = useState('');
+  const [releaseDate, setReleaseDate] = useState(today());
+  const [selected, setSelected] = useState<Set<number>>(new Set());
+  const reasonName = (k: string | null) => (k ? (reasons.find((r) => r.key === k)?.name ?? k) : '');
+
+  useEffect(() => setSelected(new Set()), [run]);
+
+  const act = async (fn: () => Promise<unknown>) => {
+    try {
+      await fn();
+      setHoldTarget(null);
+      setHoldNote('');
+      onChanged();
+    } catch (e) {
+      onError((e as Error).message);
+    }
+  };
+
+  const byPayee = useMemo(() => {
+    const m = new Map<string, { payee: string; role: string; plan: string; deals: Set<number>; amount: number; payout: number; held: number; unpaid: number }>();
+    for (const l of run.lines) {
+      const k = `${l.payee.toLowerCase()}|${l.role}`;
+      let t = m.get(k);
+      if (!t) {
+        t = { payee: l.payee, role: l.role, plan: l.planName ?? '', deals: new Set(), amount: 0, payout: 0, held: 0, unpaid: 0 };
+        m.set(k, t);
+      }
+      if (!t.deals.has(l.rowIndex)) {
+        t.deals.add(l.rowIndex);
+        t.amount += l.dealAmount ?? 0;
+      }
+      if (l.payout === null) t.unpaid++;
+      else {
+        t.payout += l.payout;
+        if (l.status === 'hold') t.held += l.payout;
+      }
+      if (!t.plan && l.planName) t.plan = l.planName;
+    }
+    return [...m.values()].sort((a, b) => b.payout - a.payout || a.payee.localeCompare(b.payee));
+  }, [run]);
+
+  const held = useMemo(() => run.lines.filter((l) => l.status === 'hold'), [run]);
+  const heldTotal = held.reduce((a, l) => a + (l.payout ?? 0), 0);
+  const byReason = useMemo(() => {
+    const m = new Map<string, { amount: number; lines: number; deals: Set<string> }>();
+    for (const l of held) {
+      const k = l.holdReason ?? 'other';
+      const t = m.get(k) ?? { amount: 0, lines: 0, deals: new Set<string>() };
+      t.amount += l.payout ?? 0;
+      t.lines++;
+      t.deals.add(l.dealKey ?? `row ${l.rowIndex + 1}`);
+      m.set(k, t);
+    }
+    return [...m.entries()].sort((a, b) => b[1].amount - a[1].amount);
+  }, [held]);
+  const byMonth = useMemo(() => {
+    const m = new Map<string, { amount: number; lines: number; released: number }>();
+    for (const l of run.lines) {
+      if (l.status === 'hold' || l.payout === null) continue;
+      const k = l.payMonth ?? 'unscheduled';
+      const t = m.get(k) ?? { amount: 0, lines: 0, released: 0 };
+      t.amount += l.payout;
+      t.lines++;
+      if (l.status === 'released') t.released += l.payout;
+      m.set(k, t);
+    }
+    return [...m.entries()].sort(([a], [b]) => a.localeCompare(b));
+  }, [run]);
+  const payTotal = byMonth.reduce((a, [, t]) => a + t.amount, 0);
+
+  const visibleLines = useMemo(() => {
+    const q = filter.trim().toLowerCase();
+    return run.lines.filter(
+      (l) =>
+        (!onlySplit || l.split) &&
+        (statusFilter === 'all' || (statusFilter === 'unpaid' ? l.payout === null : l.status === statusFilter)) &&
+        (!q || `${l.payee} ${l.dealKey ?? ''} ${l.planName ?? ''} ${l.note ?? ''} ${reasonName(l.holdReason)}`.toLowerCase().includes(q)),
+    );
+  }, [run, filter, onlySplit, statusFilter, reasons]);
+
+  const splitCount = new Set(run.lines.filter((l) => l.split).map((l) => `${l.rowIndex}|${l.payee}`)).size;
+  const unpaidCount = run.lines.filter((l) => l.payout === null).length;
+  const selectedHeld = [...selected].filter((id) => run.lines.find((l) => l.id === id)?.status === 'hold');
+  const selectedPayable = [...selected].filter((id) => run.lines.find((l) => l.id === id)?.status !== 'hold');
+
+  return (
+    <>
+      <div className="flex items-center gap-3 border-b border-slate-200 bg-white px-4 py-2">
+        <div className="min-w-0">
+          <div className="truncate text-sm font-semibold">{run.name}</div>
+          <div className="truncate text-xs text-slate-400">
+            {run.importName} · {run.config.repField}
+            {run.config.payees.length ? ` + ${run.config.payees.map((p) => p.role).join(', ')}` : ''} · {run.config.amountField}
+            {run.config.from || run.config.to ? ` · ${run.config.from ?? '…'} → ${run.config.to ?? '…'}` : ' · all dates'} · {run.config.holdRules?.length ?? 0} hold rule
+            {(run.config.holdRules?.length ?? 0) === 1 ? '' : 's'} · {new Date(run.createdAt).toLocaleString()}
+          </div>
+        </div>
+        <div className="flex-1" />
+        <button className="btn btn-sm" onClick={() => api.exportCommissionRun(run.id)}>
+          Export CSV
+        </button>
+        <button className="btn btn-sm" onClick={onDelete}>
+          Delete
+        </button>
+      </div>
+
+      <div className="flex-1 overflow-auto">
+        <div className="grid grid-cols-5 gap-3 p-4">
+          <Stat label="Total calculated" value={money(run.totalPayout)} sub={`${run.dealCount.toLocaleString()} deals · ${run.lineCount.toLocaleString()} lines`} />
+          <Stat label="Pay next payroll" value={money(payTotal)} sub={byMonth.length ? byMonth.map(([m, t]) => `${m === 'unscheduled' ? 'no date' : monthLabel(m)} ${money(t.amount)}`).join(' · ') : 'nothing scheduled'} />
+          <Stat label="On hold" value={money(heldTotal)} sub={`${held.length} line${held.length === 1 ? '' : 's'} · ${new Set(held.map((l) => l.payee.toLowerCase())).size} people`} tone={held.length ? 'hold' : undefined} />
+          <Stat label="Split by a tier" value={splitCount.toLocaleString()} sub="person-deals crossing a threshold" />
+          <Stat label="Needs attention" value={unpaidCount.toLocaleString()} sub="lines with no payout" tone={unpaidCount ? 'warn' : undefined} />
+        </div>
+
+        {run.warnings.length > 0 && (
+          <div className="mx-4 mb-4 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
+            {run.warnings.map((w, i) => (
+              <div key={i}>{w}</div>
+            ))}
+          </div>
+        )}
+
+        {held.length > 0 && (
+          <div className="mx-4 mb-4 rounded-lg border border-orange-200 bg-orange-50/50 p-3">
+            <div className="flex items-center gap-2">
+              <div className="text-xs font-semibold text-orange-800">On hold: {money(heldTotal)}</div>
+              <div className="flex-1" />
+              <button className="btn btn-sm" onClick={() => api.exportCommissionRun(run.id, 'hold')}>
+                Export on-hold CSV
+              </button>
+            </div>
+            <div className="mt-2 grid grid-cols-2 gap-4">
+              <table className="w-full text-xs">
+                <thead className="text-left text-slate-400">
+                  <tr>
+                    <th className="py-1 font-normal">By reason</th>
+                    <th className="py-1 text-right font-normal">Deals</th>
+                    <th className="py-1 text-right font-normal">Lines</th>
+                    <th className="py-1 text-right font-normal">Amount</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {byReason.map(([k, t]) => (
+                    <tr key={k} className="border-t border-orange-100">
+                      <td className="py-1">{reasonName(k)}</td>
+                      <td className="py-1 text-right">{t.deals.size}</td>
+                      <td className="py-1 text-right">{t.lines}</td>
+                      <td className="py-1 text-right font-medium">{money(t.amount)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+              <table className="w-full text-xs">
+                <thead className="text-left text-slate-400">
+                  <tr>
+                    <th className="py-1 font-normal">By person</th>
+                    <th className="py-1 text-right font-normal">Lines</th>
+                    <th className="py-1 text-right font-normal">On hold</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {byPayee
+                    .filter((p) => p.held)
+                    .sort((a, b) => b.held - a.held)
+                    .map((p) => (
+                      <tr key={`${p.payee}|${p.role}`} className="border-t border-orange-100">
+                        <td className="py-1">
+                          <button className="hover:underline" onClick={() => { setFilter(p.payee); setStatusFilter('hold'); }}>
+                            {p.payee}
+                          </button>{' '}
+                          <span className="text-slate-400">{p.role}</span>
+                        </td>
+                        <td className="py-1 text-right">{held.filter((l) => l.payee === p.payee && l.role === p.role).length}</td>
+                        <td className="py-1 text-right font-medium">{money(p.held)}</td>
+                      </tr>
+                    ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        )}
+
+        <div className="px-4 pb-4">
+          <div className="mb-1 text-xs font-semibold text-slate-500">By person</div>
+          <table className="w-full bg-white text-xs">
+            <thead className="text-left text-slate-400">
+              <tr className="border-b border-slate-200">
+                <th className="py-1.5 pr-3 font-normal">Person</th>
+                <th className="py-1.5 pr-3 font-normal">Role</th>
+                <th className="py-1.5 pr-3 font-normal">Plan</th>
+                <th className="py-1.5 pr-3 text-right font-normal">Deals</th>
+                <th className="py-1.5 pr-3 text-right font-normal">Deal amount</th>
+                <th className="py-1.5 pr-3 text-right font-normal">Calculated</th>
+                <th className="py-1.5 pr-3 text-right font-normal">On hold</th>
+                <th className="py-1.5 pr-3 text-right font-normal">Effective rate</th>
+                <th className="py-1.5 text-right font-normal">Unpaid lines</th>
+              </tr>
+            </thead>
+            <tbody>
+              {byPayee.map((t) => (
+                <tr key={`${t.payee}|${t.role}`} className="border-b border-slate-100 hover:bg-slate-50">
+                  <td className="py-1.5 pr-3 font-medium text-slate-800">
+                    <button className="hover:underline" onClick={() => setFilter(t.payee)}>
+                      {t.payee}
+                    </button>
+                  </td>
+                  <td className="py-1.5 pr-3">{t.role}</td>
+                  <td className="py-1.5 pr-3">{t.plan || <span className="text-rose-600">none</span>}</td>
+                  <td className="py-1.5 pr-3 text-right">{t.deals.size}</td>
+                  <td className="py-1.5 pr-3 text-right">{money(t.amount)}</td>
+                  <td className="py-1.5 pr-3 text-right font-medium">{money(t.payout)}</td>
+                  <td className={`py-1.5 pr-3 text-right ${t.held ? 'text-orange-700' : 'text-slate-400'}`}>{t.held ? money(t.held) : '—'}</td>
+                  <td className="py-1.5 pr-3 text-right">{t.amount ? pct(t.payout / t.amount) : ''}</td>
+                  <td className={`py-1.5 text-right ${t.unpaid ? 'text-amber-700' : 'text-slate-400'}`}>{t.unpaid || '—'}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+
+        <div className="px-4 pb-6">
+          <div className="mb-1 flex flex-wrap items-center gap-2">
+            <div className="text-xs font-semibold text-slate-500">Commission lines</div>
+            {selected.size > 0 && (
+              <>
+                <span className="text-xs text-slate-400">{selected.size} selected</span>
+                {selectedPayable.length > 0 && (
+                  <button className="btn btn-sm" onClick={() => setHoldTarget(selectedPayable)}>
+                    Hold {selectedPayable.length}…
+                  </button>
+                )}
+                {selectedHeld.length > 0 && (
+                  <>
+                    <input type="date" className="input" value={releaseDate} onChange={(e) => setReleaseDate(e.target.value)} title="Release date" />
+                    <button className="btn btn-sm btn-primary" onClick={() => act(() => api.releaseLines(run.id, { lineIds: selectedHeld, releasedAt: releaseDate }))}>
+                      Release {selectedHeld.length}
+                    </button>
+                  </>
+                )}
+              </>
+            )}
+            <div className="flex-1" />
+            <select className="select" value={statusFilter} onChange={(e) => setStatusFilter(e.target.value as typeof statusFilter)}>
+              <option value="all">All statuses</option>
+              <option value="pay">Pay next payroll</option>
+              <option value="hold">On hold</option>
+              <option value="released">Released</option>
+              <option value="unpaid">Needs attention</option>
+            </select>
+            <label className="flex items-center gap-1 text-xs text-slate-500">
+              <input type="checkbox" checked={onlySplit} onChange={(e) => setOnlySplit(e.target.checked)} /> only split deals
+            </label>
+            <input className="input w-56" placeholder="Filter by person, deal, plan…" value={filter} onChange={(e) => setFilter(e.target.value)} />
+          </div>
+
+          {holdTarget && (
+            <div className="mb-2 flex flex-wrap items-center gap-2 rounded-md border border-orange-200 bg-orange-50 px-3 py-2 text-xs">
+              <span className="font-medium text-orange-800">
+                Put {holdTarget.length} line{holdTarget.length === 1 ? '' : 's'} on hold
+              </span>
+              <select className="select" value={holdReason} onChange={(e) => setHoldReason(e.target.value)}>
+                {reasons.map((r) => (
+                  <option key={r.key} value={r.key}>
+                    {r.name}
+                  </option>
+                ))}
+              </select>
+              <input className="input w-64" placeholder="Note (optional)" value={holdNote} onChange={(e) => setHoldNote(e.target.value)} />
+              <button className="btn btn-sm btn-primary" onClick={() => act(() => api.holdLines(run.id, { lineIds: holdTarget, reasonKey: holdReason, note: holdNote || null }))}>
+                Hold
+              </button>
+              <button className="btn btn-sm" onClick={() => setHoldTarget(null)}>
+                Cancel
+              </button>
+            </div>
+          )}
+
+          <table className="w-full bg-white text-xs">
+            <thead className="text-left text-slate-400">
+              <tr className="border-b border-slate-200">
+                <th className="py-1.5 pr-2">
+                  <input
+                    type="checkbox"
+                    checked={visibleLines.length > 0 && visibleLines.every((l) => selected.has(l.id))}
+                    onChange={(e) => setSelected(e.target.checked ? new Set(visibleLines.map((l) => l.id)) : new Set())}
+                  />
+                </th>
+                <th className="py-1.5 pr-3 font-normal">Deal</th>
+                <th className="py-1.5 pr-3 font-normal">Closed</th>
+                <th className="py-1.5 pr-3 text-right font-normal">Deal amount</th>
+                <th className="py-1.5 pr-3 font-normal">Person</th>
+                <th className="py-1.5 pr-3 font-normal">Role</th>
+                <th className="py-1.5 pr-3 font-normal">Plan</th>
+                <th className="py-1.5 pr-3 font-normal">Tier</th>
+                <th className="py-1.5 pr-3 text-right font-normal">Amount</th>
+                <th className="py-1.5 pr-3 text-right font-normal">Rate</th>
+                <th className="py-1.5 pr-3 text-right font-normal">Payout</th>
+                <th className="py-1.5 pr-3 font-normal">Status</th>
+                <th className="py-1.5 font-normal">Note</th>
+                <th className="py-1.5" />
+              </tr>
+            </thead>
+            <tbody>
+              {visibleLines.map((l) => (
+                <tr key={l.id} className={`border-b border-slate-100 ${l.payout === null ? 'bg-amber-50/60' : l.status === 'hold' ? 'bg-orange-50/60' : l.split ? 'bg-indigo-50/40' : ''}`}>
+                  <td className="py-1 pr-2">
+                    <input
+                      type="checkbox"
+                      checked={selected.has(l.id)}
+                      onChange={(e) => {
+                        const s = new Set(selected);
+                        if (e.target.checked) s.add(l.id);
+                        else s.delete(l.id);
+                        setSelected(s);
+                      }}
+                    />
+                  </td>
+                  <td className="py-1 pr-3 whitespace-nowrap">{l.dealKey ?? `row ${l.rowIndex + 1}`}</td>
+                  <td className="py-1 pr-3 whitespace-nowrap">{l.dealDate ?? ''}</td>
+                  <td className="py-1 pr-3 text-right">{money(l.dealAmount)}</td>
+                  <td className="py-1 pr-3 whitespace-nowrap font-medium text-slate-800">{l.payee}</td>
+                  <td className="py-1 pr-3">{l.role}</td>
+                  <td className="py-1 pr-3">{l.planName ?? ''}</td>
+                  <td className="py-1 pr-3 whitespace-nowrap">
+                    {l.method === 'flat' ? 'flat' : l.method === 'none' ? '' : `${num(l.tierFrom)} – ${l.tierTo === null ? '∞' : num(l.tierTo)}`}
+                    {l.split ? <span className="ml-1 rounded bg-indigo-100 px-1 text-[10px] text-indigo-700">split</span> : null}
+                  </td>
+                  <td className="py-1 pr-3 text-right">{money(l.amount)}</td>
+                  <td className="py-1 pr-3 text-right">{pct(l.rate)}</td>
+                  <td className="py-1 pr-3 text-right font-medium">{money(l.payout)}</td>
+                  <td className="py-1 pr-3 whitespace-nowrap">
+                    {l.status === 'hold' ? (
+                      <span className="text-orange-700" title={l.holdNote ?? ''}>
+                        On hold · {reasonName(l.holdReason)}
+                        {l.heldAt ? ` · since ${l.heldAt}` : ''}
+                      </span>
+                    ) : l.status === 'released' ? (
+                      <span className="text-emerald-700" title={`Was on hold: ${reasonName(l.holdReason)}`}>
+                        Released {l.releasedAt} · pays {l.payMonth ? monthLabel(l.payMonth) : '—'}
+                      </span>
+                    ) : (
+                      <span className="text-slate-600">
+                        {LINE_STATUS_LABELS.pay}
+                        {l.payMonth ? ` · ${monthLabel(l.payMonth)}` : ''}
+                      </span>
+                    )}
+                  </td>
+                  <td className={`py-1 ${l.payout === null ? 'text-amber-800' : 'text-slate-400'}`}>{l.note ?? l.holdNote ?? ''}</td>
+                  <td className="py-1 whitespace-nowrap text-right">
+                    {l.status === 'hold' ? (
+                      <>
+                        <button className="text-indigo-600 hover:underline" onClick={() => act(() => api.releaseLines(run.id, { lineIds: [l.id], releasedAt: releaseDate }))}>
+                          Release
+                        </button>{' '}
+                        <button className="text-slate-400 hover:underline" title="Clear the hold and pay as if it was never held" onClick={() => act(() => api.payLines(run.id, [l.id]))}>
+                          Undo
+                        </button>
+                      </>
+                    ) : l.payout === null ? null : (
+                      <button className="text-slate-500 hover:underline" onClick={() => setHoldTarget([l.id])}>
+                        Hold…
+                      </button>
+                    )}
+                  </td>
+                </tr>
+              ))}
+              {visibleLines.length === 0 && (
+                <tr>
+                  <td colSpan={14} className="py-6 text-center text-slate-400">
+                    No lines match.
+                  </td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </>
+  );
+}
+
+// -- Hold reasons --------------------------------------------------------------
+
+function HoldReasonsPanel({ reasons, onChange, onClose, onError }: { reasons: HoldReason[]; onChange: () => Promise<unknown>; onClose: () => void; onError: (m: string) => void }) {
+  const [name, setName] = useState('');
+  return (
+    <div className="border-b border-slate-200 bg-slate-50 px-4 py-3 text-sm">
+      <div className="flex items-center">
+        <div className="font-semibold">Hold reasons</div>
+        <div className="flex-1" />
+        <button className="text-slate-400 hover:text-slate-700" onClick={onClose}>
+          ✕
+        </button>
+      </div>
+      <div className="mt-2 flex flex-wrap gap-2">
+        {reasons.map((r) => (
+          <span key={r.id} className="inline-flex items-center gap-1 rounded-full border border-slate-300 bg-white px-2 py-0.5 text-xs">
+            {r.name}
+            {!r.builtin && (
+              <button
+                className="text-slate-400 hover:text-rose-600"
+                onClick={() =>
+                  api
+                    .deleteHoldReason(r.id)
+                    .then(onChange)
+                    .catch((e) => onError(e.message))
+                }
+              >
+                ✕
+              </button>
+            )}
+          </span>
+        ))}
+      </div>
+      <form
+        className="mt-2 flex items-center gap-2"
+        onSubmit={(e) => {
+          e.preventDefault();
+          if (!name.trim()) return;
+          api
+            .createHoldReason(name)
+            .then(() => {
+              setName('');
+              return onChange();
+            })
+            .catch((err) => onError(err.message));
+        }}
+      >
+        <input className="input w-72" placeholder="New reason, e.g. Pending signed order form" value={name} onChange={(e) => setName(e.target.value)} />
+        <button className="btn btn-sm" type="submit">
+          Add
+        </button>
+      </form>
+    </div>
+  );
+}
+
+// -- Bits ----------------------------------------------------------------------
 
 function Field({ label, value, onChange, options, required }: { label: string; value: string; onChange: (v: string) => void; options: string[]; required?: boolean }) {
   return (
@@ -439,12 +871,14 @@ function Field({ label, value, onChange, options, required }: { label: string; v
   );
 }
 
-function Stat({ label, value, sub, tone }: { label: string; value: string; sub?: string; tone?: 'warn' }) {
+function Stat({ label, value, sub, tone }: { label: string; value: string; sub?: string; tone?: 'warn' | 'hold' }) {
+  const border = tone === 'warn' ? 'border-amber-200' : tone === 'hold' ? 'border-orange-200' : 'border-slate-200';
+  const text = tone === 'warn' ? 'text-amber-700' : tone === 'hold' ? 'text-orange-700' : 'text-slate-800';
   return (
-    <div className={`rounded-lg border bg-white px-3 py-2 ${tone === 'warn' ? 'border-amber-200' : 'border-slate-200'}`}>
+    <div className={`rounded-lg border bg-white px-3 py-2 ${border}`}>
       <div className="text-xs text-slate-400">{label}</div>
-      <div className={`text-lg font-semibold ${tone === 'warn' ? 'text-amber-700' : 'text-slate-800'}`}>{value}</div>
-      {sub && <div className="text-[11px] text-slate-400">{sub}</div>}
+      <div className={`text-lg font-semibold ${text}`}>{value}</div>
+      {sub && <div className="truncate text-[11px] text-slate-400" title={sub}>{sub}</div>}
     </div>
   );
 }

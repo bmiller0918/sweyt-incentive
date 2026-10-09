@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { doublePrecision, index, integer, jsonb, pgTable, text, timestamp, uuid } from 'drizzle-orm/pg-core';
-import type { Aggregate, ColumnDef, Criteria, PlanTiers, RawRow } from '@commissions/shared';
+import type { Aggregate, ColumnDef, Criteria, HoldRule, PlanTiers, RawRow } from '@commissions/shared';
 
 // Every table carries timestamps and a nullable organization_id so multi-
 // tenancy can be added later without a migration of existing rows.
@@ -202,7 +202,20 @@ export interface CommissionRunConfig {
   /** Inclusive YYYY-MM-DD bounds on the date column; null = unbounded. */
   from: string | null;
   to: string | null;
+  /** Deals matching a rule start on hold with that rule's reason. */
+  holdRules?: HoldRule[];
+  /** Months between a deal's close (or release) and the payroll it pays on. */
+  payLagMonths?: number;
 }
+
+/** Why a commission can be held rather than paid on the next payroll. */
+export const holdReasons = pgTable('hold_reasons', {
+  ...base,
+  key: text('key').notNull().unique(),
+  name: text('name').notNull(),
+  builtin: integer('builtin').notNull().default(0),
+  sortOrder: integer('sort_order').notNull().default(0),
+});
 
 /** One calculation of commission lines over an import's deals. */
 export const commissionRuns = pgTable('commission_runs', {
@@ -246,8 +259,16 @@ export const commissionLines = pgTable(
     cumulativeAfter: doublePrecision('cumulative_after').notNull().default(0),
     split: integer('split').notNull().default(0),
     note: text('note'),
-    /** calculated for now; the pay-now / on-hold workflow adds more. */
-    status: text('status').notNull().default('calculated'),
+    /** pay (next payroll) | hold | released */
+    status: text('status').notNull().default('pay'),
+    /** hold_reasons.key while on hold (kept after release for the record). */
+    holdReason: text('hold_reason'),
+    holdNote: text('hold_note'),
+    /** YYYY-MM-DD the line went on hold / came off hold. */
+    heldAt: text('held_at'),
+    releasedAt: text('released_at'),
+    /** YYYY-MM payroll month this line pays on; null while on hold. */
+    payMonth: text('pay_month'),
   },
   (t) => [index('commission_lines_run_idx').on(t.runId, t.rowIndex), index('commission_lines_payee_idx').on(t.runId, t.payee)],
 );
