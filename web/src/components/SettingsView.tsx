@@ -1,11 +1,13 @@
 import { useEffect, useState } from 'react';
 import { api, type AccountingPolicyRow, type HoldReason } from '../api';
 import { CompPlansView } from './CompPlansView';
+import { UsersSettings } from './UsersSettings';
 
-export type SettingsTab = 'plans' | 'hold-reasons' | 'accounting';
+export type SettingsTab = 'plans' | 'hold-reasons' | 'accounting' | 'users';
 
 export function SettingsView({ tab }: { tab: SettingsTab }) {
   if (tab === 'plans') return <CompPlansView />;
+  if (tab === 'users') return <UsersSettings />;
   return (
     <div className="mx-auto w-full max-w-3xl space-y-8 p-6">
       {tab === 'hold-reasons' ? <HoldReasonsSettings /> : <AccountingPolicySettings />}

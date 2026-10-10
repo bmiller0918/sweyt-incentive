@@ -8,6 +8,7 @@ import { ImportView } from './components/ImportView';
 import { IncentivesView } from './components/IncentivesView';
 import { SettingsView } from './components/SettingsView';
 import { UploadFlow } from './components/UploadFlow';
+import { useAuth } from './components/AuthGate';
 
 type Page =
   | { kind: 'dashboard' }
@@ -16,7 +17,7 @@ type Page =
   | { kind: 'employees' }
   | { kind: 'types' }
   | { kind: 'commissions' }
-  | { kind: 'settings'; tab: 'plans' | 'hold-reasons' | 'accounting' };
+  | { kind: 'settings'; tab: 'plans' | 'hold-reasons' | 'accounting' | 'users' };
 
 /** Sidebar sections: top-level areas, each with its sub-pages. */
 const SECTIONS: { key: string; label: string; items: { label: string; hint: string; page: Page; match: (p: Page) => boolean }[] }[] = [
@@ -53,11 +54,13 @@ const SECTIONS: { key: string; label: string; items: { label: string; hint: stri
       { label: 'Comp plans', hint: 'rates, quotas, tiers', page: { kind: 'settings', tab: 'plans' }, match: (p) => p.kind === 'settings' && p.tab === 'plans' },
       { label: 'Hold reasons', hint: 'why a line waits', page: { kind: 'settings', tab: 'hold-reasons' }, match: (p) => p.kind === 'settings' && p.tab === 'hold-reasons' },
       { label: 'Accounting policy', hint: 'amortization method', page: { kind: 'settings', tab: 'accounting' }, match: (p) => p.kind === 'settings' && p.tab === 'accounting' },
+      { label: 'Users', hint: 'who can sign in', page: { kind: 'settings', tab: 'users' }, match: (p) => p.kind === 'settings' && p.tab === 'users' },
     ],
   },
 ];
 
 export default function App() {
+  const { user, signOut } = useAuth();
   const [imports, setImports] = useState<ImportSummary[]>([]);
   const [page, setPage] = useState<Page>({ kind: 'dashboard' });
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
@@ -142,6 +145,24 @@ export default function App() {
             );
           })}
         </nav>
+
+        <div className="flex items-center gap-2 border-t border-slate-200 px-3 py-2 text-xs">
+          <span className="flex h-6 w-6 items-center justify-center rounded-full bg-indigo-100 text-[11px] font-semibold text-indigo-800" aria-hidden>
+            {user.name
+              .split(/\s+/)
+              .map((w) => w[0])
+              .join('')
+              .slice(0, 2)
+              .toUpperCase()}
+          </span>
+          <div className="min-w-0 flex-1">
+            <div className="truncate font-medium text-slate-700">{user.name}</div>
+            <div className="truncate text-[11px] text-slate-400">{user.email}</div>
+          </div>
+          <button className="text-slate-400 hover:text-slate-700" onClick={signOut} title="Sign out">
+            Sign out
+          </button>
+        </div>
       </aside>
 
       <main className="flex min-w-0 flex-1 flex-col">

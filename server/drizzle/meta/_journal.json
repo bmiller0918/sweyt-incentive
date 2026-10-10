@@ -85,6 +85,13 @@
       "when": 1791587656134,
       "tag": "0011_last_guardsmen",
       "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "7",
+      "when": 1791670895468,
+      "tag": "0012_young_ogun",
+      "breakpoints": true
     }
   ]
 }

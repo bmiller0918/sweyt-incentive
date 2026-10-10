@@ -1,11 +1,13 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import cookie from '@fastify/cookie';
 import cors from '@fastify/cors';
 import multipart from '@fastify/multipart';
 import fastifyStatic from '@fastify/static';
 import Fastify from 'fastify';
 import { ZodError } from 'zod';
+import { setupAuth } from './auth.js';
 import { config } from './config.js';
 import { createDb } from './db/client.js';
 import { commissionRoutes } from './routes/commissions.js';
@@ -17,7 +19,9 @@ const here = path.dirname(fileURLToPath(import.meta.url));
 
 async function main() {
   const app = Fastify({ logger: { level: config.isProduction ? 'info' : 'warn' }, bodyLimit: 20 * 1024 * 1024 });
-  await app.register(cors, { origin: true });
+  // Same-origin app: the browser sends the session cookie; no cross-site origins are allowed credentials.
+  await app.register(cors, { origin: false });
+  await app.register(cookie);
   await app.register(multipart, { limits: { fileSize: config.maxUploadBytes, files: 1 } });
 
   app.setErrorHandler((err: unknown, _req, reply) => {
@@ -32,6 +36,8 @@ async function main() {
   app.get('/health', async () => ({ ok: true, uptime: process.uptime() }));
 
   const db = await createDb();
+  // Must come before the data routes: it adds the session hook that guards /api/*.
+  await setupAuth(app, db);
   await importRoutes(app, db);
   await criteriaRoutes(app, db);
   await planRoutes(app, db);
