@@ -3,6 +3,10 @@
 # failing PR cannot be merged.
 name: CI
 
+# The job only reads the repo; keep the auto-token read-only.
+permissions:
+  contents: read
+
 on:
   pull_request:
   push:
@@ -19,6 +23,9 @@ jobs:
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
+        with:
+          # Nothing after checkout needs git credentials; don't leave them on disk.
+          persist-credentials: false
 
       - uses: actions/setup-node@v4
         with:
