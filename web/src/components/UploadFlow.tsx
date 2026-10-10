@@ -71,7 +71,7 @@ export function UploadFlow({ onDone, onCancel }: Props) {
     const width = Math.max(0, ...preview.map((r) => r.length));
     return (
       <div className="flex h-full flex-col">
-        <div className="flex items-center gap-3 border-b border-slate-200 bg-white px-4 py-3">
+        <div className="flex items-center gap-3 border-b border-slate-200 bg-panel px-4 py-3">
           <div className="text-sm font-semibold">Set up import</div>
           <div className="text-xs text-slate-500">{upload.filename}</div>
           <div className="flex-1" />
@@ -98,7 +98,7 @@ export function UploadFlow({ onDone, onCancel }: Props) {
           </button>
         </div>
         {error && <div className="border-b border-red-200 bg-red-50 px-4 py-2 text-sm text-red-700">{error}</div>}
-        <div className="flex flex-wrap items-end gap-4 border-b border-slate-200 bg-white px-4 py-3">
+        <div className="flex flex-wrap items-end gap-4 border-b border-slate-200 bg-panel px-4 py-3">
           <label className="text-xs text-slate-600">
             Name
             <input className="input mt-1 block w-64" value={name} onChange={(e) => setName(e.target.value)} />
@@ -203,7 +203,7 @@ export function UploadFlow({ onDone, onCancel }: Props) {
       <div
         {...getRootProps()}
         className={`flex w-full max-w-xl cursor-pointer flex-col items-center justify-center rounded-xl border-2 border-dashed px-8 py-16 text-center transition ${
-          isDragActive ? 'border-indigo-500 bg-indigo-50' : 'border-slate-300 bg-white hover:border-slate-400'
+          isDragActive ? 'border-indigo-500 bg-indigo-50' : 'border-slate-300 bg-panel hover:border-slate-400'
         }`}
       >
         <input {...getInputProps()} />

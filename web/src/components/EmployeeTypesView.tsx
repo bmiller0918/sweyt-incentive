@@ -78,7 +78,7 @@ export function EmployeeTypesView() {
 
   return (
     <div className="flex h-full">
-      <aside className="flex w-64 shrink-0 flex-col border-r border-slate-200 bg-white">
+      <aside className="flex w-64 shrink-0 flex-col border-r border-slate-200 bg-panel">
         <div className="flex items-center border-b border-slate-200 px-3 py-2">
           <span className="text-sm font-semibold">Employee types</span>
           <div className="flex-1" />

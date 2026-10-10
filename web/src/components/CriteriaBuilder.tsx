@@ -66,7 +66,7 @@ function GroupEditor({ node, columns, impact, errors, onChange, onRemove, depth,
   const addGroup = () =>
     update({ children: [...node.children, { type: 'group', id: newId(), conjunction: node.conjunction === 'and' ? 'or' : 'and', children: [] }] });
 
-  const tint = depth % 2 === 0 ? 'bg-white' : 'bg-slate-50';
+  const tint = depth % 2 === 0 ? 'bg-panel' : 'bg-slate-50';
 
   return (
     <div className={`rounded-lg border ${node.not ? 'border-rose-300' : 'border-slate-200'} ${tint} p-2`}>
@@ -77,7 +77,7 @@ function GroupEditor({ node, columns, impact, errors, onChange, onRemove, depth,
               key={c}
               onClick={() => update({ conjunction: c })}
               className={`px-2 py-0.5 font-semibold uppercase ${
-                node.conjunction === c ? 'bg-indigo-600 text-white' : 'bg-white text-slate-600 hover:bg-slate-100'
+                node.conjunction === c ? 'bg-indigo-600 text-white' : 'bg-panel text-slate-600 hover:bg-slate-100'
               }`}
             >
               {c}
@@ -176,7 +176,7 @@ function ConditionEditor({ node, columns, impact, error, onChange, onRemove, imp
   };
 
   return (
-    <div className={`rounded-md border px-2 py-1.5 ${error ? 'border-rose-300 bg-rose-50' : 'border-slate-200 bg-white'} ${disabled ? 'opacity-50' : ''}`}>
+    <div className={`rounded-md border px-2 py-1.5 ${error ? 'border-rose-300 bg-rose-50' : 'border-slate-200 bg-panel'} ${disabled ? 'opacity-50' : ''}`}>
       <div className="flex flex-wrap items-center gap-1.5">
         <input
           type="checkbox"

@@ -31,7 +31,7 @@ export function IncentivesView({ onOpen }: Props) {
 
   return (
     <div className="flex h-full flex-col">
-      <div className="flex items-center gap-3 border-b border-slate-200 bg-white px-4 py-2">
+      <div className="flex items-center gap-3 border-b border-slate-200 bg-panel px-4 py-2">
         <div>
           <div className="text-sm font-semibold">Incentives</div>
           <div className="text-xs text-slate-400">Saved filter → summarize → calculate pipelines. Open one to drill into its details.</div>
@@ -42,7 +42,7 @@ export function IncentivesView({ onOpen }: Props) {
       {error && <div className="border-b border-red-200 bg-red-50 px-4 py-1.5 text-xs text-red-700">{error}</div>}
       <div className="flex-1 overflow-auto p-4">
         {visible.length === 0 ? (
-          <div className="rounded-lg border border-dashed border-slate-300 bg-white p-8 text-center text-sm text-slate-400">
+          <div className="rounded-lg border border-dashed border-slate-300 bg-panel p-8 text-center text-sm text-slate-400">
             {sets.length === 0 ? (
               <>
                 No saved incentives yet. Open an import, build your filter / summary / calculation, then click <strong>Save</strong>.

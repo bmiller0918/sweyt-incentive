@@ -72,7 +72,7 @@ export function LinksPanel({ importId, importName, ownColumns, onChanged, onClos
 
   return (
     <div className="fixed inset-0 z-20 flex items-center justify-center bg-black/30" onClick={onClose}>
-      <div className="max-h-[85vh] w-[40rem] overflow-auto rounded-lg bg-white p-4 text-xs shadow-xl" onClick={(e) => e.stopPropagation()}>
+      <div className="max-h-[85vh] w-[40rem] overflow-auto rounded-lg bg-panel p-4 text-xs shadow-xl" onClick={(e) => e.stopPropagation()}>
         <div className="mb-3 flex items-center gap-2">
           <div className="text-sm font-semibold">Links for {importName}</div>
           <div className="flex-1" />
@@ -181,7 +181,7 @@ function ParentLinkEditor({ link, onChange, onRemove, onRekey }: { link: ImportL
           <button
             key={f}
             onClick={() => toggle(f)}
-            className={`rounded-full border px-2 py-0.5 ${selected.includes(f) ? 'border-indigo-600 bg-indigo-600 text-white' : 'border-slate-300 bg-white text-slate-600 hover:bg-slate-100'}`}
+            className={`rounded-full border px-2 py-0.5 ${selected.includes(f) ? 'border-indigo-600 bg-indigo-600 text-white' : 'border-slate-300 bg-panel text-slate-600 hover:bg-slate-100'}`}
           >
             {f}
           </button>
@@ -199,7 +199,7 @@ function ChildLinkEditor({ link, onChange, onRemove }: { link: ImportLink; onCha
   const dirty = JSON.stringify(aggs) !== JSON.stringify(link.aggregates);
   const set = (i: number, patch: Partial<Aggregate>) => setAggs(aggs.map((a, j) => (j === i ? { ...a, ...patch } : a)));
   return (
-    <div className="rounded-lg border border-slate-200 bg-white p-2">
+    <div className="rounded-lg border border-slate-200 bg-panel p-2">
       <div className="flex flex-wrap items-center gap-2">
         <span>
           <strong>{link.childName}</strong> rows where <code>{link.childName}: {link.childKey}</code> = <code>{link.parentName}: {link.parentKey}</code>

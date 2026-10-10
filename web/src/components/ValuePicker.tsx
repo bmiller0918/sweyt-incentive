@@ -93,7 +93,7 @@ export function ValuePicker({ importId, field, multiple, selected, onChange }: P
         <span className="text-slate-400">▾</span>
       </button>
       {open && (
-        <div className="absolute left-0 top-full z-30 mt-1 flex max-h-72 w-72 flex-col rounded-md border border-slate-200 bg-white text-xs shadow-xl">
+        <div className="absolute left-0 top-full z-30 mt-1 flex max-h-72 w-72 flex-col rounded-md border border-slate-200 bg-panel text-xs shadow-xl">
           <div className="flex items-center gap-2 border-b border-slate-100 p-2">
             <input
               className="input flex-1"
