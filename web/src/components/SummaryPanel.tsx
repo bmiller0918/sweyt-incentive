@@ -88,7 +88,7 @@ export function SummaryPanel({ spec, columns, errors, onChange }: Props) {
                 key={c.name}
                 onClick={() => toggleGroup(c.name)}
                 className={`rounded-full border px-2 py-0.5 ${
-                  on ? 'border-indigo-600 bg-indigo-600 text-white' : 'border-slate-300 bg-panel text-slate-600 hover:bg-slate-100'
+                  on ? 'border-indigo-600 bg-indigo-600 text-slate-50' : 'border-slate-300 bg-panel text-slate-600 hover:bg-slate-100'
                 }`}
                 title={on ? `Grouped (${pos + 1}). Click to remove.` : 'Click to group by this column'}
               >

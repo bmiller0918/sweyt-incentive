@@ -271,7 +271,7 @@ export function ImportView({ importId, initialSetId, onDeleted, onRenamed }: Pro
               onClick={() => switchView(m)}
               disabled={m === 'summary' && !summaryOn}
               className={`px-2 py-1 font-medium capitalize disabled:opacity-40 ${
-                mode === m ? 'bg-indigo-600 text-white' : 'bg-panel text-slate-600 hover:bg-slate-100'
+                mode === m ? 'bg-indigo-600 text-slate-50' : 'bg-panel text-slate-600 hover:bg-slate-100'
               }`}
               title={m === 'summary' && !summaryOn ? 'Add a group-by or aggregate first' : undefined}
             >
