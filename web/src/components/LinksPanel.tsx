@@ -181,7 +181,7 @@ function ParentLinkEditor({ link, onChange, onRemove, onRekey }: { link: ImportL
           <button
             key={f}
             onClick={() => toggle(f)}
-            className={`rounded-full border px-2 py-0.5 ${selected.includes(f) ? 'border-indigo-600 bg-indigo-600 text-white' : 'border-slate-300 bg-panel text-slate-600 hover:bg-slate-100'}`}
+            className={`rounded-full border px-2 py-0.5 ${selected.includes(f) ? 'border-indigo-600 bg-indigo-600 text-slate-50' : 'border-slate-300 bg-panel text-slate-600 hover:bg-slate-100'}`}
           >
             {f}
           </button>

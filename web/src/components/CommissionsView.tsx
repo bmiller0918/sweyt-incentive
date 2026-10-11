@@ -531,10 +531,10 @@ function RunDetail({ run, reasons, onChanged, onDelete, onError }: { run: Commis
         </div>
         <div className="flex-1" />
         <div className="flex rounded-md border border-slate-300 text-xs">
-          <button className={`px-2.5 py-1 ${tab === 'lines' ? 'bg-indigo-600 text-white' : 'text-slate-600 hover:bg-slate-50'}`} onClick={() => setTab('lines')}>
+          <button className={`px-2.5 py-1 ${tab === 'lines' ? 'bg-indigo-600 text-slate-50' : 'text-slate-600 hover:bg-slate-50'}`} onClick={() => setTab('lines')}>
             Lines & holds
           </button>
-          <button className={`px-2.5 py-1 ${tab === 'accounting' ? 'bg-indigo-600 text-white' : 'text-slate-600 hover:bg-slate-50'}`} onClick={() => setTab('accounting')}>
+          <button className={`px-2.5 py-1 ${tab === 'accounting' ? 'bg-indigo-600 text-slate-50' : 'text-slate-600 hover:bg-slate-50'}`} onClick={() => setTab('accounting')}>
             Accounting
           </button>
         </div>

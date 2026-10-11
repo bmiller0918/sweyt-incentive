@@ -77,7 +77,7 @@ function GroupEditor({ node, columns, impact, errors, onChange, onRemove, depth,
               key={c}
               onClick={() => update({ conjunction: c })}
               className={`px-2 py-0.5 font-semibold uppercase ${
-                node.conjunction === c ? 'bg-indigo-600 text-white' : 'bg-panel text-slate-600 hover:bg-slate-100'
+                node.conjunction === c ? 'bg-indigo-600 text-slate-50' : 'bg-panel text-slate-600 hover:bg-slate-100'
               }`}
             >
               {c}
