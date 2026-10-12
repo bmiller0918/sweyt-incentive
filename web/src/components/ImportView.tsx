@@ -246,7 +246,7 @@ export function ImportView({ importId, initialSetId, onDeleted, onRenamed }: Pro
   return (
     <div className="flex h-full flex-col">
       {/* Header */}
-      <div className="flex items-center gap-3 border-b border-slate-200 bg-white px-4 py-2">
+      <div className="flex items-center gap-3 border-b border-slate-200 bg-panel px-4 py-2">
         <button className="truncate text-sm font-semibold hover:underline" onClick={rename} title="Rename">
           {imp.name}
         </button>
@@ -271,7 +271,7 @@ export function ImportView({ importId, initialSetId, onDeleted, onRenamed }: Pro
               onClick={() => switchView(m)}
               disabled={m === 'summary' && !summaryOn}
               className={`px-2 py-1 font-medium capitalize disabled:opacity-40 ${
-                mode === m ? 'bg-indigo-600 text-white' : 'bg-white text-slate-600 hover:bg-slate-100'
+                mode === m ? 'bg-indigo-600 text-slate-50' : 'bg-panel text-slate-600 hover:bg-slate-100'
               }`}
               title={m === 'summary' && !summaryOn ? 'Add a group-by or aggregate first' : undefined}
             >
@@ -321,7 +321,7 @@ export function ImportView({ importId, initialSetId, onDeleted, onRenamed }: Pro
         {/* Criteria panel */}
         {panelOpen && (
           <div className="flex w-[30rem] shrink-0 flex-col border-r border-slate-200 bg-slate-50">
-            <div className="flex items-center gap-2 border-b border-slate-200 bg-white px-3 py-2 text-xs">
+            <div className="flex items-center gap-2 border-b border-slate-200 bg-panel px-3 py-2 text-xs">
               <select className="select flex-1" value={currentSet?.id ?? ''} onChange={(e) => loadSet(e.target.value)} title="Saved incentives for this import">
                 <option value="">— unsaved incentive —</option>
                 {sets.map((s) => (
@@ -363,7 +363,7 @@ export function ImportView({ importId, initialSetId, onDeleted, onRenamed }: Pro
               </button>
             </div>
             {paramNames.length > 0 && (
-              <div className="flex flex-wrap gap-2 border-b border-slate-200 bg-white px-3 py-2 text-xs">
+              <div className="flex flex-wrap gap-2 border-b border-slate-200 bg-panel px-3 py-2 text-xs">
                 {paramNames.map((n) => (
                   <label key={n} className="flex items-center gap-1 text-slate-600">
                     <span className="font-mono">{`{{${n}}}`}</span>
@@ -391,7 +391,7 @@ export function ImportView({ importId, initialSetId, onDeleted, onRenamed }: Pro
                   </p>
                 </>
               ) : (
-                <div className="rounded-lg border border-dashed border-slate-300 bg-white px-3 py-2 text-[11px] leading-relaxed text-slate-500">
+                <div className="rounded-lg border border-dashed border-slate-300 bg-panel px-3 py-2 text-[11px] leading-relaxed text-slate-500">
                   {headerFields.length === 0 ? (
                     <>
                       Click the <span className="font-semibold">funnel</span> on any column header to filter by its values or a condition. Filters on different columns
@@ -428,7 +428,7 @@ export function ImportView({ importId, initialSetId, onDeleted, onRenamed }: Pro
                 )}
               </div>
               {summaryOn && (
-                <div className="rounded-lg border border-slate-200 bg-white p-2">
+                <div className="rounded-lg border border-slate-200 bg-panel p-2">
                   <SummaryPanel spec={criteria.summary ?? emptySummary()} columns={imp.columns} errors={meta.errors} onChange={setSummary} />
                 </div>
               )}
@@ -458,7 +458,7 @@ export function ImportView({ importId, initialSetId, onDeleted, onRenamed }: Pro
                     )}
                   </div>
                   {calcOn && (
-                    <div className="rounded-lg border border-slate-200 bg-white p-2">
+                    <div className="rounded-lg border border-slate-200 bg-panel p-2">
                       <CalcPanel
                         spec={criteria.calc ?? emptyCalc()}
                         summaryColumns={summaryColumnsOf(criteria.summary ?? emptySummary(), Object.fromEntries(imp.columns.map((c) => [c.name, c.type])))}
@@ -478,7 +478,7 @@ export function ImportView({ importId, initialSetId, onDeleted, onRenamed }: Pro
         {/* Grid + totals */}
         <div className="flex min-w-0 flex-1 flex-col">
           {mode === 'detail' && headerFields.length > 0 && (
-            <div className="flex flex-wrap items-center gap-1.5 border-b border-slate-200 bg-white px-3 py-1.5 text-xs">
+            <div className="flex flex-wrap items-center gap-1.5 border-b border-slate-200 bg-panel px-3 py-1.5 text-xs">
               <span className="text-slate-400">Filters:</span>
               {headerFields.map((f) => {
                 const col = imp.columns.find((c) => c.name === f);
@@ -577,7 +577,7 @@ export function ImportView({ importId, initialSetId, onDeleted, onRenamed }: Pro
       {/* Save incentive dialog */}
       {saveDialog && (
         <div className="fixed inset-0 z-20 flex items-center justify-center bg-black/30" onClick={() => setSaveDialog(null)}>
-          <div className="w-[28rem] rounded-lg bg-white p-4 shadow-xl" onClick={(e) => e.stopPropagation()}>
+          <div className="w-[28rem] rounded-lg bg-panel p-4 shadow-xl" onClick={(e) => e.stopPropagation()}>
             <div className="mb-3 text-sm font-semibold">{saveDialog.asNew || !currentSet ? 'Save incentive' : `Save new version of “${currentSet.name}”`}</div>
             <label className="block text-xs text-slate-600">
               Name
@@ -612,7 +612,7 @@ export function ImportView({ importId, initialSetId, onDeleted, onRenamed }: Pro
       {/* Explain modal */}
       {explain && (
         <div className="fixed inset-0 z-20 flex items-center justify-center bg-black/30" onClick={() => setExplain(null)}>
-          <div className="max-h-[80vh] w-[32rem] overflow-auto rounded-lg bg-white p-4 shadow-xl" onClick={(e) => e.stopPropagation()}>
+          <div className="max-h-[80vh] w-[32rem] overflow-auto rounded-lg bg-panel p-4 shadow-xl" onClick={(e) => e.stopPropagation()}>
             <div className="mb-3 flex items-center gap-2">
               <div className="text-sm font-semibold">Row {explain.row.index + 1}</div>
               <span className={`rounded px-1.5 py-0.5 text-xs ${explain.matched ? 'bg-emerald-100 text-emerald-800' : 'bg-rose-100 text-rose-800'}`}>

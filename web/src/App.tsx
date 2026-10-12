@@ -1,22 +1,115 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { api, type ImportSummary } from './api';
 import { CommissionsView } from './components/CommissionsView';
-import { CompPlansView } from './components/CompPlansView';
+import { ComingSoon } from './components/ComingSoon';
+import { DashboardView } from './components/DashboardView';
 import { EmployeeTypesView } from './components/EmployeeTypesView';
 import { EmployeesView } from './components/EmployeesView';
-import { IncentivesView } from './components/IncentivesView';
 import { ImportView } from './components/ImportView';
+import { IncentivesView } from './components/IncentivesView';
+import { SettingsView } from './components/SettingsView';
 import { UploadFlow } from './components/UploadFlow';
+import { useAuth } from './components/AuthGate';
+
+/** The existing screens a sidebar item can open. 'soon' = a page that isn't built yet. */
+type Screen = 'dashboard' | 'runs' | 'imports' | 'incentives' | 'employees' | 'types' | 'plans' | 'holdreasons' | 'acctpolicy' | 'users' | 'soon';
+
+type NavItem = { key: string; label: string; screen: Screen; children?: NavItem[] };
+type NavSection = { key: string; label: string; items: NavItem[] };
+
+const PINNED: NavItem[] = [{ key: 'overview', label: 'Overview', screen: 'dashboard' }];
+
+/** Sidebar layout, designed in Sidebar Studio (Oct 2026). */
+const SECTIONS: NavSection[] = [
+  {
+    key: 'data',
+    label: 'Data & Imports',
+    items: [
+      { key: 'integrations', label: 'Integrations', screen: 'soon' },
+      { key: 'imports', label: 'Imports', screen: 'imports' },
+    ],
+  },
+  {
+    key: 'plans',
+    label: 'Comp Plans',
+    items: [
+      { key: 'plans-rates-quotas', label: 'Plans, rates and quotas', screen: 'plans' },
+      { key: 'spiffs-accelerators-bonus', label: 'Spiffs, Accelerators, and Bonus Plans', screen: 'incentives' },
+      { key: 'mid-year-recasts', label: 'Mid-year recasts', screen: 'soon' },
+      { key: 'clawbacks', label: 'Clawbacks', screen: 'soon' },
+    ],
+  },
+  {
+    key: 'payouts',
+    label: 'Payouts',
+    items: [
+      { key: 'payout-rules', label: 'Payout Rules', screen: 'soon' },
+      { key: 'payouts-on-hold', label: 'Payouts On Hold', screen: 'runs' },
+      { key: 'commission-payroll', label: 'Commission Payroll', screen: 'runs' },
+      { key: 'payout-settings', label: 'Payout Settings', screen: 'holdreasons' },
+    ],
+  },
+  {
+    key: 'accounting',
+    label: 'Accounting',
+    items: [
+      { key: 'accounting-settings', label: 'Accounting Settings', screen: 'acctpolicy' },
+      { key: 'amortization-types', label: 'Amortization Types', screen: 'soon' },
+      { key: 'amortization-registers', label: 'Amortization Registers', screen: 'runs' },
+      {
+        key: 'process-monthly-accounting',
+        label: 'Process Monthly Accounting',
+        screen: 'soon',
+        children: [
+          { key: 'process-monthly-payouts', label: 'Process Monthly Payouts', screen: 'soon' },
+          { key: 'monthly-reclass', label: 'Monthly Reclass', screen: 'soon' },
+        ],
+      },
+    ],
+  },
+  {
+    key: 'reports',
+    label: 'Statements & Reports',
+    items: [
+      { key: 'reporting', label: 'Reporting', screen: 'soon' },
+      { key: 'employee-statements', label: 'Employee Statements', screen: 'soon' },
+      { key: 'annual-plan-design', label: 'Annual Plan Design', screen: 'soon' },
+    ],
+  },
+  {
+    key: 'employees',
+    label: 'Employees',
+    items: [
+      { key: 'employees', label: 'Employees', screen: 'employees' },
+      { key: 'employee-types', label: 'Employee types', screen: 'types' },
+      { key: 'users', label: 'Users', screen: 'users' },
+    ],
+  },
+];
+
+type Page = { key: string; importId?: string | null; setId?: string | null; uploading?: boolean };
+
+/** key -> item, its section label, and its parent (for sub-pages). */
+function indexNav() {
+  const map = new Map<string, { item: NavItem; section: string; parent?: NavItem }>();
+  const add = (items: NavItem[], section: string, parent?: NavItem) =>
+    items.forEach((item) => {
+      map.set(item.key, { item, section, parent });
+      if (item.children) add(item.children, section, item);
+    });
+  add(PINNED, '');
+  SECTIONS.forEach((s) => add(s.items, s.label));
+  return map;
+}
+
+const contains = (item: NavItem, key: string): boolean => item.key === key || (item.children ?? []).some((c) => contains(c, key));
 
 export default function App() {
+  const { user, signOut } = useAuth();
+  const nav = useMemo(indexNav, []);
   const [imports, setImports] = useState<ImportSummary[]>([]);
-  const [selected, setSelected] = useState<string | null>(null);
-  const [uploading, setUploading] = useState(false);
-  const [page, setPage] = useState<'imports' | 'plans' | 'employees' | 'types' | 'incentives' | 'commissions'>('imports');
-  const [peopleOpen, setPeopleOpen] = useState(false);
-  const peoplePages = ['employees', 'types', 'plans'] as const;
-  /** Incentive to load when an import is opened from the register. */
-  const [openSetId, setOpenSetId] = useState<string | null>(null);
+  const [page, setPage] = useState<Page>({ key: 'overview' });
+  const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
   const [error, setError] = useState<string | null>(null);
 
   const refresh = useCallback(async () => {
@@ -31,97 +124,170 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    refresh().then((list) => {
-      if (list.length && !selected) setSelected(list[0].id);
-      else if (!list.length) setUploading(true);
-    });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+    refresh();
+  }, [refresh]);
+
+  const go = (key: string) => setPage({ key });
+  const openImport = (importId: string | null, setId: string | null = null) => setPage({ key: 'imports', importId, setId });
+  const openUpload = () => setPage({ key: 'imports', importId: null, uploading: true });
+
+  const entry = nav.get(page.key) ?? nav.get('overview')!;
+  const screen = entry.item.screen;
+
+  // "Imports" with nothing selected shows the first import, or the upload screen.
+  const selectedImport = screen === 'imports' && !page.uploading ? (page.importId ?? imports[0]?.id ?? null) : null;
+
+  const renderItem = (it: NavItem, depth: number) => {
+    const active = page.key === it.key;
+    const hasKids = !!it.children?.length;
+    const open = hasKids && !collapsed[it.key];
+    return (
+      <div key={it.key}>
+        <button
+          className={`nav-item ${depth ? 'py-1 text-[13px]' : ''} ${active ? 'nav-item-active' : ''}`}
+          onClick={() => go(it.key)}
+          title={it.label}
+        >
+          <span className="flex-1 truncate">{it.label}</span>
+          {it.screen === 'soon' && <span className="nav-soon">soon</span>}
+          {hasKids && (
+            <span
+              role="button"
+              aria-label={open ? 'Close sub-pages' : 'Open sub-pages'}
+              className={`inline-block w-4 text-center text-slate-400 transition-transform ${open ? 'rotate-90' : ''}`}
+              onClick={(e) => {
+                e.stopPropagation();
+                setCollapsed((c) => ({ ...c, [it.key]: !c[it.key] }));
+              }}
+            >
+              ›
+            </span>
+          )}
+        </button>
+        {open && <div className="nav-sub mt-0.5 space-y-0.5">{it.children!.map((c) => renderItem(c, depth + 1))}</div>}
+        {/* Imports: the list of spreadsheets lives one level deeper. */}
+        {it.screen === 'imports' && (
+          <div className="nav-sub mt-0.5 space-y-0.5">
+            {imports.map((imp) => (
+              <button
+                key={imp.id}
+                onClick={() => openImport(imp.id)}
+                className={`nav-item py-1 text-xs ${screen === 'imports' && !page.uploading && selectedImport === imp.id ? 'nav-item-active' : ''}`}
+                title={`${imp.rowCount.toLocaleString()} rows · ${new Date(imp.createdAt).toLocaleDateString()}`}
+              >
+                <span className="truncate">{imp.name}</span>
+              </button>
+            ))}
+            <button className={`nav-item nav-add py-1 text-xs ${screen === 'imports' && page.uploading ? 'nav-item-active' : ''}`} onClick={openUpload}>
+              + New import
+            </button>
+          </div>
+        )}
+      </div>
+    );
+  };
+
+  const renderScreen = () => {
+    switch (screen) {
+      case 'dashboard':
+        return (
+          <DashboardView
+            onOpenRuns={() => go('commission-payroll')}
+            onOpenImport={(id) => openImport(id)}
+            onOpenIncentive={(importId, setId) => openImport(importId, setId)}
+          />
+        );
+      case 'runs':
+        return <CommissionsView />;
+      case 'incentives':
+        return <IncentivesView onOpen={(importId, setId) => openImport(importId, setId)} />;
+      case 'employees':
+        return <EmployeesView />;
+      case 'types':
+        return <EmployeeTypesView />;
+      case 'plans':
+        return <SettingsView tab="plans" />;
+      case 'holdreasons':
+        return <SettingsView tab="hold-reasons" />;
+      case 'acctpolicy':
+        return <SettingsView tab="accounting" />;
+      case 'users':
+        return <SettingsView tab="users" />;
+      case 'soon':
+        return <ComingSoon key={entry.item.key} title={entry.item.label} section={[entry.section, entry.parent?.label].filter(Boolean).join(' › ')} />;
+      case 'imports':
+        return page.uploading || !selectedImport ? (
+          <UploadFlow
+            onDone={async (imp) => {
+              await refresh();
+              openImport(imp.id);
+            }}
+            onCancel={imports.length ? () => openImport(imports[0].id) : undefined}
+          />
+        ) : (
+          <ImportView
+            key={`${selectedImport}:${page.setId ?? ''}`}
+            importId={selectedImport}
+            initialSetId={page.setId ?? null}
+            onDeleted={async () => {
+              const list = await refresh();
+              if (list.length) openImport(list[0].id);
+              else openUpload();
+            }}
+            onRenamed={refresh}
+          />
+        );
+    }
+  };
 
   return (
     <div className="flex h-full">
-      <aside className="flex w-60 shrink-0 flex-col border-r border-slate-200 bg-white">
-        <div className="border-b border-slate-200 px-4 py-3">
-          <div className="text-sm font-semibold tracking-tight">Sweyt Incentive</div>
-          <div className="text-xs text-slate-500">Import & Criteria</div>
-        </div>
-        <button
-          className="btn btn-primary m-3"
-          onClick={() => {
-            setPage('imports');
-            setUploading(true);
-            setSelected(null);
-          }}
-        >
-          + New import
-        </button>
-        <nav className="flex-1 overflow-y-auto px-2 pb-2">
-          {imports.length === 0 && <div className="px-2 py-4 text-xs text-slate-400">No imports yet.</div>}
-          {imports.map((imp) => (
-            <button
-              key={imp.id}
-              onClick={() => {
-                setPage('imports');
-                setSelected(imp.id);
-                setUploading(false);
-              }}
-              className={`block w-full rounded-md px-2 py-1.5 text-left text-sm hover:bg-slate-100 ${
-                page === 'imports' && selected === imp.id && !uploading ? 'bg-indigo-50 text-indigo-700' : 'text-slate-700'
-              }`}
-            >
-              <div className="truncate font-medium">{imp.name}</div>
-              <div className="truncate text-xs text-slate-400">
-                {imp.rowCount.toLocaleString()} rows · {new Date(imp.createdAt).toLocaleDateString()}
-              </div>
-            </button>
-          ))}
-        </nav>
-        <div className="space-y-1 border-t border-slate-200 p-2">
-          <button
-            onClick={() => setPage('commissions')}
-            className={`block w-full rounded-md px-2 py-1.5 text-left text-sm hover:bg-slate-100 ${page === 'commissions' ? 'bg-indigo-50 text-indigo-700' : 'text-slate-700'}`}
-          >
-            <div className="font-medium">Commissions</div>
-            <div className="text-xs text-slate-400">one line per person per deal</div>
-          </button>
-          <button
-            onClick={() => setPage('incentives')}
-            className={`block w-full rounded-md px-2 py-1.5 text-left text-sm hover:bg-slate-100 ${page === 'incentives' ? 'bg-indigo-50 text-indigo-700' : 'text-slate-700'}`}
-          >
-            <div className="font-medium">Incentives</div>
-            <div className="text-xs text-slate-400">saved filters, summaries, calculations</div>
-          </button>
-          {/* Employees group: hover (or an active sub-page) reveals one level deeper. */}
-          <div onMouseEnter={() => setPeopleOpen(true)} onMouseLeave={() => setPeopleOpen(false)}>
-            <button
-              onClick={() => setPage('employees')}
-              className={`flex w-full items-center rounded-md px-2 py-1.5 text-left text-sm hover:bg-slate-100 ${page === 'employees' ? 'bg-indigo-50 text-indigo-700' : 'text-slate-700'}`}
-            >
-              <div className="flex-1">
-                <div className="font-medium">Employees</div>
-                <div className="text-xs text-slate-400">people, salary, bonuses</div>
-              </div>
-              <span className={`text-slate-400 transition-transform ${peopleOpen || peoplePages.includes(page as (typeof peoplePages)[number]) ? 'rotate-90' : ''}`}>▸</span>
-            </button>
-            {(peopleOpen || peoplePages.includes(page as (typeof peoplePages)[number])) && (
-              <div className="ml-3 border-l border-slate-200 pl-2">
-                <button
-                  onClick={() => setPage('types')}
-                  className={`block w-full rounded-md px-2 py-1 text-left text-sm hover:bg-slate-100 ${page === 'types' ? 'bg-indigo-50 text-indigo-700' : 'text-slate-700'}`}
-                >
-                  <div className="font-medium">Employee types</div>
-                  <div className="text-xs text-slate-400">roles with default plans</div>
-                </button>
-                <button
-                  onClick={() => setPage('plans')}
-                  className={`block w-full rounded-md px-2 py-1 text-left text-sm hover:bg-slate-100 ${page === 'plans' ? 'bg-indigo-50 text-indigo-700' : 'text-slate-700'}`}
-                >
-                  <div className="font-medium">Comp plans</div>
-                  <div className="text-xs text-slate-400">rates, quotas, tiers</div>
-                </button>
-              </div>
-            )}
+      <aside className="flex w-60 shrink-0 flex-col border-r border-slate-200 bg-panel">
+        <div className="flex items-center gap-2 border-b border-slate-200 px-4 py-3">
+          <span className="inline-block h-6 w-6 rounded-md bg-brand" aria-hidden />
+          <div>
+            <div className="text-sm font-semibold tracking-tight">Sweyt Incentive</div>
+            <div className="text-[11px] text-slate-400">commissions & incentives</div>
           </div>
+        </div>
+
+        <nav className="flex-1 overflow-y-auto px-2 pb-3">
+          <div className="space-y-0.5 pt-2">{PINNED.map((it) => renderItem(it, 0))}</div>
+          {SECTIONS.map((s) => {
+            const open = !collapsed[s.key];
+            const sectionActive = s.items.some((i) => contains(i, page.key));
+            return (
+              <div key={s.key}>
+                <button
+                  className={`nav-section flex w-full items-center gap-1 ${sectionActive ? 'nav-section-active' : ''}`}
+                  aria-expanded={open}
+                  onClick={() => setCollapsed((c) => ({ ...c, [s.key]: !c[s.key] }))}
+                >
+                  <span className={`inline-block transition-transform ${open ? 'rotate-90' : ''}`}>▸</span>
+                  {s.label}
+                </button>
+                {open && <div className="space-y-0.5">{s.items.map((it) => renderItem(it, 0))}</div>}
+              </div>
+            );
+          })}
+        </nav>
+
+        <div className="flex items-center gap-2 border-t border-slate-200 px-3 py-2 text-xs">
+          <span className="nav-avatar flex h-6 w-6 items-center justify-center rounded-full text-[11px] font-semibold" aria-hidden>
+            {user.name
+              .split(/\s+/)
+              .map((w) => w[0])
+              .join('')
+              .slice(0, 2)
+              .toUpperCase()}
+          </span>
+          <div className="min-w-0 flex-1">
+            <div className="truncate font-medium text-slate-700">{user.name}</div>
+            <div className="truncate text-[11px] text-slate-400">{user.email}</div>
+          </div>
+          <button className="text-slate-400 hover:text-slate-700" onClick={signOut} title="Sign out">
+            Sign out
+          </button>
         </div>
       </aside>
 
@@ -134,45 +300,7 @@ export default function App() {
             </button>
           </div>
         )}
-        {page === 'commissions' ? (
-          <CommissionsView />
-        ) : page === 'plans' ? (
-          <CompPlansView />
-        ) : page === 'employees' ? (
-          <EmployeesView />
-        ) : page === 'types' ? (
-          <EmployeeTypesView />
-        ) : page === 'incentives' ? (
-          <IncentivesView
-            onOpen={(importId, setId) => {
-              setOpenSetId(setId);
-              setSelected(importId);
-              setUploading(false);
-              setPage('imports');
-            }}
-          />
-        ) : uploading || !selected ? (
-          <UploadFlow
-            onDone={async (imp) => {
-              await refresh();
-              setSelected(imp.id);
-              setUploading(false);
-            }}
-            onCancel={imports.length ? () => setUploading(false) : undefined}
-          />
-        ) : (
-          <ImportView
-            key={`${selected}:${openSetId ?? ''}`}
-            importId={selected}
-            initialSetId={openSetId}
-            onDeleted={async () => {
-              const list = await refresh();
-              setSelected(list[0]?.id ?? null);
-              if (!list.length) setUploading(true);
-            }}
-            onRenamed={refresh}
-          />
-        )}
+        {renderScreen()}
       </main>
     </div>
   );

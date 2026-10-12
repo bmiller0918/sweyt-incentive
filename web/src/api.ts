@@ -245,8 +245,20 @@ export interface CommissionLine {
 
 export type CommissionRunInput = Omit<CommissionRunConfig, 'payees'> & { name: string; importId: string; payees: { role: string; field: string }[] };
 
+export interface AuthUser {
+  id: string;
+  email: string;
+  name: string;
+  role: 'admin' | 'member' | string;
+  mustChangePassword: boolean;
+}
+
+/** Fired when any API call comes back 401, so the app can show the sign-in screen. */
+export const UNAUTHORIZED_EVENT = 'sweyt:unauthorized';
+
 async function request<T>(url: string, init?: RequestInit): Promise<T> {
   const res = await fetch(url, init);
+  if (res.status === 401 && !url.startsWith('/api/auth/')) window.dispatchEvent(new Event(UNAUTHORIZED_EVENT));
   if (!res.ok) {
     let msg = res.statusText;
     try {
@@ -351,6 +363,15 @@ export const api = {
   createPlan: (body: Omit<CompPlan, 'id' | 'updatedAt' | 'employeeCount'>) => request<CompPlan>('/api/comp-plans', json('POST', body)),
   updatePlan: (id: string, body: Omit<CompPlan, 'id' | 'updatedAt' | 'employeeCount'>) => request<CompPlan>(`/api/comp-plans/${id}`, json('PUT', body)),
   deletePlan: (id: string) => request<void>(`/api/comp-plans/${id}`, { method: 'DELETE' }),
+
+  authStatus: () => request<{ setupRequired: boolean; user: AuthUser | null }>('/api/auth/status'),
+  setup: (body: { email: string; name: string; password: string }) => request<{ user: AuthUser }>('/api/auth/setup', json('POST', body)),
+  login: (body: { email: string; password: string }) => request<{ user: AuthUser }>('/api/auth/login', json('POST', body)),
+  logout: () => request<void>('/api/auth/logout', { method: 'POST' }),
+  changePassword: (body: { currentPassword: string; newPassword: string }) => request<{ ok: true }>('/api/auth/change-password', json('POST', body)),
+  listUsers: () => request<(AuthUser & { lastLoginAt: string | null; createdAt: string })[]>('/api/users'),
+  createUser: (body: { email: string; name: string; role: 'admin' | 'member' }) => request<{ user: AuthUser; tempPassword: string }>('/api/users', json('POST', body)),
+  deleteUser: (id: string) => request<void>(`/api/users/${id}`, { method: 'DELETE' }),
 
   getConfig: () => request<AppConfig>('/api/config'),
   listThresholdTypes: () => request<ThresholdType[]>('/api/threshold-types'),

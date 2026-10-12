@@ -132,7 +132,7 @@ export function CalcPanel({ spec, summaryColumns, errors, noPlan, asOf, onChange
           {spec.items.map((item, i) => {
             const err = localError(i) ?? errors[item.id];
             return (
-              <div key={item.id} className={`rounded-md border px-2 py-1.5 ${err ? 'border-rose-300 bg-rose-50' : 'border-slate-200 bg-white'}`}>
+              <div key={item.id} className={`rounded-md border px-2 py-1.5 ${err ? 'border-rose-300 bg-rose-50' : 'border-slate-200 bg-panel'}`}>
                 <div className="flex items-center gap-1">
                   <input className="input w-36" value={item.label} placeholder="Column name" onChange={(e) => setItem(i, { label: e.target.value })} />
                   <span className="text-slate-400">=</span>
@@ -163,7 +163,7 @@ export function CalcPanel({ spec, summaryColumns, errors, noPlan, asOf, onChange
           <div className="text-[11px] text-slate-500">Click to insert into the focused formula:</div>
           <div className="flex flex-wrap gap-1">
             {knownFor(Math.min(active, spec.items.length - 1)).map((n) => (
-              <button key={n} className="rounded-full border border-slate-300 bg-white px-2 py-0.5 hover:bg-indigo-50" onClick={() => insert(Math.min(active, spec.items.length - 1), `[${n}]`)}>
+              <button key={n} className="rounded-full border border-slate-300 bg-panel px-2 py-0.5 hover:bg-indigo-50" onClick={() => insert(Math.min(active, spec.items.length - 1), `[${n}]`)}>
                 [{n}]
               </button>
             ))}
@@ -180,7 +180,7 @@ export function CalcPanel({ spec, summaryColumns, errors, noPlan, asOf, onChange
                 </button>
               ))}
             {FUNCTION_HINTS.map((f) => (
-              <button key={f} className="rounded-full border border-slate-300 bg-white px-2 py-0.5 font-mono text-slate-600 hover:bg-indigo-50" onClick={() => insert(Math.min(active, spec.items.length - 1), f.replace(/\(.*\)/, '('))}>
+              <button key={f} className="rounded-full border border-slate-300 bg-panel px-2 py-0.5 font-mono text-slate-600 hover:bg-indigo-50" onClick={() => insert(Math.min(active, spec.items.length - 1), f.replace(/\(.*\)/, '('))}>
                 {f}
               </button>
             ))}

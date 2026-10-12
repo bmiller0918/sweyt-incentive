@@ -291,6 +291,34 @@ export const commissionLines = pgTable(
   (t) => [index('commission_lines_run_idx').on(t.runId, t.rowIndex), index('commission_lines_payee_idx').on(t.runId, t.payee)],
 );
 
+/** Login accounts. The first account is created through the setup screen. */
+export const users = pgTable('users', {
+  ...base,
+  email: text('email').notNull().unique(),
+  name: text('name').notNull(),
+  /** scrypt hash, see server/src/auth.ts */
+  passwordHash: text('password_hash').notNull(),
+  role: text('role').notNull().default('admin'),
+  /** Set when an admin creates the account with a temporary password. */
+  mustChangePassword: integer('must_change_password').notNull().default(0),
+  lastLoginAt: timestamp('last_login_at', { withTimezone: true }),
+});
+
+/** Browser sessions; the cookie holds a random token whose hash is stored here. */
+export const sessions = pgTable(
+  'sessions',
+  {
+    ...base,
+    tokenHash: text('token_hash').notNull().unique(),
+    userId: uuid('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
+    userAgent: text('user_agent'),
+  },
+  (t) => [index('sessions_user_idx').on(t.userId)],
+);
+
 export const auditLog = pgTable('audit_log', {
   ...base,
   actor: text('actor').notNull().default('system'),

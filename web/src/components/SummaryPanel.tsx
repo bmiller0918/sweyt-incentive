@@ -30,7 +30,7 @@ function DrillDownPicker({ available, selected, onChange }: { available: string[
           onDragOver={(e) => e.preventDefault()}
           onDrop={() => dragging && move(dragging, name)}
           onClick={() => onChange(selected.filter((s) => s !== name))}
-          className={`cursor-grab rounded-full border border-emerald-600 bg-emerald-600 px-2 py-0.5 text-white active:cursor-grabbing ${dragging === name ? 'opacity-40' : ''}`}
+          className={`cursor-grab rounded-full border border-emerald-600 bg-emerald-600 px-2 py-0.5 text-slate-50 active:cursor-grabbing ${dragging === name ? 'opacity-40' : ''}`}
           title="Drag to reorder · click to remove"
         >
           <span className="mr-1 opacity-70">{i + 1}</span>
@@ -41,7 +41,7 @@ function DrillDownPicker({ available, selected, onChange }: { available: string[
         <button
           key={name}
           onClick={() => onChange([...selected, name])}
-          className="rounded-full border border-slate-300 bg-white px-2 py-0.5 text-slate-600 hover:bg-slate-100"
+          className="rounded-full border border-slate-300 bg-panel px-2 py-0.5 text-slate-600 hover:bg-slate-100"
           title="Click to show in the drill-down"
         >
           {name}
@@ -88,7 +88,7 @@ export function SummaryPanel({ spec, columns, errors, onChange }: Props) {
                 key={c.name}
                 onClick={() => toggleGroup(c.name)}
                 className={`rounded-full border px-2 py-0.5 ${
-                  on ? 'border-indigo-600 bg-indigo-600 text-white' : 'border-slate-300 bg-white text-slate-600 hover:bg-slate-100'
+                  on ? 'border-indigo-600 bg-indigo-600 text-slate-50' : 'border-slate-300 bg-panel text-slate-600 hover:bg-slate-100'
                 }`}
                 title={on ? `Grouped (${pos + 1}). Click to remove.` : 'Click to group by this column'}
               >
@@ -113,7 +113,7 @@ export function SummaryPanel({ spec, columns, errors, onChange }: Props) {
           {spec.aggregates.map((a, i) => {
             const allowed = fieldsFor(a.fn, columns);
             return (
-              <div key={a.id} className="flex flex-wrap items-center gap-1 rounded-md border border-slate-200 bg-white px-2 py-1">
+              <div key={a.id} className="flex flex-wrap items-center gap-1 rounded-md border border-slate-200 bg-panel px-2 py-1">
                 <select
                   className="select"
                   value={a.fn}

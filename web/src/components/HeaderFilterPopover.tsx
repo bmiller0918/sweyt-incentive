@@ -129,7 +129,7 @@ export function HeaderFilterPopover({ importId, column, columns, criteria, param
   return (
     <div
       ref={ref}
-      className="fixed z-30 flex max-h-[70vh] flex-col rounded-lg border border-slate-200 bg-white text-xs shadow-xl"
+      className="fixed z-30 flex max-h-[70vh] flex-col rounded-lg border border-slate-200 bg-panel text-xs shadow-xl"
       style={{ left: pos.left, top: pos.top, width: WIDTH }}
     >
       <div className="flex items-center gap-2 border-b border-slate-200 px-3 py-2">

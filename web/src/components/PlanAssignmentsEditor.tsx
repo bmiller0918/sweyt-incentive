@@ -101,7 +101,7 @@ export function PlanAssignmentsEditor({ title, hint, assignments, inherited = []
           <option key={s} value={s} />
         ))}
       </datalist>
-      <div className="flex flex-wrap items-center gap-2 rounded-lg border border-slate-200 bg-white p-2 text-xs">
+      <div className="flex flex-wrap items-center gap-2 rounded-lg border border-slate-200 bg-panel p-2 text-xs">
         <span className="text-slate-500">Add plan:</span>
         <select className="select" value={planId} onChange={(e) => setPlanId(e.target.value)}>
           <option value="">— choose a plan —</option>

@@ -1,7 +1,81 @@
 @import 'tailwindcss';
 
+/*
+ * Dark theme in the spirit of Claude's UI: warm charcoal surfaces, cream
+ * text, terracotta accent. Components use Tailwind's slate / indigo /
+ * rose / amber / emerald / sky scales, so the theme is applied by remapping
+ * those tokens here rather than touching every className.
+ *
+ *   slate   light→dark inverted: 50 = page, 100 = hover, 200/300 = borders,
+ *           400/500 = muted text, 700–900 = primary text
+ *   indigo  accent: 50/100 = selected backgrounds, 600 = terracotta,
+ *           700–900 = lighter accent text on dark
+ *   panel   card / sidebar / popover surface (was bg-white)
+ */
+@theme {
+  --color-panel: #26241f;
+  /* Sidebar highlight (Sweyt green): logo square, selected page, open section. */
+  --color-brand: #2bd67b;
+
+  --color-slate-50: #1b1a17;
+  --color-slate-100: #2c2a25;
+  --color-slate-200: #37342e;
+  --color-slate-300: #4a473f;
+  --color-slate-400: #8f8a7f;
+  --color-slate-500: #a9a498;
+  --color-slate-600: #c4beb1;
+  --color-slate-700: #ddd8cc;
+  --color-slate-800: #ece8dd;
+  --color-slate-900: #f5f1e8;
+
+  --color-indigo-50: #3a2a22;
+  --color-indigo-100: #4b3328;
+  --color-indigo-200: #65402f;
+  --color-indigo-300: #96583f;
+  --color-indigo-400: #c26a4c;
+  --color-indigo-500: #d97757;
+  --color-indigo-600: #d97757;
+  --color-indigo-700: #e8936f;
+  --color-indigo-800: #f0ac8c;
+  --color-indigo-900: #f6c6ae;
+
+  --color-rose-50: #3a2426;
+  --color-rose-100: #4a2a2e;
+  --color-rose-200: #6a3a3e;
+  --color-rose-300: #8d4a4f;
+  --color-rose-600: #f08a8a;
+  --color-rose-700: #f3a0a0;
+  --color-rose-800: #f7b8b8;
+  --color-red-50: #3a2426;
+  --color-red-200: #6a3a3e;
+  --color-red-600: #f08a8a;
+  --color-red-700: #f3a0a0;
+
+  --color-amber-50: #33291a;
+  --color-amber-100: #3f3220;
+  --color-amber-200: #5a4729;
+  --color-amber-300: #7d6136;
+  --color-amber-700: #e8b86d;
+  --color-amber-800: #f0c98a;
+
+  --color-emerald-50: #1a2f25;
+  --color-emerald-100: #1f3a2d;
+  --color-emerald-200: #2a4d3b;
+  --color-emerald-300: #3f7a5f;
+  --color-emerald-600: #4f9f78;
+  --color-emerald-700: #7cc9a3;
+  --color-emerald-800: #a3dcc0;
+
+  --color-sky-50: #1c2a35;
+  --color-sky-100: #213443;
+  --color-sky-300: #3f6a85;
+  --color-sky-800: #9fd0ee;
+
+  --font-sans: ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+}
+
 :root {
-  color-scheme: light;
+  color-scheme: dark;
 }
 
 html,
@@ -14,19 +88,60 @@ body {
   @apply bg-slate-50 text-slate-900 antialiased;
 }
 
+::selection {
+  background: #65402f;
+}
+
 /* Small shared controls */
 .btn {
-  @apply inline-flex items-center gap-1 rounded-md border border-slate-300 bg-white px-2.5 py-1.5 text-sm font-medium text-slate-700 shadow-sm hover:bg-slate-50 disabled:opacity-50 disabled:cursor-not-allowed;
+  @apply inline-flex items-center gap-1 rounded-md border border-slate-300 bg-panel px-2.5 py-1.5 text-sm font-medium text-slate-700 shadow-sm hover:bg-slate-100 disabled:opacity-50 disabled:cursor-not-allowed;
 }
 .btn-primary {
-  @apply border-indigo-600 bg-indigo-600 text-white hover:bg-indigo-700;
+  @apply border-indigo-600 bg-indigo-600 hover:bg-indigo-700 hover:border-indigo-700;
+  color: #1b1a17;
 }
 .btn-sm {
   @apply px-2 py-1 text-xs;
 }
 .input {
-  @apply rounded-md border border-slate-300 bg-white px-2 py-1 text-sm shadow-sm focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500;
+  @apply rounded-md border border-slate-300 bg-panel px-2 py-1 text-sm text-slate-900 shadow-sm placeholder:text-slate-400 focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500;
 }
 .select {
-  @apply rounded-md border border-slate-300 bg-white px-2 py-1 pr-6 text-sm shadow-sm focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500;
+  @apply rounded-md border border-slate-300 bg-panel px-2 py-1 pr-6 text-sm text-slate-900 shadow-sm focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500;
+}
+input[type='checkbox'],
+input[type='radio'] {
+  accent-color: #d97757;
+}
+code {
+  @apply rounded bg-slate-100 px-1 py-px text-[0.92em] text-indigo-800;
+}
+
+/* Sidebar navigation */
+.nav-section {
+  @apply px-3 pb-1 pt-4 text-[10px] font-semibold uppercase tracking-[0.14em] text-slate-400;
+}
+.nav-item {
+  @apply flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm text-slate-600 hover:bg-slate-100 hover:text-slate-800;
+}
+.nav-item-active,
+.nav-item-active:hover {
+  background: color-mix(in srgb, var(--color-brand) 18%, var(--color-panel));
+  color: color-mix(in srgb, var(--color-brand) 72%, var(--color-slate-900));
+}
+.nav-section-active {
+  color: color-mix(in srgb, var(--color-brand) 72%, var(--color-slate-900));
+}
+.nav-add {
+  color: color-mix(in srgb, var(--color-brand) 72%, var(--color-slate-900));
+}
+.nav-soon {
+  @apply shrink-0 rounded-full border border-slate-300 px-1.5 text-[10px] leading-[14px] text-slate-400;
+}
+.nav-avatar {
+  background: color-mix(in srgb, var(--color-brand) 18%, var(--color-panel));
+  color: color-mix(in srgb, var(--color-brand) 72%, var(--color-slate-900));
+}
+.nav-sub {
+  @apply ml-4 border-l border-slate-200 pl-2;
 }

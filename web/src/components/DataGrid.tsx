@@ -58,7 +58,7 @@ export function DataGrid({ columns, rows, sort, onSort, onTypeChange, onRowClick
   const totalWidth = 56 + columns.length * COL_WIDTH;
 
   return (
-    <div ref={parentRef} className="h-full overflow-auto bg-white">
+    <div ref={parentRef} className="h-full overflow-auto bg-panel">
       <div style={{ width: totalWidth, position: 'relative' }}>
         <div className="sticky top-0 z-10 flex border-b border-slate-200 bg-slate-50 text-xs font-medium text-slate-600" style={{ height: 40 }}>
           <div className="shrink-0 border-r border-slate-200 px-2 py-2 text-right text-slate-400" style={{ width: 56 }}>

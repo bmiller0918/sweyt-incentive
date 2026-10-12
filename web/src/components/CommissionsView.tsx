@@ -154,7 +154,7 @@ export function CommissionsView() {
 
   return (
     <div className="flex h-full">
-      <aside className="flex w-64 shrink-0 flex-col border-r border-slate-200 bg-white">
+      <aside className="flex w-64 shrink-0 flex-col border-r border-slate-200 bg-panel">
         <div className="flex items-center border-b border-slate-200 px-3 py-2">
           <span className="text-sm font-semibold">Commission runs</span>
           <div className="flex-1" />
@@ -244,7 +244,7 @@ function NewRunForm({
           </div>
         </div>
         {imports.length === 0 ? (
-          <div className="rounded-lg border border-dashed border-slate-300 bg-white p-6 text-sm text-slate-400">Import a deals file first.</div>
+          <div className="rounded-lg border border-dashed border-slate-300 bg-panel p-6 text-sm text-slate-400">Import a deals file first.</div>
         ) : (
           <>
             <label className="block text-sm">
@@ -519,7 +519,7 @@ function RunDetail({ run, reasons, onChanged, onDelete, onError }: { run: Commis
 
   return (
     <>
-      <div className="flex items-center gap-3 border-b border-slate-200 bg-white px-4 py-2">
+      <div className="flex items-center gap-3 border-b border-slate-200 bg-panel px-4 py-2">
         <div className="min-w-0">
           <div className="truncate text-sm font-semibold">{run.name}</div>
           <div className="truncate text-xs text-slate-400">
@@ -531,10 +531,10 @@ function RunDetail({ run, reasons, onChanged, onDelete, onError }: { run: Commis
         </div>
         <div className="flex-1" />
         <div className="flex rounded-md border border-slate-300 text-xs">
-          <button className={`px-2.5 py-1 ${tab === 'lines' ? 'bg-indigo-600 text-white' : 'text-slate-600 hover:bg-slate-50'}`} onClick={() => setTab('lines')}>
+          <button className={`px-2.5 py-1 ${tab === 'lines' ? 'bg-indigo-600 text-slate-50' : 'text-slate-600 hover:bg-slate-50'}`} onClick={() => setTab('lines')}>
             Lines & holds
           </button>
-          <button className={`px-2.5 py-1 ${tab === 'accounting' ? 'bg-indigo-600 text-white' : 'text-slate-600 hover:bg-slate-50'}`} onClick={() => setTab('accounting')}>
+          <button className={`px-2.5 py-1 ${tab === 'accounting' ? 'bg-indigo-600 text-slate-50' : 'text-slate-600 hover:bg-slate-50'}`} onClick={() => setTab('accounting')}>
             Accounting
           </button>
         </div>
@@ -628,7 +628,7 @@ function RunDetail({ run, reasons, onChanged, onDelete, onError }: { run: Commis
 
         <div className="px-4 pb-4">
           <div className="mb-1 text-xs font-semibold text-slate-500">By person</div>
-          <table className="w-full bg-white text-xs">
+          <table className="w-full bg-panel text-xs">
             <thead className="text-left text-slate-400">
               <tr className="border-b border-slate-200">
                 <th className="py-1.5 pr-3 font-normal">Person</th>
@@ -721,7 +721,7 @@ function RunDetail({ run, reasons, onChanged, onDelete, onError }: { run: Commis
             </div>
           )}
 
-          <table className="w-full bg-white text-xs">
+          <table className="w-full bg-panel text-xs">
             <thead className="text-left text-slate-400">
               <tr className="border-b border-slate-200">
                 <th className="py-1.5 pr-2">
@@ -913,7 +913,7 @@ function AccountingPanel({ run, onError }: { run: CommissionRun & { lines: Commi
       <div className="px-4 pb-4">
         <div className="mb-1 text-xs font-semibold text-slate-500">Monthly accrual by department</div>
         <div className="mb-1 text-[11px] text-slate-400">Credit Accrued commissions for the total; debit Deferred commissions for the capitalized part and Commission expense for the expensed part.</div>
-        <table className="w-full bg-white text-xs">
+        <table className="w-full bg-panel text-xs">
           <thead className="text-left text-slate-400">
             <tr className="border-b border-slate-200">
               <th className="py-1.5 pr-3 font-normal">Department</th>
@@ -976,7 +976,7 @@ function AccountingPanel({ run, onError }: { run: CommissionRun & { lines: Commi
       <div className="grid grid-cols-2 gap-4 px-4 pb-6">
         <div>
           <div className="mb-1 text-xs font-semibold text-slate-500">Capitalized balance rollforward</div>
-          <table className="w-full bg-white text-xs">
+          <table className="w-full bg-panel text-xs">
             <thead className="text-left text-slate-400">
               <tr className="border-b border-slate-200">
                 <th className="py-1.5 pr-3 font-normal">Month</th>
@@ -1008,7 +1008,7 @@ function AccountingPanel({ run, onError }: { run: CommissionRun & { lines: Commi
         </div>
         <div>
           <div className="mb-1 text-xs font-semibold text-slate-500">Amortization schedules (line level)</div>
-          <table className="w-full bg-white text-xs">
+          <table className="w-full bg-panel text-xs">
             <thead className="text-left text-slate-400">
               <tr className="border-b border-slate-200">
                 <th className="py-1.5 pr-3 font-normal">Deal</th>
@@ -1048,7 +1048,7 @@ function AccountingPanel({ run, onError }: { run: CommissionRun & { lines: Commi
 
       <div className="px-4 pb-6">
         <div className="mb-1 text-xs font-semibold text-slate-500">Journal entries</div>
-        <table className="w-full bg-white text-xs">
+        <table className="w-full bg-panel text-xs">
           <thead className="text-left text-slate-400">
             <tr className="border-b border-slate-200">
               <th className="py-1.5 pr-3 font-normal">Month</th>
@@ -1095,7 +1095,7 @@ function HoldReasonsPanel({ reasons, onChange, onClose, onError }: { reasons: Ho
       </div>
       <div className="mt-2 flex flex-wrap gap-2">
         {reasons.map((r) => (
-          <span key={r.id} className="inline-flex items-center gap-1 rounded-full border border-slate-300 bg-white px-2 py-0.5 text-xs">
+          <span key={r.id} className="inline-flex items-center gap-1 rounded-full border border-slate-300 bg-panel px-2 py-0.5 text-xs">
             {r.name}
             {!r.builtin && (
               <button
@@ -1161,7 +1161,7 @@ function Stat({ label, value, sub, tone }: { label: string; value: string; sub?:
   const border = tone === 'warn' ? 'border-amber-200' : tone === 'hold' ? 'border-orange-200' : 'border-slate-200';
   const text = tone === 'warn' ? 'text-amber-700' : tone === 'hold' ? 'text-orange-700' : 'text-slate-800';
   return (
-    <div className={`rounded-lg border bg-white px-3 py-2 ${border}`}>
+    <div className={`rounded-lg border bg-panel px-3 py-2 ${border}`}>
       <div className="text-xs text-slate-400">{label}</div>
       <div className={`text-lg font-semibold ${text}`}>{value}</div>
       {sub && <div className="truncate text-[11px] text-slate-400" title={sub}>{sub}</div>}
