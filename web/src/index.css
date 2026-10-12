@@ -14,6 +14,8 @@
  */
 @theme {
   --color-panel: #26241f;
+  /* Sidebar highlight (Sweyt green): logo square, selected page, open section. */
+  --color-brand: #2bd67b;
 
   --color-slate-50: #1b1a17;
   --color-slate-100: #2c2a25;
@@ -122,8 +124,23 @@ code {
 .nav-item {
   @apply flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm text-slate-600 hover:bg-slate-100 hover:text-slate-800;
 }
-.nav-item-active {
-  @apply bg-indigo-50 text-indigo-800 hover:bg-indigo-50 hover:text-indigo-800;
+.nav-item-active,
+.nav-item-active:hover {
+  background: color-mix(in srgb, var(--color-brand) 18%, var(--color-panel));
+  color: color-mix(in srgb, var(--color-brand) 72%, var(--color-slate-900));
+}
+.nav-section-active {
+  color: color-mix(in srgb, var(--color-brand) 72%, var(--color-slate-900));
+}
+.nav-add {
+  color: color-mix(in srgb, var(--color-brand) 72%, var(--color-slate-900));
+}
+.nav-soon {
+  @apply shrink-0 rounded-full border border-slate-300 px-1.5 text-[10px] leading-[14px] text-slate-400;
+}
+.nav-avatar {
+  background: color-mix(in srgb, var(--color-brand) 18%, var(--color-panel));
+  color: color-mix(in srgb, var(--color-brand) 72%, var(--color-slate-900));
 }
 .nav-sub {
   @apply ml-4 border-l border-slate-200 pl-2;
