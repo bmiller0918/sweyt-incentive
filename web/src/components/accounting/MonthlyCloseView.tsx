@@ -25,18 +25,27 @@ export function MonthlyCloseView({ onOpenTypes, onOpenRegister }: { onOpenTypes:
 
   useEffect(() => {
     if (!month) return;
+    // Only the latest request may update the screen; an older one can land last.
+    let cancelled = false;
     setLoading(true);
     api
       .previewClose(month, runIds)
       .then((p) => {
+        if (cancelled) return;
         setPreview(p);
         setError(null);
       })
       .catch((e) => {
+        if (cancelled) return;
         setPreview(null);
         setError(e.message);
       })
-      .finally(() => setLoading(false));
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
   }, [month, runIds, periods]);
 
   const close = async () => {
@@ -187,7 +196,7 @@ export function MonthlyCloseView({ onOpenTypes, onOpenRegister }: { onOpenTypes:
                   </thead>
                   <tbody>
                     {preview.booked.map((b) => (
-                      <tr key={b.sourceKey} className="border-b border-slate-100">
+                      <tr key={`${b.sourceKey}:${b.adjustment}`} className="border-b border-slate-100">
                         <td className="py-1 pr-3">{b.dealKey ?? '—'}</td>
                         <td className="py-1 pr-3">
                           {b.payee} <span className="text-slate-400">· {b.department}</span>
@@ -200,7 +209,11 @@ export function MonthlyCloseView({ onOpenTypes, onOpenRegister }: { onOpenTypes:
                         <td className="py-1 pr-3 text-slate-500">{b.methodName}</td>
                         <td className="py-1 pr-3">
                           {monthLabel(b.payMonth)}
-                          {b.late && <span className="ml-1 rounded bg-amber-100 px-1 text-[10px] text-amber-800">late</span>}
+                          {b.adjustment ? (
+                            <span className="ml-1 rounded bg-amber-100 px-1 text-[10px] text-amber-800">recalculated</span>
+                          ) : (
+                            b.late && <span className="ml-1 rounded bg-amber-100 px-1 text-[10px] text-amber-800">late</span>
+                          )}
                         </td>
                         <td className="py-1 text-right">{money(b.amount)}</td>
                       </tr>

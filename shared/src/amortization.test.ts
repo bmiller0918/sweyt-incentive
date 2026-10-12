@@ -3,6 +3,7 @@ import {
   BUILTIN_METHODS,
   DEFAULT_SETTINGS,
   assetPosition,
+  bookedTotals,
   closeMonth,
   entryBalance,
   lineSourceKey,
@@ -153,7 +154,7 @@ describe('closeMonth', () => {
     month: '2026-02',
     lines: [line({}), line({ sourceKey: 'D-1|bea|bdr||5000', lineId: 2, payee: 'Bea', department: 'SDR', amortizationTypeId: 'sdr', payout: 5000 })],
     assets: [],
-    bookedKeys: new Set(),
+    booked: new Map(),
     registerStart: '2026-02',
     priorCurrent: 0,
     settings: { ...DEFAULT_SETTINGS, defaultMethodId: 'contract_term' },
@@ -180,7 +181,7 @@ describe('closeMonth', () => {
       input({
         month: '2026-03',
         assets: first.newAssets,
-        bookedKeys: new Set(first.booked.map((b) => b.sourceKey)),
+        booked: bookedTotals(first.booked),
         priorCurrent: first.reclass!.target,
       }),
     );
@@ -226,7 +227,7 @@ describe('closeMonth', () => {
   it('write-offs produce an impairment entry', () => {
     const first = closeMonth(input({}));
     const written = first.newAssets.map((a) => ({ ...a, writtenOffMonth: '2026-03' }));
-    const r = closeMonth(input({ month: '2026-03', assets: written, bookedKeys: new Set(first.booked.map((b) => b.sourceKey)), priorCurrent: 12_000 }));
+    const r = closeMonth(input({ month: '2026-03', assets: written, booked: bookedTotals(first.booked), priorCurrent: 12_000 }));
     expect(r.totals.impairment).toBe(35_000);
     expect(r.totals.amortization).toBe(0);
     expect(r.rollforward.closing).toBe(0);
@@ -235,8 +236,33 @@ describe('closeMonth', () => {
     expect(reclass.lines[0]).toMatchObject({ account: DEFAULT_SETTINGS.accounts.deferredCurrent.name, debit: 23_000 });
   });
 
-  it('source keys ignore the run so reruns are not double-booked', () => {
-    const k = (rowIndex: number) => lineSourceKey({ dealKey: 'D-9', rowIndex, payee: ' Maya ', role: 'Rep', tierFrom: null, payout: 10 });
+  it('source keys ignore the run and payout so reruns are not double-booked', () => {
+    const k = (rowIndex: number) => lineSourceKey({ dealKey: 'D-9', rowIndex, payee: ' Maya ', role: 'Rep', tierFrom: null });
     expect(k(1)).toBe(k(7));
+  });
+
+  it('a recalculated payout books only the difference, as a new asset', () => {
+    const first = closeMonth(input({}));
+    const r = closeMonth(
+      input({
+        month: '2026-03',
+        assets: first.newAssets,
+        booked: bookedTotals(first.booked),
+        priorCurrent: first.reclass!.target,
+        lines: [line({ payout: 39_600 }), line({ sourceKey: 'D-1|bea|bdr||5000', lineId: 2, payee: 'Bea', department: 'SDR', amortizationTypeId: 'sdr', payout: 5000 })],
+      }),
+    );
+    expect(r.booked).toHaveLength(1);
+    expect(r.booked[0]).toMatchObject({ amount: 3600, adjustment: true, treatment: 'capitalize' });
+    expect(r.newAssets[0].amount).toBe(3600);
+    // Catch-up: Feb + Mar of the 3,600 over 36 months.
+    expect(r.totals.amortization).toBe(1000 + 200);
+    for (const e of r.entries) expect(entryBalance(e).balanced).toBe(true);
+  });
+
+  it('when runs disagree, the first (newest) line wins', () => {
+    const r = closeMonth(input({ lines: [line({ payout: 40_000 }), line({ payout: 36_000 })] }));
+    expect(r.totals.capitalized).toBe(40_000);
+    expect(r.warnings.join(' ')).toMatch(/newest run/);
   });
 });

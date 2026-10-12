@@ -283,7 +283,7 @@ export function scheduleFor(amount: number, def: AmortizationMethodDef, ctx: Sch
 
 export interface RegisterAsset {
   id: string;
-  /** Stable across reruns: deal|payee|role|tier|payout. Books each commission once. */
+  /** Stable across reruns: deal|payee|role|tier. A changed payout books only the difference. */
   sourceKey: string;
   runId: string | null;
   lineId: number | null;
@@ -428,8 +428,8 @@ export interface CloseInput {
   lines: CloseLineInput[];
   /** The register before this close. */
   assets: RegisterAsset[];
-  /** sourceKeys already booked by earlier closes (capitalized and expensed). */
-  bookedKeys: Set<string>;
+  /** sourceKey -> total already booked by earlier closes (capitalized and expensed). */
+  booked: Map<string, number>;
   /** First month the register covers; lines paying earlier are out of scope. */
   registerStart: string;
   /** Current portion booked at the end of the previous month (0 when none). */
@@ -453,6 +453,8 @@ export interface BookedLine {
   payMonth: string;
   /** Paid in an earlier, already-closed month and booked now. */
   late: boolean;
+  /** A recalculated commission: `amount` is the change from what was booked before. */
+  adjustment: boolean;
   /** Why it was expensed rather than capitalized, when it was. */
   note: string | null;
 }
@@ -533,26 +535,31 @@ export function closeMonth(input: CloseInput): CloseResult {
   const excluded: CloseResult['excluded'] = [];
   const booked: BookedLine[] = [];
   const newAssets: RegisterAsset[] = [];
-  const seen = new Set<string>();
+  const seen = new Map<string, number | null>();
   let dupes = 0;
+  let conflicts = 0;
 
+  // Lines come newest run first, so when two runs disagree the latest calculation wins.
   for (const l of input.lines) {
-    if (input.bookedKeys.has(l.sourceKey)) continue;
-    if (l.status === 'hold') continue;
-    if (l.payout === null || l.payout === 0 || !l.payMonth) continue;
-    if (l.payMonth > month) continue;
-    if (l.payMonth < input.registerStart) {
+    if (l.status === 'hold' || !l.payMonth || l.payMonth > month) continue;
+    if (seen.has(l.sourceKey)) {
+      dupes++;
+      if (seen.get(l.sourceKey) !== l.payout) conflicts++;
+      continue;
+    }
+    seen.set(l.sourceKey, l.payout);
+    const prior = input.booked.get(l.sourceKey);
+    // Already booked: only a recalculated payout books anything, and only the difference.
+    const amount = prior === undefined ? (l.payout ?? 0) : roundCents((l.payout ?? 0) - prior);
+    if (amount === 0) continue;
+    if (prior === undefined && l.payMonth < input.registerStart) {
       excluded.push({ sourceKey: l.sourceKey, lineId: l.lineId, payee: l.payee, reason: `Pays in ${l.payMonth}, before the register starts (${input.registerStart})` });
       continue;
     }
-    if (seen.has(l.sourceKey)) {
-      dupes++;
-      continue;
-    }
-    seen.add(l.sourceKey);
+    const adjustment = prior !== undefined;
 
     const { type, treatment, method } = resolveLine(l, settings, methods, types);
-    const late = l.payMonth < month;
+    const late = l.payMonth < month || adjustment;
     const base = {
       sourceKey: l.sourceKey,
       runId: l.runId,
@@ -561,16 +568,17 @@ export function closeMonth(input: CloseInput): CloseResult {
       payee: l.payee,
       department: l.department,
       typeName: type?.name ?? (l.amortizationTypeId ? 'Missing type' : 'No amortization type'),
-      amount: l.payout,
+      amount,
       payMonth: l.payMonth,
       late,
+      adjustment,
     };
     if (!type) warnings.add('Some payees have no amortization type; their employee type\'s own treatment and the default method were used.');
     if (treatment === 'expense' || !method) {
       booked.push({ ...base, methodName: '—', treatment: 'expense', note: treatment === 'expense' ? 'Type is expensed' : 'No amortization method' });
       continue;
     }
-    const sched = scheduleFor(l.payout, method.def, { payMonth: l.payMonth, contractStart: l.contractStart, termMonths: l.termMonths, defaultTermMonths: settings.defaultTermMonths }, settings.practicalExpedient);
+    const sched = scheduleFor(amount, method.def, { payMonth: l.payMonth, contractStart: l.contractStart, termMonths: l.termMonths, defaultTermMonths: settings.defaultTermMonths }, settings.practicalExpedient);
     if (sched.warnings.includes('no_start')) warnings.add('Some capitalized lines have no subscription start; amortization starts in their pay month.');
     if (sched.warnings.includes('no_term')) warnings.add(`Some capitalized lines have no contract term; the default of ${settings.defaultTermMonths} months was used.`);
     if (!sched.capitalize) {
@@ -579,7 +587,7 @@ export function closeMonth(input: CloseInput): CloseResult {
     }
     booked.push({ ...base, methodName: method.name, treatment: 'capitalize', note: null });
     newAssets.push({
-      id: `new:${l.sourceKey}`,
+      id: `new:${l.sourceKey}${adjustment ? ':adj' : ''}`,
       sourceKey: l.sourceKey,
       runId: l.runId,
       lineId: l.lineId,
@@ -588,7 +596,7 @@ export function closeMonth(input: CloseInput): CloseResult {
       department: l.department,
       typeName: base.typeName,
       methodName: method.name,
-      amount: l.payout,
+      amount,
       capitalizedMonth: l.payMonth,
       bookedMonth: month,
       startMonth: sched.startMonth,
@@ -601,8 +609,10 @@ export function closeMonth(input: CloseInput): CloseResult {
     });
     if (sched.startMonth < month) warnings.add('Some new assets started amortizing before this month; the catch-up is in this month\'s amortization.');
   }
-  if (dupes) warnings.add(`${dupes} line${dupes === 1 ? ' appears' : 's appear'} in more than one run; each was booked once.`);
-  const lateCount = booked.filter((b) => b.late).length;
+  if (dupes) warnings.add(`${dupes} line${dupes === 1 ? ' appears' : 's appear'} in more than one run; each was booked once${conflicts ? `, using the newest run where payouts differ (${conflicts})` : ''}.`);
+  const adjCount = booked.filter((b) => b.adjustment).length;
+  if (adjCount) warnings.add(`${adjCount} commission${adjCount === 1 ? ' was' : 's were'} recalculated after booking; only the difference is booked now.`);
+  const lateCount = booked.filter((b) => b.late && !b.adjustment).length;
   if (lateCount) warnings.add(`${lateCount} line${lateCount === 1 ? '' : 's'} paid in an earlier closed month ${lateCount === 1 ? 'was' : 'were'} booked now as late additions.`);
   if (booked.some((b) => b.amount < 0)) warnings.add('Some lines are negative (clawbacks or reversals); they reduce the balance and expense.');
 
@@ -686,7 +696,19 @@ export function closeMonth(input: CloseInput): CloseResult {
   };
 }
 
-/** Stable identity of a commission line across reruns of the same deals. */
-export function lineSourceKey(l: { dealKey: string | null; rowIndex: number; payee: string; role: string; tierFrom: number | null; payout: number | null }): string {
-  return [l.dealKey ?? `row${l.rowIndex}`, l.payee.trim().toLowerCase(), l.role.trim().toLowerCase(), l.tierFrom ?? '', l.payout ?? ''].join('|');
+/**
+ * Stable identity of a commission line across reruns of the same deals:
+ * deal, payee, role and tier band, but not the payout, so a recalculation
+ * is recognized and only its difference booked. Deals without a key fall
+ * back to their row number, which is only stable while the import is.
+ */
+export function lineSourceKey(l: { dealKey: string | null; rowIndex: number; payee: string; role: string; tierFrom: number | null }): string {
+  return [l.dealKey ?? `row${l.rowIndex}`, l.payee.trim().toLowerCase(), l.role.trim().toLowerCase(), l.tierFrom ?? ''].join('|');
+}
+
+/** Total booked per sourceKey across closed months' booked lines. */
+export function bookedTotals(lines: { sourceKey: string; amount: number }[]): Map<string, number> {
+  const m = new Map<string, number>();
+  for (const b of lines) m.set(b.sourceKey, roundCents((m.get(b.sourceKey) ?? 0) + b.amount));
+  return m;
 }

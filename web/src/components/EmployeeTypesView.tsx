@@ -23,10 +23,14 @@ export function EmployeeTypesView() {
   const [saving, setSaving] = useState(false);
 
   const refresh = useCallback(async () => {
-    const [t, p, a] = await Promise.all([api.listEmployeeTypes(), api.listPlans(), api.listAmortizationTypes()]);
+    const [t, p] = await Promise.all([api.listEmployeeTypes(), api.listPlans()]);
     setTypes(t);
     setPlans(p);
-    setAmortTypes(a.types);
+    // Only the amortization-type dropdown needs these; don't let them block the editor.
+    api
+      .listAmortizationTypes()
+      .then((a) => setAmortTypes(a.types))
+      .catch((e) => setError(e.message));
     return t;
   }, []);
 

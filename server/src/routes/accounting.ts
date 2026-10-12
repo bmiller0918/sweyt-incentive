@@ -13,6 +13,7 @@ import {
   DEFAULT_ACCOUNTS,
   addMonths,
   assetPosition,
+  bookedTotals,
   closeMonth,
   entryBalance,
   lineSourceKey,
@@ -23,6 +24,7 @@ import {
   type AccountingSettings,
   type AmortizationMethodDef,
   type AmortizationTypeDef,
+  type BookedLine,
   type CloseLineInput,
   type JournalEntry,
   type NamedMethod,
@@ -320,7 +322,11 @@ export async function accountingRoutes(app: FastifyInstance, db: Db) {
     const runs = await db.select({ id: commissionRuns.id, name: commissionRuns.name }).from(commissionRuns).orderBy(desc(commissionRuns.createdAt));
     const chosen = runIds ? runs.filter((r) => runIds.includes(r.id)) : runs;
     if (!chosen.length) return { lines: [], runs };
-    const rows = await db.select().from(commissionLines).where(inArray(commissionLines.runId, chosen.map((r) => r.id))).orderBy(asc(commissionLines.id));
+    // Newest run first, so a rerun's recalculated lines win over the original run's.
+    const rank = new Map(chosen.map((r, i) => [r.id, i]));
+    const rows = (await db.select().from(commissionLines).where(inArray(commissionLines.runId, chosen.map((r) => r.id))).orderBy(asc(commissionLines.id))).sort(
+      (a, b) => rank.get(a.runId)! - rank.get(b.runId)! || a.id - b.id,
+    );
     const payees = await payeeAccounting(db);
     const lines = rows.map((l) => {
       const e = payees.get(l.payee.trim().toLowerCase());
@@ -359,7 +365,7 @@ export async function accountingRoutes(app: FastifyInstance, db: Db) {
       month,
       lines,
       assets,
-      bookedKeys: new Set(ps.flatMap((p) => p.bookedKeys)),
+      booked: bookedTotals(ps.flatMap((p) => ((p.summary as { booked?: BookedLine[] }).booked ?? []))),
       registerStart: ps[0]?.month ?? month,
       priorCurrent: last?.currentPortion ?? 0,
       settings,
@@ -400,22 +406,29 @@ export async function accountingRoutes(app: FastifyInstance, db: Db) {
     const { result, runs } = await preview(month, body.runIds);
     if (!result.entries.every((e) => entryBalance(e).balanced)) return reply.code(400).send({ error: 'Journals do not balance; nothing was closed.' });
     const { newAssets, ...summary } = result;
-    const [period] = await db
-      .insert(accountingPeriods)
-      .values({
-        month,
-        runIds: body.runIds ?? runs.map((r) => r.id),
-        entries: result.entries,
-        summary: { totals: summary.totals, rollforward: summary.rollforward, reclass: summary.reclass, booked: summary.booked, excluded: summary.excluded, warnings: summary.warnings },
-        bookedKeys: result.booked.map((b) => b.sourceKey),
-        currentPortion: result.reclass?.target ?? 0,
-        closedBy: actor(req),
-      })
-      .returning();
-    for (let i = 0; i < newAssets.length; i += 500) {
-      await db.insert(amortizationAssets).values(newAssets.slice(i, i + 500).map(({ id: _id, ...a }) => ({ ...a, periodId: period.id })));
-    }
-    await db.insert(auditLog).values({ actor: actor(req), action: 'accounting_period.close', entityType: 'accounting_period', entityId: period.id, detail: { month, totals: result.totals } });
+    // One transaction: a failed asset insert must not leave a closed month whose lines count as booked.
+    // The unique month column stops a concurrent close of the same month.
+    await db.transaction(async (tx) => {
+      const [period] = await tx
+        .insert(accountingPeriods)
+        .values({
+          month,
+          runIds: body.runIds ?? runs.map((r) => r.id),
+          entries: result.entries,
+          summary: { totals: summary.totals, rollforward: summary.rollforward, reclass: summary.reclass, booked: summary.booked, excluded: summary.excluded, warnings: summary.warnings },
+          bookedKeys: result.booked.map((b) => b.sourceKey),
+          currentPortion: result.reclass?.target ?? 0,
+          closedBy: actor(req),
+        })
+        .returning();
+      for (let i = 0; i < newAssets.length; i += 500) {
+        await tx.insert(amortizationAssets).values(newAssets.slice(i, i + 500).map(({ id: _id, ...a }) => ({ ...a, periodId: period.id })));
+      }
+      await tx.insert(auditLog).values({ actor: actor(req), action: 'accounting_period.close', entityType: 'accounting_period', entityId: period.id, detail: { month, totals: result.totals } });
+      // Re-check order inside the transaction: the previous month must still be the latest closed.
+      const prior = await tx.select({ month: accountingPeriods.month }).from(accountingPeriods).orderBy(desc(accountingPeriods.month)).limit(2);
+      if (prior[1] && prior[1].month !== addMonths(month, -1)) throw Object.assign(new Error('Another close changed the books; refresh and try again.'), { statusCode: 409 });
+    });
     return { month, totals: result.totals };
   });
 
