@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useState } from 'react';
-import { api, type CompPlan, type EmployeeType, type EmployeeTypeInput } from '../api';
+import { api, type AmortizationTypeRow, type CompPlan, type EmployeeType, type EmployeeTypeInput } from '../api';
 import { PlanAssignmentsEditor } from './PlanAssignmentsEditor';
 
-const empty = (): EmployeeTypeInput => ({ name: '', description: '', defaultBaseSalary: null, defaultQuota: null, costTreatment: 'capitalize' });
+const empty = (): EmployeeTypeInput => ({ name: '', description: '', defaultBaseSalary: null, defaultQuota: null, costTreatment: 'capitalize', amortizationTypeId: null });
 
 function parseMoney(s: string): number | null {
   const t = s.trim().replace(/[$,\s]/g, '');
@@ -14,6 +14,7 @@ function parseMoney(s: string): number | null {
 export function EmployeeTypesView() {
   const [types, setTypes] = useState<EmployeeType[]>([]);
   const [plans, setPlans] = useState<CompPlan[]>([]);
+  const [amortTypes, setAmortTypes] = useState<AmortizationTypeRow[]>([]);
   const [selectedId, setSelectedId] = useState<string | 'new' | null>(null);
   const [draft, setDraft] = useState<EmployeeTypeInput>(empty());
   const [salaryText, setSalaryText] = useState('');
@@ -22,9 +23,10 @@ export function EmployeeTypesView() {
   const [saving, setSaving] = useState(false);
 
   const refresh = useCallback(async () => {
-    const [t, p] = await Promise.all([api.listEmployeeTypes(), api.listPlans()]);
+    const [t, p, a] = await Promise.all([api.listEmployeeTypes(), api.listPlans(), api.listAmortizationTypes()]);
     setTypes(t);
     setPlans(p);
+    setAmortTypes(a.types);
     return t;
   }, []);
 
@@ -44,7 +46,7 @@ export function EmployeeTypesView() {
       return;
     }
     setSelectedId(t.id);
-    setDraft({ name: t.name, description: t.description ?? '', defaultBaseSalary: t.defaultBaseSalary, defaultQuota: t.defaultQuota, costTreatment: t.costTreatment ?? 'capitalize' });
+    setDraft({ name: t.name, description: t.description ?? '', defaultBaseSalary: t.defaultBaseSalary, defaultQuota: t.defaultQuota, costTreatment: t.costTreatment ?? 'capitalize', amortizationTypeId: t.amortizationTypeId ?? null });
     setSalaryText(t.defaultBaseSalary == null ? '' : String(t.defaultBaseSalary));
     setQuotaText(t.defaultQuota == null ? '' : String(t.defaultQuota));
   };
@@ -147,12 +149,25 @@ export function EmployeeTypesView() {
                 <input className="input mt-1 block w-full" placeholder="$500,000" value={quotaText} onChange={(e) => setQuotaText(e.target.value)} />
               </label>
               <label className="col-span-2 text-slate-600">
-                Accounting treatment of commissions <span className="text-slate-400">(this type is a department in the accrual report)</span>
-                <select className="select mt-1 block w-full" value={draft.costTreatment} onChange={(e) => setDraft({ ...draft, costTreatment: e.target.value as EmployeeTypeInput['costTreatment'] })}>
-                  <option value="capitalize">Capitalize and amortize (contract acquisition cost)</option>
-                  <option value="expense">Expense when paid (e.g. BDRs paid to generate leads)</option>
+                Amortization type <span className="text-slate-400">(how this role's commissions are accounted for; this type is a department in the journals)</span>
+                <select className="select mt-1 block w-full" value={draft.amortizationTypeId ?? ''} onChange={(e) => setDraft({ ...draft, amortizationTypeId: e.target.value || null })}>
+                  <option value="">None: use the treatment below and the default method</option>
+                  {amortTypes.map((a) => (
+                    <option key={a.id} value={a.id}>
+                      {a.name} ({a.treatment === 'expense' ? 'expensed' : 'capitalized'})
+                    </option>
+                  ))}
                 </select>
               </label>
+              {!draft.amortizationTypeId && (
+                <label className="col-span-2 text-slate-600">
+                  Accounting treatment of commissions
+                  <select className="select mt-1 block w-full" value={draft.costTreatment} onChange={(e) => setDraft({ ...draft, costTreatment: e.target.value as EmployeeTypeInput['costTreatment'] })}>
+                    <option value="capitalize">Capitalize and amortize (contract acquisition cost)</option>
+                    <option value="expense">Expense when paid (e.g. BDRs paid to generate leads)</option>
+                  </select>
+                </label>
+              )}
             </div>
           </section>
 

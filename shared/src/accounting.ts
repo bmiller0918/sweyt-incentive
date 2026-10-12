@@ -78,13 +78,18 @@ export interface RollforwardRow {
 
 export interface JournalLine {
   account: string;
+  /** GL account number, when the chart of accounts is configured. */
+  accountNumber?: string;
   department: string | null;
   debit: number;
   credit: number;
 }
 
+export type JournalKind = 'accrual' | 'amortization' | 'impairment' | 'reclass';
+
 export interface JournalEntry {
   month: string;
+  kind?: JournalKind;
   memo: string;
   lines: JournalLine[];
 }
@@ -138,7 +143,13 @@ export function straightLine(amount: number, startMonth: string, months: number)
   return out;
 }
 
-export function buildSubledger(lines: AccountingLineInput[], policy: AccountingPolicy): SubledgerResult {
+/**
+ * Per-line override of treatment and schedule (amortization types and
+ * methods); without it the company policy applies to every line.
+ */
+export type LineResolver = (l: AccountingLineInput) => { treatment: CostTreatment; schedule: { startMonth: string; months: number; byMonth: Record<string, number> } | null; warnings?: string[] };
+
+export function buildSubledger(lines: AccountingLineInput[], policy: AccountingPolicy, resolve?: LineResolver): SubledgerResult {
   const excluded: SubledgerResult['excluded'] = [];
   const warnings = new Set<string>();
   const accrualMap = new Map<string, AccrualCell>();
@@ -157,15 +168,21 @@ export function buildSubledger(lines: AccountingLineInput[], policy: AccountingP
       excluded.push({ lineId: l.lineId, reason: 'No pay month (deal has no close date)' });
       continue;
     }
+    const resolved = resolve?.(l);
+    for (const w of resolved?.warnings ?? []) warnings.add(w);
+    const treatment = resolved ? resolved.treatment : l.treatment;
     const key = `${l.payMonth}\u0001${l.department}`;
     const cell = accrualMap.get(key) ?? { payMonth: l.payMonth, department: l.department, capitalized: 0, expensed: 0, total: 0, lines: 0 };
-    if (l.treatment === 'expense') cell.expensed = roundCents(cell.expensed + l.payout);
+    if (treatment === 'expense') cell.expensed = roundCents(cell.expensed + l.payout);
     else cell.capitalized = roundCents(cell.capitalized + l.payout);
     cell.total = roundCents(cell.total + l.payout);
     cell.lines++;
     accrualMap.set(key, cell);
 
-    if (l.treatment === 'capitalize' && l.payout !== 0) {
+    if (resolved?.schedule && treatment === 'capitalize' && l.payout !== 0) {
+      const sch = resolved.schedule;
+      schedule.push({ lineId: l.lineId, dealKey: l.dealKey, payee: l.payee, department: l.department, amount: l.payout, capitalizedMonth: l.payMonth, startMonth: sch.startMonth, endMonth: addMonths(sch.startMonth, sch.months - 1), months: sch.months, byMonth: sch.byMonth });
+    } else if (!resolved && l.treatment === 'capitalize' && l.payout !== 0) {
       let startMonth: string;
       let months: number;
       if (policy.method === 'customer_life') {

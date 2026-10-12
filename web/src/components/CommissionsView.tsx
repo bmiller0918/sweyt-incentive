@@ -1,6 +1,6 @@
 import { LINE_STATUS_LABELS, OPERATOR_LABELS, familyOf, operandArity, type Condition, type HoldRule, type LineStatus, type Operator } from '@commissions/shared';
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { api, type AccountingPolicyRow, type CommissionLine, type CommissionRun, type HoldReason, type ImportColumn, type ImportDetail, type ImportSummary, type Subledger } from '../api';
+import { api, type CommissionLine, type CommissionRun, type HoldReason, type ImportColumn, type ImportDetail, type ImportSummary, type Subledger } from '../api';
 import { PeriodPicker } from './PeriodPicker';
 
 const money = (n: number | null | undefined) => (n === null || n === undefined ? '' : n.toLocaleString(undefined, { style: 'currency', currency: 'USD' }));
@@ -830,27 +830,11 @@ function RunDetail({ run, reasons, onChanged, onDelete, onError }: { run: Commis
 
 function AccountingPanel({ run, onError }: { run: CommissionRun & { lines: CommissionLine[] }; onError: (m: string) => void }) {
   const [data, setData] = useState<Subledger | null>(null);
-  const [policy, setPolicy] = useState<AccountingPolicyRow | null>(null);
-  const [saving, setSaving] = useState(false);
 
   const load = useCallback(() => api.getAccounting(run.id).then(setData).catch((e) => onError(e.message)), [run.id, onError]);
   useEffect(() => {
     load();
-    api.getAccountingPolicy().then(setPolicy).catch((e) => onError(e.message));
-  }, [load, run, onError]);
-
-  const savePolicy = async (p: AccountingPolicyRow) => {
-    setPolicy(p);
-    setSaving(true);
-    try {
-      await api.updateAccountingPolicy({ method: p.method, customerLifeMonths: p.customerLifeMonths, defaultTermMonths: p.defaultTermMonths });
-      await load();
-    } catch (e) {
-      onError((e as Error).message);
-    } finally {
-      setSaving(false);
-    }
-  };
+  }, [load, run]);
 
   const months = useMemo(() => (data ? [...new Set(data.accrual.map((c) => c.payMonth))].sort() : []), [data]);
   const depts = useMemo(() => (data ? [...new Set(data.accrual.map((c) => c.department))].sort() : []), [data]);
@@ -862,30 +846,14 @@ function AccountingPanel({ run, onError }: { run: CommissionRun & { lines: Commi
   const thisMonth = new Date().toISOString().slice(0, 7);
   const currentRow = data?.rollforward.find((r) => r.month === thisMonth);
 
-  if (!data || !policy) return <div className="p-6 text-sm text-slate-400">Loading…</div>;
+  if (!data) return <div className="p-6 text-sm text-slate-400">Loading…</div>;
 
   return (
     <div className="flex-1 overflow-auto">
       <div className="flex flex-wrap items-center gap-3 border-b border-slate-200 bg-slate-50 px-4 py-2 text-xs">
-        <span className="font-semibold text-slate-600">Amortization policy</span>
-        <select className="select" value={policy.method} onChange={(e) => savePolicy({ ...policy, method: e.target.value as AccountingPolicyRow['method'] })}>
-          <option value="contract_term">Contract term, from the subscription start (current practice)</option>
-          <option value="customer_life">Estimated customer life, from the pay month (practical expedient)</option>
-        </select>
-        {policy.method === 'customer_life' ? (
-          <label className="flex items-center gap-1 text-slate-600">
-            Customer life
-            <input type="number" min={1} max={240} className="input w-20" value={policy.customerLifeMonths} onChange={(e) => setPolicy({ ...policy, customerLifeMonths: Number(e.target.value) || 1 })} onBlur={() => savePolicy(policy)} />
-            months
-          </label>
-        ) : (
-          <label className="flex items-center gap-1 text-slate-600">
-            Default term when the deal has none
-            <input type="number" min={1} max={240} className="input w-20" value={policy.defaultTermMonths} onChange={(e) => setPolicy({ ...policy, defaultTermMonths: Number(e.target.value) || 1 })} onBlur={() => savePolicy(policy)} />
-            months
-          </label>
-        )}
-        <span className="text-slate-400">Straight-line, rounded to cents. {saving ? 'Saving…' : 'Applies company-wide.'}</span>
+        <span className="text-slate-500">
+          A preview of this run alone. Treatment and method come from each role's amortization type (Accounting › Amortization Types); the books are kept by Process Monthly Accounting.
+        </span>
         <div className="flex-1" />
         <button className="btn btn-sm" onClick={() => api.exportAccounting(run.id, 'schedule')}>
           Export amortization schedule
