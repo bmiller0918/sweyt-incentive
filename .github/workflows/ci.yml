@@ -1,0 +1,47 @@
+# Runs on every pull request and on pushes to main: typecheck, unit tests,
+# production build. Add the "CI" check to the protect-main ruleset so a
+# failing PR cannot be merged.
+name: CI
+
+# The job only reads the repo; keep the auto-token read-only.
+permissions:
+  contents: read
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  ci:
+    name: CI
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Nothing after checkout needs git credentials; don't leave them on disk.
+          persist-credentials: false
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Enable pnpm (version pinned in package.json)
+        run: corepack enable
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Typecheck
+        run: pnpm -r typecheck
+
+      - name: Unit tests
+        run: pnpm -r test
+
+      - name: Build
+        run: pnpm build
