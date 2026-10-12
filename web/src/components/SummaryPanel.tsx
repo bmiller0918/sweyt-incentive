@@ -30,7 +30,7 @@ function DrillDownPicker({ available, selected, onChange }: { available: string[
           onDragOver={(e) => e.preventDefault()}
           onDrop={() => dragging && move(dragging, name)}
           onClick={() => onChange(selected.filter((s) => s !== name))}
-          className={`cursor-grab rounded-full border border-emerald-600 bg-emerald-600 px-2 py-0.5 text-white active:cursor-grabbing ${dragging === name ? 'opacity-40' : ''}`}
+          className={`cursor-grab rounded-full border border-emerald-600 bg-emerald-600 px-2 py-0.5 text-slate-50 active:cursor-grabbing ${dragging === name ? 'opacity-40' : ''}`}
           title="Drag to reorder · click to remove"
         >
           <span className="mr-1 opacity-70">{i + 1}</span>

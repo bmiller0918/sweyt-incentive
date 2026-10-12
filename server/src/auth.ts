@@ -5,7 +5,8 @@
 //     hash is stored, so a database leak does not leak live sessions.
 //   - First run: no users -> /api/auth/status reports setupRequired and
 //     /api/auth/setup creates the first admin. After that, setup is closed.
-//   - Every /api/* route except /health and /api/auth/* requires a session.
+//   - Every /api/* route except /health and /api/auth/* requires a session,
+//     and an account still on its temporary password can only use /api/auth/*.
 import { createHash, randomBytes, scrypt as scryptCb, timingSafeEqual } from 'node:crypto';
 import { promisify } from 'node:util';
 import { and, eq, gt, sql } from 'drizzle-orm';
@@ -111,6 +112,8 @@ export async function setupAuth(app: FastifyInstance, db: Db) {
     const isApi = url.startsWith('/api/');
     const open = url === '/health' || url.startsWith('/api/auth/');
     if (isApi && !open && !req.user) return reply.code(401).send({ error: 'Sign in required' });
+    // A temporary password only opens /api/auth/* (change-password, me, logout) until it is replaced.
+    if (isApi && !open && req.user?.mustChangePassword) return reply.code(403).send({ error: 'Password change required' });
   });
 
   // -- Routes ------------------------------------------------------------------
