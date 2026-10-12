@@ -1,6 +1,20 @@
 import { randomUUID } from 'node:crypto';
 import { doublePrecision, index, integer, jsonb, pgTable, text, timestamp, uuid } from 'drizzle-orm/pg-core';
-import type { Aggregate, AmortizationMethod, ColumnDef, CostTreatment, Criteria, HoldRule, PlanTiers, RawRow } from '@commissions/shared';
+import type {
+  AccountMap,
+  Aggregate,
+  AmortizationMethod,
+  AmortizationMethodDef,
+  ColumnDef,
+  CostTreatment,
+  Criteria,
+  GlAccount,
+  HoldRule,
+  JournalEntry,
+  PlanTiers,
+  RawRow,
+  ReclassMode,
+} from '@commissions/shared';
 
 // Every table carries timestamps and a nullable organization_id so multi-
 // tenancy can be added later without a migration of existing rows.
@@ -125,6 +139,8 @@ export const employeeTypes = pgTable('employee_types', {
   defaultQuota: doublePrecision('default_quota'),
   /** capitalize (contract acquisition cost) | expense (e.g. BDRs paid to generate leads). */
   costTreatment: text('cost_treatment').$type<CostTreatment>().notNull().default('capitalize'),
+  /** How this role's commissions are accounted for; wins over costTreatment when set. */
+  amortizationTypeId: uuid('amortization_type_id').references(() => amortizationTypes.id, { onDelete: 'set null' }),
 });
 
 /** Default plan for a slot, for every employee of a type (unless they override it). */
@@ -221,7 +237,85 @@ export const accountingPolicy = pgTable('accounting_policy', {
   method: text('method').$type<AmortizationMethod>().notNull().default('contract_term'),
   customerLifeMonths: integer('customer_life_months').notNull().default(48),
   defaultTermMonths: integer('default_term_months').notNull().default(12),
+  /** Method for amortization types that don't name one. */
+  defaultMethodId: uuid('default_method_id').references(() => amortizationMethods.id, { onDelete: 'set null' }),
+  practicalExpedient: integer('practical_expedient').notNull().default(0),
+  reclassEnabled: integer('reclass_enabled').notNull().default(1),
+  reclassMode: text('reclass_mode').$type<ReclassMode>().notNull().default('true_up'),
+  /** Chart of accounts for the journals; null = the built-in defaults. */
+  accounts: jsonb('accounts').$type<AccountMap>(),
 });
+
+/** How a capitalized amount is spread over months (straight-line, % per year, ...). */
+export const amortizationMethods = pgTable('amortization_methods', {
+  ...base,
+  name: text('name').notNull(),
+  description: text('description'),
+  def: jsonb('def').$type<AmortizationMethodDef>().notNull(),
+  /** Set on seeded methods. */
+  builtinKey: text('builtin_key'),
+});
+
+/** A treatment for a group of roles: capitalize or expense, with which method and accounts. */
+export const amortizationTypes = pgTable('amortization_types', {
+  ...base,
+  name: text('name').notNull(),
+  description: text('description'),
+  treatment: text('treatment').$type<CostTreatment>().notNull().default('capitalize'),
+  /** null = the company default method. */
+  methodId: uuid('method_id').references(() => amortizationMethods.id, { onDelete: 'set null' }),
+  expenseAccount: jsonb('expense_account').$type<GlAccount>(),
+  amortizationAccount: jsonb('amortization_account').$type<GlAccount>(),
+  builtinKey: text('builtin_key'),
+  sortOrder: integer('sort_order').notNull().default(0),
+});
+
+/** A closed accounting month: what it booked and the journals it produced. */
+export const accountingPeriods = pgTable('accounting_periods', {
+  ...base,
+  /** YYYY-MM */
+  month: text('month').notNull().unique(),
+  /** Runs whose lines were considered. */
+  runIds: jsonb('run_ids').$type<string[]>().notNull().default([]),
+  entries: jsonb('entries').$type<JournalEntry[]>().notNull().default([]),
+  /** Totals, rollforward, reclass and the booked lines, as shown at close. */
+  summary: jsonb('summary').$type<Record<string, unknown>>().notNull().default({}),
+  /** sourceKeys of every line booked this month (capitalized or expensed). */
+  bookedKeys: jsonb('booked_keys').$type<string[]>().notNull().default([]),
+  /** Current portion of the balance at month end (the reclass target). */
+  currentPortion: doublePrecision('current_portion').notNull().default(0),
+  closedBy: text('closed_by'),
+});
+
+/** The amortization register: one capitalized commission per row. */
+export const amortizationAssets = pgTable(
+  'amortization_assets',
+  {
+    ...base,
+    periodId: uuid('period_id')
+      .notNull()
+      .references(() => accountingPeriods.id, { onDelete: 'cascade' }),
+    sourceKey: text('source_key').notNull(),
+    runId: uuid('run_id'),
+    lineId: integer('line_id'),
+    dealKey: text('deal_key'),
+    payee: text('payee').notNull(),
+    department: text('department').notNull(),
+    typeName: text('type_name').notNull(),
+    methodName: text('method_name').notNull(),
+    amount: doublePrecision('amount').notNull(),
+    capitalizedMonth: text('capitalized_month').notNull(),
+    bookedMonth: text('booked_month').notNull(),
+    startMonth: text('start_month').notNull(),
+    endMonth: text('end_month').notNull(),
+    months: integer('months').notNull(),
+    byMonth: jsonb('by_month').$type<Record<string, number>>().notNull(),
+    amortizationAccount: jsonb('amortization_account').$type<GlAccount>(),
+    writtenOffMonth: text('written_off_month'),
+    writeOffReason: text('write_off_reason'),
+  },
+  (t) => [index('amortization_assets_booked_idx').on(t.bookedMonth), index('amortization_assets_source_idx').on(t.sourceKey)],
+);
 
 /** Why a commission can be held rather than paid on the next payroll. */
 export const holdReasons = pgTable('hold_reasons', {

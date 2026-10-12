@@ -15,6 +15,8 @@ import {
   holdRuleSchema,
   makeDatedPlanLookup,
   payMonthFor,
+  resolveLine,
+  scheduleFor,
   type AccountingLineInput,
   type AccountingPolicy,
   type DealInput,
@@ -27,6 +29,7 @@ import type { Db } from '../db/client.js';
 import { accountingPolicy, auditLog, commissionLines, commissionRuns, employeeTypes, employees, holdReasons, imports, type CommissionRunConfig } from '../db/schema.js';
 import { toCsv } from '../export.js';
 import { getRows } from '../rowcache.js';
+import { loadMethodsAndTypes, loadSettings, payeeAccounting } from './accounting.js';
 import { loadEmployeeRecords } from './plans.js';
 
 const dateStr = z.string().regex(/^\d{4}-\d{2}-\d{2}$/);
@@ -346,16 +349,18 @@ export async function commissionRoutes(app: FastifyInstance, db: Db) {
     return row;
   });
 
-  /** Department and treatment for each payee, from their employee type. */
+  /**
+   * The run's subledger. Each payee's employee type picks an amortization
+   * type (treatment + method); payees without one fall back to the type's
+   * own treatment and the company default method.
+   */
   const subledgerFor = async (runId: string) => {
     const lines = await db.select().from(commissionLines).where(eq(commissionLines.runId, runId)).orderBy(asc(commissionLines.id));
-    const emps = await db
-      .select({ name: employees.name, dept: employeeTypes.name, treatment: employeeTypes.costTreatment })
-      .from(employees)
-      .leftJoin(employeeTypes, eq(employees.employeeTypeId, employeeTypes.id));
-    const byName = new Map(emps.map((e) => [e.name.trim().toLowerCase(), e]));
+    const byName = await payeeAccounting(db);
+    const typeIdOf = new Map<number, string | null>();
     const input: AccountingLineInput[] = lines.map((l) => {
       const e = byName.get(l.payee.trim().toLowerCase());
+      typeIdOf.set(l.id, e?.typeId ?? null);
       return {
         lineId: l.id,
         dealKey: l.dealKey,
@@ -371,7 +376,18 @@ export async function commissionRoutes(app: FastifyInstance, db: Db) {
       };
     });
     const policy = await getPolicy();
-    const result = buildSubledger(input, { method: policy.method, customerLifeMonths: policy.customerLifeMonths, defaultTermMonths: policy.defaultTermMonths });
+    const settings = await loadSettings(db);
+    const { methods, types } = await loadMethodsAndTypes(db);
+    const result = buildSubledger(input, { method: policy.method, customerLifeMonths: policy.customerLifeMonths, defaultTermMonths: policy.defaultTermMonths }, (l) => {
+      const r = resolveLine({ amortizationTypeId: typeIdOf.get(l.lineId) ?? null, fallbackTreatment: l.treatment }, settings, methods, types);
+      if (r.treatment === 'expense' || !r.method || !l.payMonth || l.payout === null) return { treatment: 'expense', schedule: null };
+      const s = scheduleFor(l.payout, r.method.def, { payMonth: l.payMonth, contractStart: l.contractStart, termMonths: l.termMonths, defaultTermMonths: settings.defaultTermMonths }, settings.practicalExpedient);
+      const warnings: string[] = [];
+      if (s.warnings.includes('no_start')) warnings.push('Some capitalized lines have no subscription start date; amortization starts in their pay month.');
+      if (s.warnings.includes('no_term')) warnings.push(`Some capitalized lines have no contract term; the default of ${settings.defaultTermMonths} months was used.`);
+      if (!s.capitalize) return { treatment: 'expense', schedule: null, warnings };
+      return { treatment: 'capitalize', schedule: s, warnings };
+    });
     const untyped = new Set(input.filter((i) => i.department === 'Unassigned' && i.status !== 'hold' && i.payout !== null).map((i) => i.payee));
     if (untyped.size) result.warnings.push(`${[...untyped].join(', ')} ${untyped.size === 1 ? 'has' : 'have'} no employee type, so their commissions were capitalized under "Unassigned".`);
     return result;

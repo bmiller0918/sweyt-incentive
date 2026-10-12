@@ -1,16 +1,16 @@
 import { useEffect, useState } from 'react';
-import { api, type AccountingPolicyRow, type HoldReason } from '../api';
+import { api, type HoldReason } from '../api';
 import { CompPlansView } from './CompPlansView';
 import { UsersSettings } from './UsersSettings';
 
-export type SettingsTab = 'plans' | 'hold-reasons' | 'accounting' | 'users';
+export type SettingsTab = 'plans' | 'hold-reasons' | 'users';
 
 export function SettingsView({ tab }: { tab: SettingsTab }) {
   if (tab === 'plans') return <CompPlansView />;
   if (tab === 'users') return <UsersSettings />;
   return (
     <div className="mx-auto w-full max-w-3xl space-y-8 p-6">
-      {tab === 'hold-reasons' ? <HoldReasonsSettings /> : <AccountingPolicySettings />}
+      <HoldReasonsSettings />
     </div>
   );
 }
@@ -60,61 +60,6 @@ function HoldReasonsSettings() {
         <button className="btn btn-primary" disabled={!name.trim()} onClick={add}>
           Add
         </button>
-      </div>
-    </section>
-  );
-}
-
-function AccountingPolicySettings() {
-  const [policy, setPolicy] = useState<AccountingPolicyRow | null>(null);
-  const [saved, setSaved] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  useEffect(() => {
-    api.getAccountingPolicy().then(setPolicy).catch((e) => setError(e.message));
-  }, []);
-  const save = async () => {
-    if (!policy) return;
-    try {
-      setPolicy(await api.updateAccountingPolicy({ method: policy.method, customerLifeMonths: policy.customerLifeMonths, defaultTermMonths: policy.defaultTermMonths }));
-      setSaved(true);
-      setTimeout(() => setSaved(false), 1500);
-    } catch (e) {
-      setError((e as Error).message);
-    }
-  };
-  if (!policy) return <div className="text-sm text-slate-400">{error ?? 'Loading…'}</div>;
-  return (
-    <section className="space-y-3">
-      <div>
-        <h2 className="text-base font-semibold">Accounting policy</h2>
-        <p className="text-xs text-slate-500">How capitalized commissions are amortized. Applies to every run's Accounting tab.</p>
-      </div>
-      {error && <div className="rounded bg-rose-50 px-2 py-1 text-xs text-rose-700">{error}</div>}
-      <div className="space-y-3 rounded-lg border border-slate-200 bg-panel p-4 text-sm">
-        <label className="block text-xs text-slate-600">
-          Amortization method
-          <select className="select mt-1 block" value={policy.method} onChange={(e) => setPolicy({ ...policy, method: e.target.value as AccountingPolicyRow['method'] })}>
-            <option value="contract_term">Over the contract term (from subscription start)</option>
-            <option value="customer_life">Over an estimated customer life (practical expedient)</option>
-          </select>
-        </label>
-        {policy.method === 'customer_life' ? (
-          <label className="block text-xs text-slate-600">
-            Customer life (months)
-            <input type="number" min={1} max={240} className="input mt-1 block w-28" value={policy.customerLifeMonths} onChange={(e) => setPolicy({ ...policy, customerLifeMonths: Number(e.target.value) || 1 })} />
-          </label>
-        ) : (
-          <label className="block text-xs text-slate-600">
-            Default term when a deal has none (months)
-            <input type="number" min={1} max={240} className="input mt-1 block w-28" value={policy.defaultTermMonths} onChange={(e) => setPolicy({ ...policy, defaultTermMonths: Number(e.target.value) || 1 })} />
-          </label>
-        )}
-        <div className="flex items-center gap-2">
-          <button className="btn btn-primary" onClick={save}>
-            Save policy
-          </button>
-          {saved && <span className="text-xs text-emerald-700">Saved</span>}
-        </div>
       </div>
     </section>
   );
