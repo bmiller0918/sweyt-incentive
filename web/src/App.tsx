@@ -25,7 +25,7 @@ const SECTIONS: NavSection[] = [
     key: 'data',
     label: 'Data & Imports',
     items: [
-      { key: 'rules-of-engagement', label: 'Rules of Engagement', screen: 'soon' },
+      { key: 'integrations', label: 'Integrations', screen: 'soon' },
       { key: 'imports', label: 'Imports', screen: 'imports' },
     ],
   },
@@ -34,8 +34,8 @@ const SECTIONS: NavSection[] = [
     label: 'Comp Plans',
     items: [
       { key: 'plans-rates-quotas', label: 'Plans, rates and quotas', screen: 'plans' },
-      { key: 'mid-year-recasts', label: 'Mid-year recasts', screen: 'soon' },
       { key: 'spiffs-accelerators-bonus', label: 'Spiffs, Accelerators, and Bonus Plans', screen: 'incentives' },
+      { key: 'mid-year-recasts', label: 'Mid-year recasts', screen: 'soon' },
       { key: 'clawbacks', label: 'Clawbacks', screen: 'soon' },
     ],
   },
@@ -43,9 +43,10 @@ const SECTIONS: NavSection[] = [
     key: 'payouts',
     label: 'Payouts',
     items: [
-      { key: 'payout-settings', label: 'Payout Settings', screen: 'holdreasons' },
+      { key: 'payout-rules', label: 'Payout Rules', screen: 'soon' },
       { key: 'payouts-on-hold', label: 'Payouts On Hold', screen: 'runs' },
       { key: 'commission-payroll', label: 'Commission Payroll', screen: 'runs' },
+      { key: 'payout-settings', label: 'Payout Settings', screen: 'holdreasons' },
     ],
   },
   {
@@ -81,13 +82,6 @@ const SECTIONS: NavSection[] = [
     items: [
       { key: 'employees', label: 'Employees', screen: 'employees' },
       { key: 'employee-types', label: 'Employee types', screen: 'types' },
-    ],
-  },
-  {
-    key: 'settings',
-    label: 'Settings',
-    items: [
-      { key: 'integrations', label: 'Integrations', screen: 'soon' },
       { key: 'users', label: 'Users', screen: 'users' },
     ],
   },
