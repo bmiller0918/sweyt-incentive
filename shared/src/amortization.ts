@@ -14,10 +14,11 @@
 //
 // Everything here is pure; the server persists assets and closed periods.
 import { ACCOUNTS, addMonths, monthsBetween, straightLine, type CostTreatment, type JournalEntry, type JournalLine } from './accounting.js';
+import { compileFormula, FormulaError } from './formula.js';
 import { roundCents } from './lines.js';
 
-export type MethodKind = 'straight_line' | 'yearly_percent' | 'monthly_percent' | 'immediate';
-/** straight_line: what sets the number of months. */
+export type MethodKind = 'straight_line' | 'yearly_percent' | 'monthly_percent' | 'formula' | 'immediate';
+/** straight_line and formula: what sets the number of months. */
 export type PeriodBasis = 'contract_term' | 'fixed_months';
 /** The first month of amortization. */
 export type StartBasis = 'contract_start' | 'pay_month' | 'month_after_pay';
@@ -34,6 +35,61 @@ export interface AmortizationMethodDef {
   /** monthly_percent: % of the amount per month; must sum to 100. */
   monthPercents: number[];
   startBasis: StartBasis;
+  /** formula: the amount for each month, e.g. `NB / RT`. See FORMULA_VARIABLES. */
+  formula?: string | null;
+}
+
+/** Variables a formula method can use, with what each one means. */
+export const FORMULA_VARIABLES: { name: string; label: string }[] = [
+  { name: 'CV', label: 'Capitalized value: the amount being amortized' },
+  { name: 'NB', label: 'Net balance: what is left to amortize at the start of the month' },
+  { name: 'AD', label: 'Amortized to date: CV − NB' },
+  { name: 'T', label: 'Total months in the schedule' },
+  { name: 'CP', label: 'Current period: 1 in the first month, 2 in the second, …' },
+  { name: 'RT', label: 'Remaining months, counting this one (T − CP + 1)' },
+  { name: 'LD', label: 'Last amount: what was amortized in the previous month (0 in the first)' },
+  { name: 'Y', label: 'Year of the schedule: 1 for months 1–12, 2 for 13–24, …' },
+  { name: 'MY', label: 'Month of that year: 1 to 12' },
+  { name: 'TERM', label: 'Contract term in months (before any multiplier)' },
+];
+const FORMULA_NAMES = FORMULA_VARIABLES.map((v) => v.name);
+
+/** Problems with a method formula, or null when it parses and only uses known variables. */
+export function formulaProblem(src: string | null | undefined): string | null {
+  try {
+    compileFormula(src ?? '', FORMULA_NAMES);
+    return null;
+  } catch (e) {
+    return e instanceof FormulaError || e instanceof Error ? e.message : String(e);
+  }
+}
+
+/**
+ * Spread `amount` over `months` with a formula evaluated month by month.
+ * Each month is clamped to what is left (never negative), and the last
+ * month takes whatever remains so the schedule always totals the amount.
+ */
+export function spreadByFormula(src: string, amount: number, startMonth: string, months: number, term: number): Record<string, number> {
+  const f = compileFormula(src, FORMULA_NAMES);
+  const out: Record<string, number> = {};
+  const cv = roundCents(amount);
+  let nb = cv;
+  let ld = 0;
+  for (let cp = 1; cp <= months; cp++) {
+    let v: number;
+    if (cp === months) v = nb;
+    else {
+      const r = f.evaluate({ CV: cv, NB: nb, AD: roundCents(cv - nb), T: months, CP: cp, RT: months - cp + 1, LD: ld, Y: Math.ceil(cp / 12), MY: ((cp - 1) % 12) + 1, TERM: term });
+      // null (e.g. division by zero) is an error, not zero: it would silently push everything to the last month.
+      const n = typeof r === 'number' ? r : typeof r === 'boolean' ? Number(r) : r === null || r === '' ? NaN : Number(r);
+      if (!Number.isFinite(n)) throw Object.assign(new Error(`The formula "${src}" gave no number in month ${cp} of ${months} (TERM ${term}). Fix the amortization method.`), { statusCode: 400 });
+      v = roundCents(cv >= 0 ? Math.min(Math.max(n, 0), nb) : Math.max(Math.min(n, 0), nb));
+    }
+    out[addMonths(startMonth, cp - 1)] = v;
+    nb = roundCents(nb - v);
+    ld = v;
+  }
+  return out;
 }
 
 export interface NamedMethod {
@@ -102,6 +158,44 @@ export interface AmortizationTypeDef {
   /** Optional per-type GL overrides (e.g. a separate SE expense account). */
   expenseAccount: GlAccount | null;
   amortizationAccount: GlAccount | null;
+  /** Further per-type account overrides (deferred, write-off, accrued); unset keys use the company accounts. */
+  accounts?: Partial<AccountMap> | null;
+  /** Term used when a deal has none; the company default when null. */
+  defaultTermMonths?: number | null;
+}
+
+/** The accounts a type books to: company accounts, overridden by the type's own. */
+export function typeAccounts(type: Pick<AmortizationTypeDef, 'expenseAccount' | 'amortizationAccount' | 'accounts'> | null | undefined, A: AccountMap): AccountMap {
+  if (!type) return A;
+  const o = type.accounts ?? {};
+  return {
+    deferredCurrent: o.deferredCurrent ?? A.deferredCurrent,
+    deferredNoncurrent: o.deferredNoncurrent ?? A.deferredNoncurrent,
+    commissionExpense: type.expenseAccount ?? o.commissionExpense ?? A.commissionExpense,
+    amortizationExpense: type.amortizationAccount ?? o.amortizationExpense ?? A.amortizationExpense,
+    impairmentExpense: o.impairmentExpense ?? A.impairmentExpense,
+    accruedCommissions: o.accruedCommissions ?? A.accruedCommissions,
+  };
+}
+
+/** The balance-sheet and expense accounts an asset uses, fixed when it is booked. */
+export type AssetAccounts = Partial<Pick<AccountMap, 'deferredCurrent' | 'deferredNoncurrent' | 'impairmentExpense'>>;
+
+/** A type's overrides that an asset keeps for its life (unset keys follow the company accounts). */
+export function assetAccountsFor(type: Pick<AmortizationTypeDef, 'accounts'> | null | undefined): AssetAccounts | null {
+  const o = type?.accounts;
+  if (!o) return null;
+  const out: AssetAccounts = {};
+  if (o.deferredCurrent) out.deferredCurrent = o.deferredCurrent;
+  if (o.deferredNoncurrent) out.deferredNoncurrent = o.deferredNoncurrent;
+  if (o.impairmentExpense) out.impairmentExpense = o.impairmentExpense;
+  return Object.keys(out).length ? out : null;
+}
+
+/** An asset's account for a role: its own override, else the company account. */
+export function assetAccount(a: Pick<RegisterAsset, 'accounts' | 'amortizationAccount'>, key: 'deferredCurrent' | 'deferredNoncurrent' | 'impairmentExpense' | 'amortizationExpense', A: AccountMap): GlAccount {
+  if (key === 'amortizationExpense') return a.amortizationAccount ?? A.amortizationExpense;
+  return a.accounts?.[key] ?? A[key];
 }
 
 /** Built-in methods, seeded once; users add their own. */
@@ -190,7 +284,7 @@ export function suggestTypeKey(employeeTypeName: string): string | null {
 export function validateMethod(def: AmortizationMethodDef): string[] {
   const errs: string[] = [];
   const sum = (a: number[]) => Math.round(a.reduce((x, y) => x + y, 0) * 1000) / 1000;
-  if (def.kind === 'straight_line') {
+  if (def.kind === 'straight_line' || def.kind === 'formula') {
     if (def.periodBasis === 'fixed_months' && !(def.months && def.months >= 1)) errs.push('Enter the number of months.');
     if (def.periodBasis === 'contract_term' && !(def.termMultiplier > 0)) errs.push('The term multiplier must be more than zero.');
   }
@@ -203,6 +297,10 @@ export function validateMethod(def: AmortizationMethodDef): string[] {
     if (!def.monthPercents.length) errs.push('Add at least one month.');
     if (def.monthPercents.some((p) => p < 0)) errs.push('Percentages cannot be negative.');
     if (sum(def.monthPercents) !== 100) errs.push(`Monthly percentages add up to ${sum(def.monthPercents)}%, not 100%.`);
+  }
+  if (def.kind === 'formula') {
+    const p = formulaProblem(def.formula);
+    if (p) errs.push(`Formula: ${p}.`);
   }
   return errs;
 }
@@ -264,9 +362,10 @@ export function scheduleFor(amount: number, def: AmortizationMethodDef, ctx: Sch
   };
   let byMonth: Record<string, number>;
   let months: number;
-  if (def.kind === 'straight_line') {
-    months = Math.max(1, Math.round(def.periodBasis === 'fixed_months' ? (def.months ?? 1) : term() * (def.termMultiplier || 1)));
-    byMonth = straightLine(amount, startMonth, months);
+  if (def.kind === 'straight_line' || def.kind === 'formula') {
+    const t = def.periodBasis === 'fixed_months' ? null : term();
+    months = Math.max(1, Math.round(t === null ? (def.months ?? 1) : t * (def.termMultiplier || 1)));
+    byMonth = def.kind === 'formula' ? spreadByFormula(def.formula ?? '', amount, startMonth, months, t ?? months) : straightLine(amount, startMonth, months);
   } else if (def.kind === 'yearly_percent') {
     const weights = def.yearPercents.flatMap((p) => Array<number>(12).fill(p / 12));
     months = weights.length;
@@ -314,6 +413,8 @@ export interface RegisterAsset {
   opening?: boolean;
   /** Credit side of a manual amortization's addition entry; accrued commissions when null. */
   offsetAccount?: GlAccount | null;
+  /** Deferred and write-off accounts from its type, when the type overrides them. */
+  accounts?: AssetAccounts | null;
 }
 
 export type AssetOrigin = 'commission' | 'manual';
@@ -446,6 +547,11 @@ export interface CloseInput {
   registerStart: string;
   /** Current portion booked at the end of the previous month (0 when none). */
   priorCurrent: number;
+  /**
+   * The same, by deferred account pair ("current|non-current" account
+   * numbers). When absent, all of priorCurrent sits in the company accounts.
+   */
+  priorCurrentByAccount?: Record<string, number>;
   settings: AccountingSettings;
   methods: NamedMethod[];
   types: AmortizationTypeDef[];
@@ -477,6 +583,8 @@ export interface BookedLine {
 }
 
 export interface ReclassResult {
+  /** Current portion per deferred account pair ("current|non-current"), for next month's reclass. */
+  byAccount?: Record<string, number>;
   /** Current portion the balance sheet should show at month end. */
   target: number;
   priorCurrent: number;
@@ -595,9 +703,15 @@ export function closeMonth(input: CloseInput): CloseResult {
       booked.push({ ...base, methodName: '—', treatment: 'expense', note: treatment === 'expense' ? 'Type is expensed' : 'No amortization method' });
       continue;
     }
-    const sched = scheduleFor(amount, method.def, { payMonth: l.payMonth, contractStart: l.contractStart, termMonths: l.termMonths, defaultTermMonths: settings.defaultTermMonths }, settings.practicalExpedient);
+    const defaultTerm = type?.defaultTermMonths ?? settings.defaultTermMonths;
+    const sched = scheduleFor(amount, method.def, { payMonth: l.payMonth, contractStart: l.contractStart, termMonths: l.termMonths, defaultTermMonths: defaultTerm }, settings.practicalExpedient);
     if (sched.warnings.includes('no_start')) warnings.add('Some capitalized lines have no subscription start; amortization starts in their pay month.');
-    if (sched.warnings.includes('no_term')) warnings.add(`Some capitalized lines have no contract term; the default of ${settings.defaultTermMonths} months was used.`);
+    if (sched.warnings.includes('no_term'))
+      warnings.add(
+        type?.defaultTermMonths
+          ? `Some capitalized lines have no contract term; their type's default term (${type.name}: ${type.defaultTermMonths} months) was used.`
+          : `Some capitalized lines have no contract term; the default of ${settings.defaultTermMonths} months was used.`,
+      );
     if (!sched.capitalize) {
       booked.push({ ...base, methodName: method.name, treatment: 'expense', note: sched.warnings.includes('expedient') ? 'Practical expedient: period is 12 months or less' : 'Method expenses immediately' });
       continue;
@@ -621,6 +735,7 @@ export function closeMonth(input: CloseInput): CloseResult {
       months: sched.months,
       byMonth: sched.byMonth,
       amortizationAccount: type?.amortizationAccount ?? null,
+      accounts: assetAccountsFor(type),
       writtenOffMonth: null,
       writeOffReason: null,
     });
@@ -638,32 +753,37 @@ export function closeMonth(input: CloseInput): CloseResult {
   for (const m of manual) if (m.startMonth < month && !m.opening) warnings.add('Some manual amortizations started before this month; the catch-up is in this month\'s amortization.');
   newAssets.push(...manual);
 
-  const typeById = new Map(types.map((t) => [t.name, t]));
+  const typeByName = new Map(types.map((t) => [t.name, t]));
   const all = [...input.assets.filter((a) => a.bookedMonth <= month), ...newAssets];
   const rollforward = registerRollforward(all, month);
   const positions = all.map((a) => ({ a, p: assetPosition(a, month) }));
 
-  const deferredCredit = settings.reclassEnabled && settings.reclassMode === 'true_up' ? A.deferredCurrent : A.deferredNoncurrent;
+  // Amortization and write-offs reduce current when the reclass trues up each month, else non-current.
+  const creditKey = settings.reclassEnabled && settings.reclassMode === 'true_up' ? 'deferredCurrent' : 'deferredNoncurrent';
   const entries: JournalEntry[] = [];
 
-  // 1. Accrual: capitalized to the asset, expensed to commission expense, all owed to payees.
+  // 1. Accrual: capitalized to the asset, expensed to commission expense, all owed to payees (each by its type's accounts).
   if (booked.length) {
+    const accts = (b: BookedLine) => typeAccounts(typeByName.get(b.typeName), A);
     const debits = grouped(
       booked.map((b) => ({
-        account: b.treatment === 'capitalize' ? A.deferredNoncurrent : (typeById.get(b.typeName)?.expenseAccount ?? A.commissionExpense),
+        account: b.treatment === 'capitalize' ? accts(b).deferredNoncurrent : accts(b).commissionExpense,
         department: b.department,
         amount: b.amount,
       })),
       'debit',
     );
-    const credits = grouped([{ account: A.accruedCommissions, department: null, amount: booked.reduce((s, b) => s + b.amount, 0) }], 'credit');
+    const credits = grouped(
+      booked.map((b) => ({ account: accts(b).accruedCommissions, department: null, amount: b.amount })),
+      'credit',
+    );
     entries.push({ month, kind: 'accrual', memo: `Accrue commissions approved for ${month} payroll${lateCount ? ' (incl. late lines)' : ''}`, lines: [...debits, ...credits] });
   }
 
   // 1b. Manual amortizations: the asset against the account each one names. Opening balances are already on the books.
   const added = manual.filter((m) => !m.opening && m.amount !== 0);
   if (added.length) {
-    const debits = grouped(added.map((m) => ({ account: A.deferredNoncurrent, department: m.department, amount: m.amount })), 'debit');
+    const debits = grouped(added.map((m) => ({ account: assetAccount(m, 'deferredNoncurrent', A), department: m.department, amount: m.amount })), 'debit');
     const credits = grouped(added.map((m) => ({ account: m.offsetAccount ?? A.accruedCommissions, department: null, amount: m.amount })), 'credit');
     entries.push({ month, kind: 'addition', memo: `Capitalize manual amortizations for ${month}`, lines: [...debits, ...credits] });
   }
@@ -672,41 +792,79 @@ export function closeMonth(input: CloseInput): CloseResult {
   const amort = positions.filter((x) => x.p.amortizationThisMonth !== 0);
   if (amort.length) {
     const debits = grouped(
-      amort.map(({ a, p }) => ({ account: a.amortizationAccount ?? A.amortizationExpense, department: a.department, amount: p.amortizationThisMonth })),
+      amort.map(({ a, p }) => ({ account: assetAccount(a, 'amortizationExpense', A), department: a.department, amount: p.amortizationThisMonth })),
       'debit',
     );
-    const credits = grouped([{ account: deferredCredit, department: null, amount: rollforward.amortization }], 'credit');
+    const credits = grouped(amort.map(({ a, p }) => ({ account: assetAccount(a, creditKey, A), department: null, amount: p.amortizationThisMonth })), 'credit');
     entries.push({ month, kind: 'amortization', memo: `Amortization of deferred commissions for ${month}`, lines: [...debits, ...credits] });
   }
 
   // 3. Write-offs (impairment) of assets whose customer churned or contract ended early.
   const imp = positions.filter((x) => x.p.impairmentThisMonth !== 0);
   if (imp.length) {
-    const debits = grouped(imp.map(({ a, p }) => ({ account: A.impairmentExpense, department: a.department, amount: p.impairmentThisMonth })), 'debit');
-    const credits = grouped([{ account: deferredCredit, department: null, amount: rollforward.impairment }], 'credit');
+    const debits = grouped(imp.map(({ a, p }) => ({ account: assetAccount(a, 'impairmentExpense', A), department: a.department, amount: p.impairmentThisMonth })), 'debit');
+    const credits = grouped(imp.map(({ a, p }) => ({ account: assetAccount(a, creditKey, A), department: null, amount: p.impairmentThisMonth })), 'credit');
     entries.push({ month, kind: 'impairment', memo: `Write-off of deferred commissions for ${month}`, lines: [...debits, ...credits] });
   }
 
-  // 4. Reclass between current and non-current.
+  // 4. Reclass between current and non-current, per pair of deferred accounts.
   let reclass: ReclassResult | null = null;
   if (settings.reclassEnabled) {
-    const target = rollforward.current;
-    const prior = roundCents(input.priorCurrent);
-    if (settings.reclassMode === 'true_up') {
-      const beforeReclass = roundCents(prior - rollforward.amortization - rollforward.impairment);
-      const netMove = roundCents(target - beforeReclass);
-      reclass = { target, priorCurrent: prior, beforeReclass, netMove };
-      if (netMove !== 0) {
-        const lines = netMove > 0 ? [acct(A.deferredCurrent, null, netMove, 0), acct(A.deferredNoncurrent, null, 0, netMove)] : [acct(A.deferredNoncurrent, null, -netMove, 0), acct(A.deferredCurrent, null, 0, -netMove)];
-        entries.push({ month, kind: 'reclass', memo: `Reclass deferred commissions amortizing in the next 12 months to current`, lines });
-      }
-    } else {
-      reclass = { target, priorCurrent: prior, beforeReclass: 0, netMove: roundCents(target - prior) };
-      if (prior !== 0)
-        entries.push({ month, kind: 'reclass', memo: `Reverse prior month's current reclass`, lines: [acct(A.deferredNoncurrent, null, prior, 0), acct(A.deferredCurrent, null, 0, prior)] });
-      if (target !== 0)
-        entries.push({ month, kind: 'reclass', memo: `Reclass deferred commissions amortizing in the next 12 months to current`, lines: [acct(A.deferredCurrent, null, target, 0), acct(A.deferredNoncurrent, null, 0, target)] });
+    const pairKey = (cur: GlAccount, nc: GlAccount) => `${cur.number}|${nc.number}`;
+    const pairs = new Map<string, { cur: GlAccount; nc: GlAccount; target: number; reduced: number }>();
+    const pairOf = (cur: GlAccount, nc: GlAccount) => {
+      const k = pairKey(cur, nc);
+      if (!pairs.has(k)) pairs.set(k, { cur, nc, target: 0, reduced: 0 });
+      return pairs.get(k)!;
+    };
+    pairOf(A.deferredCurrent, A.deferredNoncurrent);
+    for (const { a, p } of positions) {
+      const pr = pairOf(assetAccount(a, 'deferredCurrent', A), assetAccount(a, 'deferredNoncurrent', A));
+      pr.target += p.current;
+      pr.reduced += p.amortizationThisMonth + p.impairmentThisMonth;
     }
+    // Last month's current portion by pair; older closes kept one total, all in the company accounts.
+    const priorBy: Record<string, number> = input.priorCurrentByAccount ?? { [pairKey(A.deferredCurrent, A.deferredNoncurrent)]: input.priorCurrent };
+    for (const k of Object.keys(priorBy)) {
+      if (!pairs.has(k) && priorBy[k]) {
+        const [curNo, ncNo] = k.split('|');
+        pairOf({ number: curNo, name: A.deferredCurrent.number === curNo ? A.deferredCurrent.name : 'Deferred commissions, current' }, { number: ncNo, name: A.deferredNoncurrent.number === ncNo ? A.deferredNoncurrent.name : 'Deferred commissions, non-current' });
+      }
+    }
+    const byAccount: Record<string, number> = {};
+    let totPrior = 0;
+    let totBefore = 0;
+    let totMove = 0;
+    const many = [...pairs.values()].filter((x) => roundCents(x.target) || priorBy[pairKey(x.cur, x.nc)]).length > 1;
+    for (const [k, pr] of pairs) {
+      const target = roundCents(pr.target);
+      const prior = roundCents(priorBy[k] ?? 0);
+      if (target || prior) byAccount[k] = target;
+      totPrior += prior;
+      const suffix = many ? ` (${pr.cur.number} / ${pr.nc.number})` : '';
+      if (settings.reclassMode === 'true_up') {
+        const before = roundCents(prior - (creditKey === 'deferredCurrent' ? pr.reduced : 0));
+        const netMove = roundCents(target - before);
+        totBefore += before;
+        totMove += netMove;
+        if (netMove !== 0) {
+          const lines = netMove > 0 ? [acct(pr.cur, null, netMove, 0), acct(pr.nc, null, 0, netMove)] : [acct(pr.nc, null, -netMove, 0), acct(pr.cur, null, 0, -netMove)];
+          entries.push({ month, kind: 'reclass', memo: `Reclass deferred commissions amortizing in the next 12 months to current${suffix}`, lines });
+        }
+      } else {
+        totMove += target - prior;
+        if (prior !== 0) entries.push({ month, kind: 'reclass', memo: `Reverse prior month's current reclass${suffix}`, lines: [acct(pr.nc, null, prior, 0), acct(pr.cur, null, 0, prior)] });
+        if (target !== 0)
+          entries.push({ month, kind: 'reclass', memo: `Reclass deferred commissions amortizing in the next 12 months to current${suffix}`, lines: [acct(pr.cur, null, target, 0), acct(pr.nc, null, 0, target)] });
+      }
+    }
+    reclass = {
+      target: rollforward.current,
+      priorCurrent: roundCents(totPrior),
+      beforeReclass: settings.reclassMode === 'true_up' ? roundCents(totBefore) : 0,
+      netMove: roundCents(totMove),
+      byAccount,
+    };
   }
 
   for (const e of entries) if (!entryBalance(e).balanced) warnings.add(`Entry "${e.memo}" does not balance.`);

@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { api, type AmortizationTypeRow, type AssetDetail, type ScheduleState } from '../../api';
 import { AmortizationForm } from './AmortizationForm';
-import { ErrorBar, Field, Modal, StatusBadge, downloadCsv, money, monthLabel } from './ui';
+import { ErrorBar, Field, Modal, Section, StatusBadge, downloadCsv, money, monthLabel } from './ui';
 
 type Tab = 'schedule' | 'modifications' | 'accounting' | 'notes';
 const TABS: { key: Tab; label: string }[] = [
@@ -211,7 +211,7 @@ export function AmortizationDetailView({ id, onBack, onOpenClose }: { id: string
                 </tr>
               </thead>
               <tbody>
-                {a.accounts.map((x) => (
+                {a.accountRoles.map((x) => (
                   <tr key={x.role} className="border-b border-slate-100">
                     <td className="py-1 pr-3">{x.role}</td>
                     <td className="py-1 pr-3">
@@ -236,14 +236,6 @@ export function AmortizationDetailView({ id, onBack, onOpenClose }: { id: string
   );
 }
 
-function Section({ title, children }: { title: string; children: React.ReactNode }) {
-  return (
-    <div className="mx-6 mt-4">
-      <div className="mb-2 rounded bg-slate-100 px-3 py-1.5 text-xs font-semibold text-slate-600">{title}</div>
-      <div className="grid grid-cols-3 gap-x-6 gap-y-3 px-3">{children}</div>
-    </div>
-  );
-}
 
 function History({ items }: { items: AssetDetail['history'] }) {
   return (
