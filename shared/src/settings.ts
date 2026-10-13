@@ -33,7 +33,7 @@ export type FeatureKey = (typeof FEATURE_KEYS)[number];
 export const FEATURES: FeatureDef[] = [
   { key: 'accounting', label: 'Accounting subledger', hint: 'Capitalize or expense commissions, amortization register, monthly close and journals. Off hides the Accounting section and the Accounting tab on a run.' },
   { key: 'holds', label: 'Payout holds', hint: 'Payout rules, hold rules, the on-hold dashboard and hold reasons. Off hides Payout Rules and Payouts On Hold.' },
-  { key: 'incentives', label: 'Spiffs, accelerators and bonus plans', hint: 'Saved incentive pipelines (period, filters, summary, calculations) on an import.' },
+  { key: 'incentives', label: 'Spiffs, accelerators and bonus plans', hint: 'Spiffs (counts), accelerators (a time period with a rate) and bonuses (metrics), paid in commission runs beside the plan.' },
   { key: 'linkedImports', label: 'Linked imports', hint: 'Parent / child imports on a key column, with the parent’s fields and child roll-ups available everywhere. Off hides the Links button on an import.' },
   { key: 'integrations', label: 'Integrations', hint: 'CRM and ERP connectors.', planned: true },
   { key: 'recasts', label: 'Mid-year recasts', hint: 'Re-plan quotas and rates part-way through the year.', planned: true },
@@ -81,7 +81,7 @@ export interface PermissionDef {
 /** Things a signed-in user can do; each can be restricted to admins. Reading is always open to everyone signed in. */
 export const PERMISSIONS: PermissionDef[] = [
   { key: 'imports', label: 'Import data', hint: 'Upload files, rename or delete imports, change column types, link imports.' },
-  { key: 'incentives', label: 'Save incentives', hint: 'Create, change and delete saved incentive pipelines.' },
+  { key: 'incentives', label: 'Save incentives', hint: 'Create, change and delete spiffs, accelerators, bonuses and saved import analyses.' },
   { key: 'plans', label: 'Edit comp plans', hint: 'Comp plans, threshold types, employee types and their default plan assignments.' },
   { key: 'employees', label: 'Edit employees', hint: 'Add, change and remove employees and their plan assignments.' },
   { key: 'runs', label: 'Calculate commission runs', hint: 'Create and delete commission runs.' },

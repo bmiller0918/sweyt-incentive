@@ -58,6 +58,10 @@ export type LineMethod =
   | 'whole'
   /** The whole deal at plan.rate (no tier table). */
   | 'flat'
+  /** Incentive programs (programs.ts): a spiff, an accelerator uplift, a bonus. */
+  | 'spiff'
+  | 'accelerator'
+  | 'bonus'
   /** The deal's gross profit at the rate its margin % reaches (percent-of-margin quota). */
   | 'margin'
   /** Nothing could be calculated; see `note`. */
@@ -394,16 +398,30 @@ export function computeCommissionLines(deals: DealInput[], lookup: DatedPlanLook
     }
   }
 
-  // Per-payee totals; a person counts once per deal even when split.
+  const totalPayout = roundCents(lines.reduce((a, l) => a + (l.payout ?? 0), 0));
+  return {
+    lines,
+    totals: payeeTotals(lines),
+    dealCount: new Set(deals.map((d) => d.rowIndex)).size,
+    totalPayout,
+    warnings: [...warnings],
+  };
+}
+
+/**
+ * Per-person totals over a run's lines; a person counts once per deal even
+ * when split. Program lines (rowIndex < 0) add pay but not deals.
+ */
+export function payeeTotals(lines: CommissionLine[]): PayeeTotal[] {
   const totals = new Map<string, PayeeTotal & { seen: Set<number> }>();
   for (const l of lines) {
-    const k = `${key(l.payee)}\u0001${l.role}`;
+    const k = `${l.payee.trim().toLowerCase()}\u0001${l.role}`;
     let t = totals.get(k);
     if (!t) {
       t = { payee: l.payee, role: l.role, planName: l.planName, deals: 0, amount: 0, payout: 0, unpaid: 0, seen: new Set() };
       totals.set(k, t);
     }
-    if (!t.seen.has(l.rowIndex)) {
+    if (l.rowIndex >= 0 && !t.seen.has(l.rowIndex)) {
       t.seen.add(l.rowIndex);
       t.deals++;
       t.amount += l.dealAmount ?? 0;
@@ -412,15 +430,5 @@ export function computeCommissionLines(deals: DealInput[], lookup: DatedPlanLook
     else t.payout = roundCents(t.payout + l.payout);
     if (!t.planName && l.planName) t.planName = l.planName;
   }
-
-  const totalPayout = roundCents(lines.reduce((a, l) => a + (l.payout ?? 0), 0));
-  return {
-    lines,
-    totals: [...totals.values()]
-      .map(({ seen: _seen, ...t }) => ({ ...t, amount: roundCents(t.amount) }))
-      .sort((a, b) => b.payout - a.payout || a.payee.localeCompare(b.payee)),
-    dealCount: new Set(deals.map((d) => d.rowIndex)).size,
-    totalPayout,
-    warnings: [...warnings],
-  };
+  return [...totals.values()].map(({ seen: _seen, ...t }) => ({ ...t, amount: roundCents(t.amount) })).sort((a, b) => b.payout - a.payout || a.payee.localeCompare(b.payee));
 }

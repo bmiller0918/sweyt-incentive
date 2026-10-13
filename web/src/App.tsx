@@ -14,7 +14,7 @@ import { DashboardView } from './components/DashboardView';
 import { EmployeeTypesView } from './components/EmployeeTypesView';
 import { EmployeesView } from './components/EmployeesView';
 import { ImportView } from './components/ImportView';
-import { IncentivesView } from './components/IncentivesView';
+import { ProgramsView } from './components/ProgramsView';
 import { PayoutRulesView } from './components/PayoutRulesView';
 import { SettingsView } from './components/SettingsView';
 import { useSettings } from './components/SettingsProvider';
@@ -275,7 +275,7 @@ export default function App() {
       case 'runs':
         return <CommissionsView />;
       case 'incentives':
-        return <IncentivesView onOpen={(importId, setId) => openImport(importId, setId)} />;
+        return <ProgramsView />;
       case 'employees':
         return <EmployeesView />;
       case 'types':

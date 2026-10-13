@@ -15,6 +15,7 @@ const RULES: Rule[] = [
   { key: 'imports', methods: ['PUT'], test: /^\/api\/imports\/[^/]+\/link$/ },
   { key: 'imports', methods: ['PUT', 'DELETE'], test: /^\/api\/links\/[^/]+$/ },
   { key: 'incentives', methods: ['POST', 'PUT', 'DELETE'], test: /^\/api\/criteria-sets(\/[^/]+)?$/ },
+  { key: 'incentives', methods: ['POST', 'PUT', 'DELETE'], test: /^\/api\/incentive-programs(\/(?!preview$).*)?$/ },
   { key: 'plans', methods: ['POST', 'PUT', 'DELETE'], test: /^\/api\/(comp-plans|threshold-types|employee-types|type-assignments)(\/.*)?$/ },
   { key: 'employees', methods: ['POST', 'PUT', 'DELETE'], test: /^\/api\/(employees|assignments)(\/.*)?$/ },
   { key: 'runs', methods: ['POST'], test: /^\/api\/commission-runs$/ },

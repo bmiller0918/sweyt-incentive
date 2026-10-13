@@ -17,6 +17,7 @@ import { criteriaRoutes } from './routes/criteria.js';
 import { importRoutes } from './routes/imports.js';
 import { payoutRuleRoutes } from './routes/payoutRules.js';
 import { planRoutes } from './routes/plans.js';
+import { programRoutes } from './routes/programs.js';
 import { setupRoutes } from './routes/setup.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -48,6 +49,7 @@ async function main() {
   await importRoutes(app, db);
   await criteriaRoutes(app, db);
   await planRoutes(app, db);
+  await programRoutes(app, db);
   await commissionRoutes(app, db);
   await payoutRuleRoutes(app, db);
   await accountingRoutes(app, db);

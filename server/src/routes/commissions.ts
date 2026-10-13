@@ -17,8 +17,10 @@ import {
   holdRuleSchema,
   makeDatedPlanLookup,
   payMonthFor,
+  payeeTotals,
   payoutRuleLabel,
   resolveLine,
+  roundCents,
   scheduleFor,
   type AccountingLineInput,
   type AccountingPolicy,
@@ -35,6 +37,7 @@ import { getRows } from '../rowcache.js';
 import { loadMethodsAndTypes, loadSettings, payeeAccounting } from './accounting.js';
 import { loadEmployeeRecords } from './plans.js';
 import { evalContext, loadPayoutRules } from './payoutRules.js';
+import { programLinesForRun } from './programs.js';
 
 const dateStr = z.string().regex(/^\d{4}-\d{2}-\d{2}$/);
 const today = () => new Date().toISOString().slice(0, 10);
@@ -56,6 +59,7 @@ const runSchema = z.object({
   contractEndField: z.string().nullable().optional(),
   components: z.array(z.object({ name: z.string().min(1), field: z.string().min(1) })).default([]),
   marginField: z.string().nullable().optional(),
+  includePrograms: z.boolean().default(true),
 });
 
 /** Whole months between two ISO dates, rounded (a 3-year term is 36 even if the end is the 31st). */
@@ -180,6 +184,7 @@ export async function commissionRoutes(app: FastifyInstance, db: Db) {
       contractEndField: body.contractEndField ?? null,
       components: body.components,
       marginField: body.marginField ?? null,
+      includePrograms: body.includePrograms,
     };
     // Component key -> column, so the engine can find each component's value on a deal.
     // Names that normalize to the same key ("New ARR" / "New-ARR") would silently share one column.
@@ -259,6 +264,16 @@ export async function commissionRoutes(app: FastifyInstance, db: Db) {
 
     const lookup = makeDatedPlanLookup(await loadEmployeeRecords(db));
     const result = computeCommissionLines(deals, lookup, { defaultAsOf: config_.to ?? undefined });
+    // Spiffs, accelerators and bonuses pay alongside the plan, each from its own import.
+    if (config_.includePrograms !== false) {
+      const programs = await programLinesForRun(db, { from: config_.from, to: config_.to });
+      if (programs.lines.length) {
+        result.lines.push(...programs.lines);
+        result.totals = payeeTotals(result.lines);
+        result.totalPayout = roundCents(result.lines.reduce((a, l) => a + (l.payout ?? 0), 0));
+      }
+      result.warnings.push(...programs.warnings);
+    }
     const runDate = today();
 
     const [run] = await db
@@ -519,7 +534,7 @@ export async function commissionRoutes(app: FastifyInstance, db: Db) {
     const lines = (await db.select().from(commissionLines).where(eq(commissionLines.runId, id)).orderBy(asc(commissionLines.id))).filter((l) => !q.status || l.status === q.status);
     const num = (n: number | null) => (n === null ? '' : String(n));
     const rows = lines.map((l) => ({
-      Deal: l.dealKey ?? `row ${l.rowIndex + 1}`,
+      Deal: l.dealKey ?? (l.rowIndex < 0 ? (l.planName ?? '') : `row ${l.rowIndex + 1}`),
       'Close Date': l.dealDate ?? '',
       'Deal Amount': num(l.dealAmount),
       Payee: l.payee,

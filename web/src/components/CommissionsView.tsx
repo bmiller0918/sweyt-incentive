@@ -37,6 +37,8 @@ interface Draft {
   components: Record<string, string>;
   /** Gross profit column for percent-of-margin quotas; '' = not mapped. */
   marginField: string;
+  /** Pay enabled spiffs, accelerators and bonuses in this run. */
+  includePrograms: boolean;
 }
 
 /** Guess the obvious columns so most runs are two clicks. */
@@ -61,6 +63,9 @@ function guessMargin(imp: ImportDetail): string {
   const isNum = (t: string) => ['currency', 'decimal', 'integer'].includes(t);
   return imp.columns.find((c) => isNum(c.type) && /gross.?profit|\bgp\b|margin/i.test(c.name) && !/%|percent|pct/i.test(c.name))?.name ?? '';
 }
+
+/** The deal a line pays on, or the program for spiff / accelerator / bonus lines without one. */
+const lineLabel = (l: CommissionLine) => l.dealKey ?? (l.rowIndex < 0 ? (l.planName ?? 'Incentive') : `row ${l.rowIndex + 1}`);
 
 const pctLabel = (n: number | null) => (n === null ? '' : `${Math.round(n * 1000) / 10}%`);
 
@@ -152,7 +157,7 @@ export function CommissionsView() {
   useEffect(() => {
     if (selectedId !== 'new') return;
     const first = imports[0];
-    setDraft({ name: '', importId: first?.id ?? '', repField: '', payees: [], amountField: '', dateField: '', dealKeyField: '', from: settings.general.goLiveDate, to: null, holdRules: [], payLagMonths: settings.general.defaultPayLagMonths, contractStartField: '', termMonthsField: '', contractEndField: '', components: {}, marginField: '' });
+    setDraft({ name: '', importId: first?.id ?? '', repField: '', payees: [], amountField: '', dateField: '', dealKeyField: '', from: settings.general.goLiveDate, to: null, holdRules: [], payLagMonths: settings.general.defaultPayLagMonths, contractStartField: '', termMonthsField: '', contractEndField: '', components: {}, marginField: '', includePrograms: true });
   }, [selectedId, imports, settings]);
 
   useEffect(() => {
@@ -194,6 +199,7 @@ export function CommissionsView() {
           .filter(([, field]) => field)
           .map(([name, field]) => ({ name, field })),
         marginField: draft.marginField || null,
+        includePrograms: draft.includePrograms,
       });
       await refresh();
       setSelectedId(created.id);
@@ -336,7 +342,7 @@ function NewRunForm({
                 <select
                   className="select mt-1 w-full"
                   value={draft.importId}
-                  onChange={(e) => setDraft({ ...draft, importId: e.target.value, repField: '', amountField: '', dateField: '', dealKeyField: '', payees: [], holdRules: [], contractStartField: '', termMonthsField: '', contractEndField: '', components: {}, marginField: '' })}
+                  onChange={(e) => setDraft({ ...draft, importId: e.target.value, repField: '', amountField: '', dateField: '', dealKeyField: '', payees: [], holdRules: [], contractStartField: '', termMonthsField: '', contractEndField: '', components: {}, marginField: '', includePrograms: draft.includePrograms })}
                 >
                   {imports.map((i) => (
                     <option key={i.id} value={i.id}>
@@ -366,6 +372,11 @@ function NewRunForm({
                 <Field label="Or subscription end" value={draft.contractEndField} onChange={(v) => setDraft({ ...draft, contractEndField: v })} options={dateCols.map((c) => c.name)} />
               </div>
             </div>
+
+            <label className="flex items-center gap-2 text-xs text-slate-600">
+              <input type="checkbox" checked={draft.includePrograms} onChange={(e) => setDraft({ ...draft, includePrograms: e.target.checked })} />
+              Also pay spiffs, accelerators and bonuses whose time period overlaps this run (each reads its own import)
+            </label>
 
             {usesMargin && (
               <div>
@@ -570,7 +581,8 @@ function RunDetail({ run, reasons, onChanged, onDelete, onError }: { run: Commis
         t = { payee: l.payee, role: l.role, plan: l.planName ?? '', deals: new Set(), amount: 0, payout: 0, held: 0, unpaid: 0 };
         m.set(k, t);
       }
-      if (!t.deals.has(l.rowIndex)) {
+      // Spiff / accelerator / bonus lines (rowIndex < 0) add pay, not deals.
+      if (l.rowIndex >= 0 && !t.deals.has(l.rowIndex)) {
         t.deals.add(l.rowIndex);
         t.amount += l.dealAmount ?? 0;
       }
@@ -593,7 +605,7 @@ function RunDetail({ run, reasons, onChanged, onDelete, onError }: { run: Commis
       const t = m.get(k) ?? { amount: 0, lines: 0, deals: new Set<string>() };
       t.amount += l.payout ?? 0;
       t.lines++;
-      t.deals.add(l.dealKey ?? `row ${l.rowIndex + 1}`);
+      t.deals.add(lineLabel(l));
       m.set(k, t);
     }
     return [...m.entries()].sort((a, b) => b[1].amount - a[1].amount);
@@ -884,7 +896,7 @@ function RunDetail({ run, reasons, onChanged, onDelete, onError }: { run: Commis
                       }}
                     />
                   </td>
-                  <td className="py-1 pr-3 whitespace-nowrap">{l.dealKey ?? `row ${l.rowIndex + 1}`}</td>
+                  <td className="py-1 pr-3 whitespace-nowrap">{lineLabel(l)}</td>
                   <td className="py-1 pr-3 whitespace-nowrap">{l.dealDate ?? ''}</td>
                   <td className="py-1 pr-3 text-right">{money(l.dealAmount)}</td>
                   <td className="py-1 pr-3 whitespace-nowrap font-medium text-slate-800">{l.payee}</td>
@@ -892,7 +904,7 @@ function RunDetail({ run, reasons, onChanged, onDelete, onError }: { run: Commis
                   <td className="py-1 pr-3">{l.planName ?? ''}</td>
                   {hasComponents && <td className="py-1 pr-3 whitespace-nowrap">{l.component ?? ''}</td>}
                   <td className="py-1 pr-3 whitespace-nowrap">
-                    {l.method === 'flat' ? 'flat' : l.method === 'none' ? '' : l.method === 'margin' ? (l.tierFrom === null ? `GM below ${pctLabel(l.tierTo)}` : `GM ${pctLabel(l.tierFrom)}+`) : `${num(l.tierFrom)} – ${l.tierTo === null ? '∞' : num(l.tierTo)}`}
+                    {l.method === 'flat' ? 'flat' : l.method === 'none' ? '' : l.method === 'margin' ? (l.tierFrom === null ? `GM below ${pctLabel(l.tierTo)}` : `GM ${pctLabel(l.tierFrom)}+`) : l.method === 'spiff' || l.method === 'bonus' ? l.method : l.method === 'accelerator' ? `above ${num(l.tierFrom)}` : `${num(l.tierFrom)} – ${l.tierTo === null ? '∞' : num(l.tierTo)}`}
                     {l.split ? <span className="ml-1 rounded bg-indigo-100 px-1 text-[10px] text-indigo-700">split</span> : null}
                   </td>
                   <td className="py-1 pr-3 text-right">{money(l.amount)}</td>
