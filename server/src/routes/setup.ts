@@ -75,7 +75,8 @@ export async function setupRoutes(app: FastifyInstance, db: Db) {
   const label = Object.fromEntries(PERMISSIONS.map((p) => [p.key, p.label]));
   app.addHook('onRequest', async (req, reply) => {
     if (!req.user || req.user.role === 'admin') return;
-    const key = permissionFor(req.method, req.url);
+    // The matched route pattern, so encoding tricks in the raw URL can't dodge a rule; raw URL for unmatched (404) requests.
+    const key = permissionFor(req.method, req.routeOptions?.url ?? req.url);
     if (key && getAppSettings().permissions[key] === 'admin') {
       return reply.code(403).send({ error: `"${label[key]}" is restricted to admins (Setup › System Features › Restrict feature permissions).` });
     }

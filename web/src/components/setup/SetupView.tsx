@@ -466,7 +466,14 @@ export function UpgradeNotice() {
         } catch {
           /* private mode */
         }
-        if (seen !== s.version) setVersion(s.version);
+        // First visit in this browser: remember the version quietly; the banner is for upgrades only.
+        if (seen === null) {
+          try {
+            localStorage.setItem(key, s.version);
+          } catch {
+            /* private mode */
+          }
+        } else if (seen !== s.version) setVersion(s.version);
       })
       .catch(() => {});
   }, [settings.upgrades.inAppMessages]);

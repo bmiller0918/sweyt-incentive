@@ -29,9 +29,20 @@ const RULES: Rule[] = [
   { key: 'accounting', methods: ['POST', 'PUT', 'DELETE'], test: /^\/api\/accounting\/assets(\/(?!preview$).*)?$/ },
 ];
 
-/** The permission a request needs, or null when it is open to every signed-in user. */
+/**
+ * The permission a request needs, or null when it is open to every signed-in user.
+ * `url` is the matched route pattern when the router has one (`/api/accounting/periods/:month/reopen`),
+ * else the raw request URL; the raw URL is decoded the way the router decodes it, so a
+ * percent-encoded static segment (`%72eopen`) cannot slip past a rule.
+ */
 export function permissionFor(method: string, url: string): PermissionKey | null {
-  const path = url.split('?')[0];
+  const raw = url.split('?')[0];
+  let path = raw;
+  try {
+    path = decodeURI(raw);
+  } catch {
+    /* malformed escape: match the raw path */
+  }
   const m = method.toUpperCase();
   for (const r of RULES) if (r.methods.includes(m) && r.test.test(path)) return r.key;
   return null;

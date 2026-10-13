@@ -58,4 +58,20 @@ describe('permissionFor', () => {
   it('ignores the query string and method case', () => {
     expect(permissionFor('post', '/api/commission-runs?x=1')).toBe('runs');
   });
+
+  it('sees through percent-encoding, as the router does', () => {
+    expect(permissionFor('POST', '/api/accounting/periods/2026-01/%72eopen')).toBe('close');
+    expect(permissionFor('POST', '/api/commission-runs/r1/%68old')).toBe('holds');
+    expect(permissionFor('DELETE', '/api/%69mports/abc')).toBe('imports');
+    expect(permissionFor('POST', '/api/accounting/periods/2026-01/%ZZreopen')).toBeNull();
+  });
+
+  it('accepts the matched route pattern', () => {
+    expect(permissionFor('POST', '/api/accounting/periods/:month/reopen')).toBe('close');
+    expect(permissionFor('POST', '/api/commission-runs/:id/hold')).toBe('holds');
+    expect(permissionFor('POST', '/api/uploads/:id/commit')).toBe('imports');
+    expect(permissionFor('PUT', '/api/accounting/assets/:id')).toBe('accounting');
+    expect(permissionFor('POST', '/api/accounting/assets/preview')).toBeNull();
+    expect(permissionFor('POST', '/api/imports/:id/query')).toBeNull();
+  });
 });

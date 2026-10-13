@@ -144,6 +144,7 @@ const FEATURE_OF: Record<string, FeatureKey> = {
   'payout-settings': 'holds',
   'accounting-settings': 'accounting',
   'amortization-types': 'accounting',
+  'amortization-methods': 'accounting',
   'amortization-registers': 'accounting',
   'process-monthly-accounting': 'accounting',
   reporting: 'reporting',
