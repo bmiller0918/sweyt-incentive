@@ -31,7 +31,7 @@ export type FeatureKey = (typeof FEATURE_KEYS)[number];
 
 export const FEATURES: FeatureDef[] = [
   { key: 'accounting', label: 'Accounting subledger', hint: 'Capitalize or expense commissions, amortization register, monthly close and journals. Off hides the Accounting section and the Accounting tab on a run.' },
-  { key: 'holds', label: 'Payout holds', hint: 'Hold rules, the on-hold dashboard and hold reasons. Off hides Payouts On Hold and Payout Settings.' },
+  { key: 'holds', label: 'Payout holds', hint: 'Payout rules, hold rules, the on-hold dashboard and hold reasons. Off hides Payout Rules, Payouts On Hold and Payout Settings.' },
   { key: 'incentives', label: 'Spiffs, accelerators and bonus plans', hint: 'Saved incentive pipelines (period, filters, summary, calculations) on an import.' },
   { key: 'weightedComponents', label: 'Weighted plan components', hint: 'Split a plan’s target incentive across components with their own quotas and attainment tiers. Off hides the component editor on a plan.' },
   { key: 'linkedImports', label: 'Linked imports', hint: 'Parent / child imports on a key column, with the parent’s fields and child roll-ups available everywhere. Off hides the Links button on an import.' },
@@ -85,7 +85,7 @@ export const PERMISSIONS: PermissionDef[] = [
   { key: 'plans', label: 'Edit comp plans', hint: 'Comp plans, threshold types, employee types and their default plan assignments.' },
   { key: 'employees', label: 'Edit employees', hint: 'Add, change and remove employees and their plan assignments.' },
   { key: 'runs', label: 'Calculate commission runs', hint: 'Create and delete commission runs.' },
-  { key: 'holds', label: 'Hold and release payouts', hint: 'Put lines on hold, release them, clear holds, and manage hold reasons.' },
+  { key: 'holds', label: 'Hold and release payouts', hint: 'Put lines on hold, release them, clear holds, and manage hold reasons and payout rules.' },
   { key: 'accounting', label: 'Edit accounting setup and register', hint: 'Accounting settings, amortization methods and types, amortization records, write-offs and transfers.' },
   { key: 'close', label: 'Close and reopen months', hint: 'Process Monthly Accounting: close a month, reopen the latest closed month.' },
 ];

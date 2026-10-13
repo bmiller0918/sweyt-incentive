@@ -6,8 +6,10 @@ import type {
   AmortizationMethod,
   AmortizationMethodDef,
   AppSettings,
+  AssetAccounts,
   AssetModification,
   ColumnDef,
+  Condition,
   CostTreatment,
   Criteria,
   GlAccount,
@@ -17,6 +19,7 @@ import type {
   PlanTiers,
   RawRow,
   ReclassMode,
+  Requirement,
 } from '@commissions/shared';
 
 // Every table carries timestamps and a nullable organization_id so multi-
@@ -273,6 +276,12 @@ export const amortizationTypes = pgTable('amortization_types', {
   methodId: uuid('method_id').references(() => amortizationMethods.id, { onDelete: 'set null' }),
   expenseAccount: jsonb('expense_account').$type<GlAccount>(),
   amortizationAccount: jsonb('amortization_account').$type<GlAccount>(),
+  /** Further account overrides (deferred current / non-current, write-off, accrued); unset keys use the company accounts. */
+  accounts: jsonb('accounts').$type<Partial<AccountMap>>().notNull().default({}),
+  /** Term used when a deal has none; null = the company default. */
+  defaultTermMonths: integer('default_term_months'),
+  /** Inactive types cannot be picked for new roles or amortizations. */
+  inactive: boolean('inactive').notNull().default(false),
   builtinKey: text('builtin_key'),
   sortOrder: integer('sort_order').notNull().default(0),
 });
@@ -314,6 +323,8 @@ export const amortizationAssets = pgTable(
     methodId: uuid('method_id'),
     opening: boolean('opening').notNull().default(false),
     offsetAccount: jsonb('offset_account').$type<GlAccount>(),
+    /** Deferred and write-off accounts from its type at booking, when the type overrides them. */
+    accounts: jsonb('accounts').$type<AssetAccounts>(),
     history: jsonb('history').$type<AssetModification[]>().notNull().default([]),
     sourceKey: text('source_key').notNull(),
     runId: uuid('run_id'),
@@ -343,6 +354,26 @@ export const holdReasons = pgTable('hold_reasons', {
   key: text('key').notNull().unique(),
   name: text('name').notNull(),
   builtin: integer('builtin').notNull().default(0),
+  sortOrder: integer('sort_order').notNull().default(0),
+});
+
+/**
+ * Workspace-wide payout rules, shaped like a cross-validation rule: filters
+ * say which deals a rule applies to, requirements say what must (or cannot)
+ * be true of them. A deal that breaks a rule starts on hold on every
+ * commission run, with the rule's reason and message.
+ */
+export const payoutRules = pgTable('payout_rules', {
+  ...base,
+  name: text('name').notNull().default(''),
+  /** Hold note for flagged lines; empty = the requirements in words. */
+  message: text('message').notNull().default(''),
+  reasonKey: text('reason_key').notNull(),
+  filters: jsonb('filters').$type<Condition[]>().notNull().default([]),
+  requirements: jsonb('requirements').$type<Requirement[]>().notNull().default([]),
+  /** 1: every requirement must hold; 0: any one is enough. */
+  requireAll: integer('require_all').notNull().default(1),
+  enabled: integer('enabled').notNull().default(1),
   sortOrder: integer('sort_order').notNull().default(0),
 });
 

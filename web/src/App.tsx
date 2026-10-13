@@ -4,6 +4,7 @@ import { api, type ImportSummary } from './api';
 import { AccountingSettingsView } from './components/accounting/AccountingSettingsView';
 import { AmortizationRegisterView } from './components/accounting/AmortizationRegisterView';
 import { RollForwardReportView, WaterfallReportView } from './components/accounting/AmortizationReportsView';
+import { AmortizationMethodsView } from './components/accounting/AmortizationMethodsView';
 import { AmortizationTypesView } from './components/accounting/AmortizationTypesView';
 import { JournalsView, ReclassView } from './components/accounting/JournalsView';
 import { MonthlyCloseView } from './components/accounting/MonthlyCloseView';
@@ -14,6 +15,7 @@ import { EmployeeTypesView } from './components/EmployeeTypesView';
 import { EmployeesView } from './components/EmployeesView';
 import { ImportView } from './components/ImportView';
 import { IncentivesView } from './components/IncentivesView';
+import { PayoutRulesView } from './components/PayoutRulesView';
 import { SettingsView } from './components/SettingsView';
 import { useSettings } from './components/SettingsProvider';
 import { SetupView, UpgradeNotice, type SetupTarget } from './components/setup/SetupView';
@@ -29,9 +31,11 @@ type Screen =
   | 'employees'
   | 'types'
   | 'plans'
+  | 'payoutrules'
   | 'holdreasons'
   | 'acctpolicy'
   | 'amorttypes'
+  | 'amortmethods'
   | 'register'
   | 'rollforward'
   | 'waterfall'
@@ -71,7 +75,7 @@ const SECTIONS: NavSection[] = [
     key: 'payouts',
     label: 'Payouts',
     items: [
-      { key: 'payout-rules', label: 'Payout Rules', screen: 'soon' },
+      { key: 'payout-rules', label: 'Payout Rules', screen: 'payoutrules' },
       { key: 'payouts-on-hold', label: 'Payouts On Hold', screen: 'runs' },
       { key: 'commission-payroll', label: 'Commission Payroll', screen: 'runs' },
       { key: 'payout-settings', label: 'Payout Settings', screen: 'holdreasons' },
@@ -83,6 +87,7 @@ const SECTIONS: NavSection[] = [
     items: [
       { key: 'accounting-settings', label: 'Accounting Settings', screen: 'acctpolicy' },
       { key: 'amortization-types', label: 'Amortization Types', screen: 'amorttypes' },
+      { key: 'amortization-methods', label: 'Amortization Methods', screen: 'amortmethods' },
       {
         key: 'amortization-registers',
         label: 'Amortization Register',
@@ -134,6 +139,7 @@ const FEATURE_OF: Record<string, FeatureKey> = {
   'spiffs-accelerators-bonus': 'incentives',
   'mid-year-recasts': 'recasts',
   clawbacks: 'clawbacks',
+  'payout-rules': 'holds',
   'payouts-on-hold': 'holds',
   'payout-settings': 'holds',
   'accounting-settings': 'accounting',
@@ -278,12 +284,16 @@ export default function App() {
         return <EmployeeTypesView />;
       case 'plans':
         return <SettingsView tab="plans" />;
+      case 'payoutrules':
+        return <PayoutRulesView onOpenHoldReasons={() => go('payout-settings')} />;
       case 'holdreasons':
         return <SettingsView tab="hold-reasons" />;
       case 'acctpolicy':
-        return <AccountingSettingsView />;
+        return <AccountingSettingsView onOpenMethods={() => go('amortization-methods')} />;
       case 'amorttypes':
         return <AmortizationTypesView />;
+      case 'amortmethods':
+        return <AmortizationMethodsView />;
       case 'register':
         return (
           <AmortizationRegisterView

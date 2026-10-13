@@ -15,6 +15,7 @@ import { accountingRoutes } from './routes/accounting.js';
 import { commissionRoutes } from './routes/commissions.js';
 import { criteriaRoutes } from './routes/criteria.js';
 import { importRoutes } from './routes/imports.js';
+import { payoutRuleRoutes } from './routes/payoutRules.js';
 import { planRoutes } from './routes/plans.js';
 import { setupRoutes } from './routes/setup.js';
 
@@ -48,6 +49,7 @@ async function main() {
   await criteriaRoutes(app, db);
   await planRoutes(app, db);
   await commissionRoutes(app, db);
+  await payoutRuleRoutes(app, db);
   await accountingRoutes(app, db);
 
   // In production the server also serves the built web app.

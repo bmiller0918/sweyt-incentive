@@ -21,6 +21,7 @@ const RULES: Rule[] = [
   { key: 'runs', methods: ['DELETE'], test: /^\/api\/commission-runs\/[^/]+$/ },
   { key: 'holds', methods: ['POST'], test: /^\/api\/commission-runs\/[^/]+\/(hold|release|pay)$/ },
   { key: 'holds', methods: ['POST', 'DELETE'], test: /^\/api\/hold-reasons(\/.*)?$/ },
+  { key: 'holds', methods: ['POST', 'PUT', 'DELETE'], test: /^\/api\/payout-rules(\/(?!preview$).*)?$/ },
   { key: 'close', methods: ['POST'], test: /^\/api\/accounting\/(close\/[^/]+|periods\/[^/]+\/reopen)$/ },
   { key: 'accounting', methods: ['PUT'], test: /^\/api\/(accounting-settings|accounting-policy)$/ },
   // "preview" endpoints are POST reads and stay open.

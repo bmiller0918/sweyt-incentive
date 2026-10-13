@@ -17,6 +17,7 @@ describe('permissionFor', () => {
     expect(permissionFor('POST', '/api/imports/abc/export')).toBeNull();
     expect(permissionFor('POST', '/api/amortization-methods/preview')).toBeNull();
     expect(permissionFor('POST', '/api/accounting/assets/preview')).toBeNull();
+    expect(permissionFor('POST', '/api/payout-rules/preview')).toBeNull();
   });
 
   it('maps writes to their permission', () => {
@@ -40,6 +41,9 @@ describe('permissionFor', () => {
     expect(permissionFor('POST', '/api/commission-runs/r1/release')).toBe('holds');
     expect(permissionFor('POST', '/api/commission-runs/r1/pay')).toBe('holds');
     expect(permissionFor('POST', '/api/hold-reasons')).toBe('holds');
+    expect(permissionFor('POST', '/api/payout-rules')).toBe('holds');
+    expect(permissionFor('PUT', '/api/payout-rules/order')).toBe('holds');
+    expect(permissionFor('DELETE', '/api/payout-rules/r1')).toBe('holds');
     expect(permissionFor('POST', '/api/accounting/close/2026-01')).toBe('close');
     expect(permissionFor('POST', '/api/accounting/periods/2026-01/reopen')).toBe('close');
     expect(permissionFor('PUT', '/api/accounting-settings')).toBe('accounting');

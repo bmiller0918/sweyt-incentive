@@ -186,3 +186,13 @@ export function downloadCsv(filename: string, header: string[], rows: (string | 
   a.click();
   URL.revokeObjectURL(a.href);
 }
+
+/** A NetSuite-style record section: a grey header bar over a three-column grid of fields. */
+export function Section({ title, children, cols = 3 }: { title: string; children: ReactNode; cols?: 2 | 3 }) {
+  return (
+    <div className="mx-6 mt-4">
+      <div className="mb-2 rounded bg-slate-100 px-3 py-1.5 text-xs font-semibold text-slate-600">{title}</div>
+      <div className={`grid ${cols === 3 ? 'grid-cols-3' : 'grid-cols-2'} gap-x-6 gap-y-3 px-3`}>{children}</div>
+    </div>
+  );
+}

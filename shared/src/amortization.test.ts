@@ -9,6 +9,7 @@ import {
   manualSchedule,
   rescheduleAsset,
   rollforwardRange,
+  typeAccounts,
   entryBalance,
   lineSourceKey,
   registerRollforward,
@@ -175,7 +176,7 @@ describe('closeMonth', () => {
     expect(kinds).toEqual(['accrual', 'amortization', 'reclass']);
     for (const e of r.entries) expect(entryBalance(e).balanced).toBe(true);
     // Current = next 12 months; the true-up also covers this month's amortization credited to current.
-    expect(r.reclass).toEqual({ target: 12_000, priorCurrent: 0, beforeReclass: -1000, netMove: 13_000 });
+    expect(r.reclass).toMatchObject({ target: 12_000, priorCurrent: 0, beforeReclass: -1000, netMove: 13_000 });
     expect(r.rollforward).toMatchObject({ closing: 35_000, current: 12_000, noncurrent: 23_000 });
   });
 
@@ -191,7 +192,7 @@ describe('closeMonth', () => {
     );
     expect(r.booked).toHaveLength(0);
     expect(r.totals.amortization).toBe(1000);
-    expect(r.reclass).toEqual({ target: 12_000, priorCurrent: 12_000, beforeReclass: 11_000, netMove: 1000 });
+    expect(r.reclass).toMatchObject({ target: 12_000, priorCurrent: 12_000, beforeReclass: 11_000, netMove: 1000 });
   });
 
   it('reverse-and-rebook gives the same balances in two entries', () => {
@@ -329,5 +330,121 @@ describe('modifications and reports', () => {
     expect(rollforwardRange(w, '2026-01', '2026-12')).toEqual({ initial: 0, additions: 1200, amortization: 400, writeOffs: 800, ending: 0 });
     expect(Object.keys(futureAmortization(asset({}), '2026-09'))).toEqual(['2026-10', '2026-11', '2026-12']);
     expect(futureAmortization(w, '2026-03')).toEqual({ '2026-04': 100 });
+  });
+});
+
+describe('per-type accounts', () => {
+  const se = { number: '1460', name: 'Deferred SE commissions, current' };
+  const seNc = { number: '1760', name: 'Deferred SE commissions, non-current' };
+  const types: AmortizationTypeDef[] = [
+    { id: 'ae', name: 'Account Executives', treatment: 'capitalize', methodId: null, expenseAccount: null, amortizationAccount: null },
+    {
+      id: 'se',
+      name: 'Solutions',
+      treatment: 'capitalize',
+      methodId: null,
+      expenseAccount: null,
+      amortizationAccount: { number: '6130', name: 'SE commission amortization' },
+      accounts: { deferredCurrent: se, deferredNoncurrent: seNc, accruedCommissions: { number: '2160', name: 'Accrued SE commissions' } },
+      defaultTermMonths: 24,
+    },
+  ];
+  const line = (over: Partial<CloseLineInput>): CloseLineInput => ({
+    sourceKey: 'D-1|alice|rep||',
+    runId: 'r1',
+    lineId: 1,
+    dealKey: 'D-1',
+    payee: 'Alice',
+    role: 'Rep',
+    department: 'AE',
+    amortizationTypeId: 'ae',
+    fallbackTreatment: 'capitalize',
+    payout: 12_000,
+    status: 'pay',
+    payMonth: '2026-02',
+    contractStart: '2026-02-01',
+    termMonths: 12,
+    ...over,
+  });
+  const lines = [line({}), line({ sourceKey: 'D-1|sam|se||', lineId: 2, payee: 'Sam', department: 'SE', amortizationTypeId: 'se', payout: 2400, termMonths: null })];
+  const settings = { ...DEFAULT_SETTINGS, defaultMethodId: 'contract_term' };
+  const base: CloseInput = { month: '2026-02', lines, assets: [], booked: new Map(), registerStart: '2026-02', priorCurrent: 0, settings, methods, types };
+
+  it('merges a type\'s overrides over the company accounts', () => {
+    const a = typeAccounts(types[1], DEFAULT_SETTINGS.accounts);
+    expect([a.deferredCurrent.number, a.deferredNoncurrent.number, a.amortizationExpense.number, a.accruedCommissions.number, a.impairmentExpense.number]).toEqual(['1460', '1760', '6130', '2160', '6125']);
+  });
+
+  it('books each type to its own accounts, uses its default term, and reclasses each pair', () => {
+    const r = closeMonth(base);
+    const sam = r.newAssets.find((a) => a.payee === 'Sam')!;
+    expect(sam.months).toBe(24);
+    expect(sam.accounts).toEqual({ deferredCurrent: se, deferredNoncurrent: seNc });
+    const accrual = r.entries.find((e) => e.kind === 'accrual')!;
+    expect(accrual.lines.filter((l) => l.debit).map((l) => [l.accountNumber, l.debit])).toEqual(expect.arrayContaining([['1750', 12_000], ['1760', 2400]]));
+    expect(accrual.lines.filter((l) => l.credit).map((l) => [l.accountNumber, l.credit])).toEqual(expect.arrayContaining([['2150', 12_000], ['2160', 2400]]));
+    const am = r.entries.find((e) => e.kind === 'amortization')!;
+    expect(am.lines.filter((l) => l.credit).map((l) => [l.accountNumber, l.credit])).toEqual(expect.arrayContaining([['1450', 1000], ['1460', 100]]));
+    const rc = r.entries.filter((e) => e.kind === 'reclass');
+    expect(rc).toHaveLength(2);
+    expect(r.reclass!.byAccount).toEqual({ '1450|1750': 11_000, '1460|1760': 1200 });
+    for (const e of r.entries) expect(entryBalance(e).balanced).toBe(true);
+
+    // Next month starts from each pair's own current portion.
+    const next = closeMonth({ ...base, month: '2026-03', assets: r.newAssets.map((a, i) => ({ ...a, id: `a${i}` })), booked: bookedTotals(r.booked), priorCurrent: r.reclass!.target, priorCurrentByAccount: r.reclass!.byAccount });
+    const moves = next.entries.filter((e) => e.kind === 'reclass').map((e) => e.lines.map((l) => [l.accountNumber, l.debit, l.credit]));
+    // AE: 11,000 − 1,000 = 10,000 vs target 10,000 → nothing. SE: 1,200 − 100 = 1,100 vs 1,200 → move 100.
+    expect(moves).toEqual([[['1460', 100, 0], ['1760', 0, 100]]]);
+  });
+});
+
+describe('formula methods', () => {
+  const base: AmortizationMethodDef = { kind: 'formula', periodBasis: 'contract_term', months: null, termMultiplier: 1, yearPercents: [], monthPercents: [], startBasis: 'pay_month', formula: 'NB / RT' };
+  const ctx = { payMonth: '2026-01', contractStart: null, termMonths: 12, defaultTermMonths: 12 };
+
+  it('NB / RT is straight-line', () => {
+    const s = scheduleFor(1000, base, ctx);
+    expect(s.months).toBe(12);
+    expect(Object.values(s.byMonth).reduce((a, b) => a + b, 0)).toBeCloseTo(1000, 2);
+    expect(s.byMonth['2026-01']).toBe(83.33);
+  });
+
+  it('front-loads with double declining balance and the last month takes the rest', () => {
+    const s = scheduleFor(1200, { ...base, formula: 'NB * 2 / T', periodBasis: 'fixed_months', months: 6 }, ctx);
+    const v = Object.values(s.byMonth);
+    expect(v[0]).toBe(400);
+    expect(v[1]).toBe(266.67);
+    expect(v[0]).toBeGreaterThan(v[4]);
+    expect(Math.round(v.reduce((a, b) => a + b, 0) * 100) / 100).toBe(1200);
+  });
+
+  it('clamps to what is left and never goes negative', () => {
+    const s = scheduleFor(100, { ...base, formula: 'IF(CP = 1, 500, -10)' }, { ...ctx, termMonths: 4 });
+    expect(Object.values(s.byMonth)).toEqual([100, 0, 0, 0]);
+  });
+
+  it('uses year variables', () => {
+    const s = scheduleFor(1200, { ...base, formula: 'IF(Y = 1, CV * 0.6 / 12, NB / RT)' }, { ...ctx, termMonths: 24 });
+    expect(s.byMonth['2026-01']).toBe(60);
+    expect(s.byMonth['2027-01']).toBe(40);
+  });
+
+  it('validates the formula', () => {
+    expect(validateMethod({ ...base, formula: 'NB / XX' })[0]).toMatch(/Unknown field "XX"/);
+    expect(validateMethod({ ...base, formula: '' })[0]).toMatch(/empty/);
+    expect(validateMethod({ ...base, formula: 'nb / rt' })).toEqual([]);
+  });
+});
+
+describe('formula runtime errors', () => {
+  it('names the formula and month and is a 400', () => {
+    const def: AmortizationMethodDef = { kind: 'formula', periodBasis: 'contract_term', months: null, termMultiplier: 1, yearPercents: [], monthPercents: [], startBasis: 'pay_month', formula: 'CV / (TERM - 12)' };
+    try {
+      scheduleFor(1200, def, { payMonth: '2026-01', contractStart: null, termMonths: 12, defaultTermMonths: 12 });
+      throw new Error('expected a throw');
+    } catch (e) {
+      expect((e as Error).message).toMatch(/CV \/ \(TERM - 12\).*month 1 of 12/);
+      expect((e as { statusCode?: number }).statusCode).toBe(400);
+    }
   });
 });

@@ -84,8 +84,9 @@ export function AmortizationForm({ asset, openMonth, onClose, onSaved }: { asset
     setF((cur) => ({ ...cur, typeId: t?.id ?? null, methodId: cur.methodId ?? (t?.methodId && methods.some((m) => m.id === t.methodId) ? t.methodId : null) }));
   };
   const method = methods.find((m) => m.id === f.methodId) ?? null;
-  const fixedTerm = method?.def.kind === 'straight_line' && method.def.periodBasis === 'fixed_months';
-  const curveTerm = method && method.def.kind !== 'straight_line';
+  const termed = method?.def.kind === 'straight_line' || method?.def.kind === 'formula';
+  const fixedTerm = termed && method?.def.periodBasis === 'fixed_months';
+  const curveTerm = method && !termed;
   const accrued = settings?.accounts.accruedCommissions;
   const lateBooking = openMonth && f.capitalizedMonth < openMonth;
   const valid = f.name.trim() && f.payee.trim() && body.amount && f.months >= 1 && !previewError;
