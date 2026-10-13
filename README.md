@@ -30,6 +30,7 @@ Drag-and-drop CSV/Excel import with a NetSuite-style (and beyond) filter and cri
 - **Payout rules** (*Payouts › Payout Rules*): workspace-wide checks on the deal data, shaped like a cross-validation rule. A rule has **filters** (which deals it applies to: `Customer is Acme`; none = every deal), **requirements** (field + *Must be* / *Cannot be* + operator + value: `Amount cannot be greater than 10,000`, `Billing must be Upfront`, `Start Date must be within next 90 days`) with a **Require all** toggle (break any requirement vs. break every one), and an **action**: the hold reason and a hold message. Every commission run applies the rules, in order, before the run's own hold rules; a deal that breaks one starts on hold with that reason and the message as its note, for review under Payouts On Hold. Rules match columns by header name, so one rule serves every import with that column; a rule naming a column an import lacks is skipped for that import with a warning on the run. The page dry-runs the rules against any import (per-rule flagged counts and the flagged deals) and tests unsaved edits live. Logic: `applyPayoutRules` in `shared/src/holds.ts`.
 - **Accounting** (subledger, the run's Accounting tab): commissions are accrued in their pay month (held lines are not booked). Each **employee type** carries a cost treatment: *capitalize* (contract acquisition cost) or *expense when paid* (e.g. BDRs), and the type is the department in the **monthly accrual by department** report (capitalized vs expensed, with the credit to accrued commissions). Capitalized lines get a **straight-line amortization schedule** at line level under a company-wide **policy**: over the contract term from the subscription start (a run can map subscription start + term or end columns from the deal data), or over one estimated customer life from the pay month (the practical expedient). The tab shows the **capitalized balance rollforward** (opening, additions, amortization, closing per month), the schedules, and the **journal entries** (accrual per pay month, amortization per month, by department), with CSV exports of the full schedule (one column per month) and the entries. Logic: `shared/src/accounting.ts`; cents are rounded per month with the remainder in the last month so every schedule ties out exactly. `samples/deals-2026.csv` has SE/BDR payees, subscription start and term columns to try it with.
 - **Sign-in**: email + password accounts with 30-day session cookies. First visit with no accounts shows a one-time **create the admin account** screen; after that every `/api/*` route except `/health` and `/api/auth/*` requires a session. Admins add users under *Employees › Users* (a temporary password is shown once; the user must change it before anything else, enforced by the server) and remove them. Passwords are hashed with scrypt; only a hash of each session token is stored; login is rate-limited per IP + email. Logic: `server/src/auth.ts`.
+- **Global Settings** (sidebar *Setup › Global Settings*, admins edit, everyone can read), laid out like NetAsset's setup page with five tabs. **General**: the go-live date (no month before it can be closed; new runs default to deals closed on or after it), fiscal year start month and week start (previously only env vars; the first start seeds them from the environment), the default pay lag, whether amortization records may be entered by hand, the amortization record prefix and minimum digits (`AMRT0001`), and period controls (allow a release that pays in a closed month; allow reopening the latest closed month). **System Features**: switches that hide what the business doesn't use (accounting subledger, payout holds, incentives, weighted components, linked imports, and the not-yet-built pages), the quick-access buttons on a commission run (hold, release, pay now, the exports, delete), and *Restrict feature permissions*: each write action (import data, save incentives, edit plans, edit employees, calculate runs, hold/release, accounting setup, close months) is open to all users or admins only; the server enforces it on every request, reads stay open. **Import Tools**: CSV templates for deals and child payments plus links to the import wizard, links, employees and users. **Licensing**: edition and status, and usage counts (employees by status, users, imports, plans, runs, lines by status, amortization records, closed months) with a sync button. **Manage Upgrades**: upgrade preference and next upgrade date, the running version, schema migration and last-upgraded date, who receives release notes, and a one-time in-app message after an upgrade. Stored as one JSON document (`app_settings`), validated by `shared/src/settings.ts`; `server/src/appSettings.ts` caches it, `server/src/permissions.ts` maps requests to permissions.
 - **Navigation & theme**: *Overview* pinned at the top, then sidebar sections *Data & Imports*, *Comp Plans*, *Payouts*, *Accounting*, *Statements & Reports* and *Employees*. Existing screens sit inside them (Commission Payroll, Payouts On Hold and Amortization Registers open the commission runs; Payout Rules is its own page; Payout Settings opens hold reasons; Accounting Settings opens the accounting policy; Spiffs, Accelerators, and Bonus Plans opens incentives); pages not built yet show a Coming soon placeholder. Layout lives in `SECTIONS` in `web/src/App.tsx`. The sidebar highlight is Sweyt green (`--color-brand`). Dark theme: warm charcoal surfaces with a terracotta accent, applied by remapping Tailwind's color tokens in `web/src/index.css` (components use ordinary `slate` / `indigo` classes; `bg-panel` is the card surface).
 - **Deploy**: single Docker image, `/health` endpoint, Railway config.
 
@@ -75,7 +76,7 @@ pnpm test
    - `DATABASE_URL` = `${{Postgres.DATABASE_URL}}` (use the reference picker)
    - `NODE_ENV` = `production`
    - `PORT` = `3000` (Railway otherwise injects a random port that won't match the domain's target port)
-   - optionally `MAX_UPLOAD_MB`, `FISCAL_YEAR_START_MONTH`, `WEEK_STARTS_ON`
+   - optionally `MAX_UPLOAD_MB`, `FISCAL_YEAR_START_MONTH`, `WEEK_STARTS_ON` (the calendar values seed Global Settings on first start; after that the Setup page wins)
 5. **Settings → Networking → Generate Domain**.
 6. Verify: `https://<your-domain>/health` returns `{"ok":true,...}`. Migrations run automatically at startup.
 
@@ -99,20 +100,25 @@ shared/src/
   coerce.ts     parseNumber / parseDate / parseBoolean, type inference
   dates.ts      relative date presets, fiscal periods
   criteria.ts   AST schema (Zod), operator tables
+  settings.ts   global settings schema, feature / quick-action / permission catalogs
   evaluate.ts   compile + match + impact + explain
 server/src/
   index.ts      Fastify bootstrap, serves web/dist in production
+  appSettings.ts  cached global settings (calendar, record numbering)
+  permissions.ts  request → permission key for "Restrict feature permissions"
   db/           Drizzle schema + driver selection (PGlite vs Postgres)
   parse.ts      CSV/Excel parsing, header row handling
   rowcache.ts   typed-row LRU cache
   export.ts     CSV/XLSX writers with injection guard
-  routes/       imports, query, explain, export, criteria sets
+  routes/       imports, query, explain, export, criteria sets, setup
 web/src/
   App.tsx                     shell + import list
   components/UploadFlow.tsx   dropzone → sheet/header picker → commit
   components/ImportView.tsx   header, criteria panel, grid, explain modal
   components/CriteriaBuilder.tsx  recursive group/condition editor
   components/DataGrid.tsx     virtualized grid with type selectors
+  components/SettingsProvider.tsx  global settings context (feature / quick / can)
+  components/setup/SetupView.tsx   Global Settings page (five tabs)
 ```
 
 ## API
@@ -135,6 +141,10 @@ web/src/
 | POST   | `/api/imports/:id/export`    | `{criteria, format: csv|xlsx}` → file                |
 | CRUD   | `/api/criteria-sets[/:id]`   | saved criteria; `GET /:id/versions` for history      |
 | GET    | `/api/config`                | fiscal year start month, week start                  |
+| GET/PUT | `/api/settings`             | the global settings document (PUT is admin only)      |
+| GET    | `/api/setup/usage`           | workspace counts for the Licensing tab               |
+| GET    | `/api/setup/system`          | version, schema migration, last upgraded, server start |
+| GET    | `/api/setup/templates/:name` | `deals` or `payments` CSV import template            |
 | CRUD   | `/api/threshold-types[/:id]` | built-in + custom threshold types for tier tables    |
 | CRUD   | `/api/comp-plans[/:id]`      | plans with `params`, `tiers` and `structure` (target incentive + weighted components) |
 | CRUD   | `/api/employee-types[/:id]`  | roles with default plans; `POST /:id/assignments`, `PUT`/`DELETE /api/type-assignments/:id` |

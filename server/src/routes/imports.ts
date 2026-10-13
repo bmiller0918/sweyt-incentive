@@ -25,6 +25,7 @@ import {
 import { desc, eq, inArray, or } from 'drizzle-orm';
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
+import { calendar } from '../appSettings.js';
 import { config } from '../config.js';
 import type { Db } from '../db/client.js';
 import { auditLog, importLinks, importRows, imports } from '../db/schema.js';
@@ -113,8 +114,7 @@ export async function importRoutes(app: FastifyInstance, db: Db) {
   const evalCtx = (types: Record<string, ColumnDef['type']>, params?: Record<string, string>) => ({
     types,
     params,
-    fiscalYearStartMonth: config.fiscalYearStartMonth,
-    weekStartsOn: config.weekStartsOn,
+    ...calendar(),
   });
 
   // -- Upload: parse and hold ------------------------------------------------

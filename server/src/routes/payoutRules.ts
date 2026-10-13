@@ -6,6 +6,7 @@ import { applyPayoutRules, conditionSchema, payoutRuleSchema, requirementSchema,
 import { asc, eq, sql } from 'drizzle-orm';
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
+import { calendar } from '../appSettings.js';
 import { config } from '../config.js';
 import type { Db } from '../db/client.js';
 import { auditLog, holdReasons, imports, payoutRules } from '../db/schema.js';
@@ -31,7 +32,7 @@ export async function loadPayoutRules(db: Db): Promise<PayoutRule[]> {
   return rows.map(toPayoutRule).filter((r) => r.enabled);
 }
 
-export const evalContext = () => ({ fiscalYearStartMonth: config.fiscalYearStartMonth, weekStartsOn: config.weekStartsOn });
+export const evalContext = () => calendar();
 
 const ruleInput = z.object({
   name: z.string().default(''),

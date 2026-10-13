@@ -35,6 +35,7 @@ import { CriteriaBuilder } from './CriteriaBuilder';
 import { DataGrid, type GridRow } from './DataGrid';
 import { HeaderFilterPopover } from './HeaderFilterPopover';
 import { LinksPanel } from './LinksPanel';
+import { useSettings } from './SettingsProvider';
 import { SummaryGrid, groupValuesOf, type GroupState } from './SummaryGrid';
 import { SummaryPanel } from './SummaryPanel';
 
@@ -67,6 +68,7 @@ export function ImportView({ importId, initialSetId, onDeleted, onRenamed }: Pro
   const [filterPopover, setFilterPopover] = useState<{ field: string; anchor: DOMRect } | null>(null);
   const [advanced, setAdvanced] = useState(false);
   const [linksOpen, setLinksOpen] = useState(false);
+  const { feature } = useSettings();
   const reloadImport = () => api.getImport(importId).then(setImp).catch((e) => setError(e.message));
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -259,10 +261,12 @@ export function ImportView({ importId, initialSetId, onDeleted, onRenamed }: Pro
             {imp.warnings.length} warning{imp.warnings.length === 1 ? '' : 's'}
           </span>
         )}
-        <button className="btn btn-sm" onClick={() => setLinksOpen(true)} title="Link this import to a parent or see its children">
-          Links
-          {imp.columns.some((c) => c.linked) && <span className="ml-1 rounded bg-indigo-100 px-1 text-[10px] text-indigo-700">{[...new Set(imp.columns.flatMap((c) => (c.linked ? [c.linked] : [])))].length}</span>}
-        </button>
+        {feature('linkedImports') && (
+          <button className="btn btn-sm" onClick={() => setLinksOpen(true)} title="Link this import to a parent or see its children">
+            Links
+            {imp.columns.some((c) => c.linked) && <span className="ml-1 rounded bg-indigo-100 px-1 text-[10px] text-indigo-700">{[...new Set(imp.columns.flatMap((c) => (c.linked ? [c.linked] : [])))].length}</span>}
+          </button>
+        )}
         <div className="flex-1" />
         <div className="inline-flex overflow-hidden rounded-md border border-slate-300 text-xs">
           {(['detail', 'summary'] as const).map((m) => (

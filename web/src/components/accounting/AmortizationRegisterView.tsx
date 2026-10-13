@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { api, type RegisterPayload, type RegisterRow } from '../../api';
 import { AmortizationDetailView } from './AmortizationDetailView';
+import { useSettings } from '../SettingsProvider';
 import { AmortizationForm } from './AmortizationForm';
 import { ErrorBar, PageHeader, STATUS_LABEL, Stat, StatusBadge, money, monthLabel } from './ui';
 
@@ -32,6 +33,7 @@ export function AmortizationRegisterView({ onOpenClose, openId, onOpenId }: { on
   const [search, setSearch] = useState('');
   const [sort, setSort] = useState<{ key: SortKey; dir: 1 | -1 }>({ key: 'code', dir: 1 });
   const [creating, setCreating] = useState(false);
+  const allowManual = useSettings().settings.general.allowManualAmortizations;
 
   const load = useCallback(
     (m?: string | null) =>
@@ -92,9 +94,11 @@ export function AmortizationRegisterView({ onOpenClose, openId, onOpenId }: { on
         <button className="btn btn-sm" onClick={() => api.exportSchedule()}>
           Export schedules
         </button>
-        <button className="btn btn-sm btn-primary" onClick={() => setCreating(true)}>
-          New Amortization
-        </button>
+        {allowManual && (
+          <button className="btn btn-sm btn-primary" onClick={() => setCreating(true)}>
+            New Amortization
+          </button>
+        )}
       </PageHeader>
       <ErrorBar error={error} onDismiss={() => setError(null)} />
 
@@ -105,9 +109,11 @@ export function AmortizationRegisterView({ onOpenClose, openId, onOpenId }: { on
             Commissions enter the register when you close a month. You can also add an amortization by hand, such as a prepaid commission, a guaranteed draw, or an opening balance from your spreadsheet.
           </p>
           <div className="mt-3 flex gap-2">
-            <button className="btn btn-primary" onClick={() => setCreating(true)}>
-              New Amortization
-            </button>
+            {allowManual && (
+              <button className="btn btn-primary" onClick={() => setCreating(true)}>
+                New Amortization
+              </button>
+            )}
             <button className="btn" onClick={onOpenClose}>
               Process monthly accounting
             </button>

@@ -42,6 +42,7 @@ import { and, asc, desc, eq, inArray, isNotNull, isNull } from 'drizzle-orm';
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
+import { getAppSettings, recordNumber } from '../appSettings.js';
 import type { Db } from '../db/client.js';
 import {
   accountingPeriods,
@@ -218,7 +219,7 @@ const toAsset = (r: AssetDbRow): RegisterAsset => ({
 });
 
 /** AMRT0001-style id of a register row. */
-export const assetCode = (n: number) => `AMRT${String(n).padStart(4, '0')}`;
+export const assetCode = (n: number) => recordNumber(n);
 /** What to call a row in lists: its name, or deal and payee for a commission. */
 const assetName = (r: AssetDbRow) => r.name || [r.dealKey, r.payee].filter(Boolean).join(' · ');
 /** Display fields every register row carries alongside its accounting. */
@@ -486,6 +487,8 @@ export async function accountingRoutes(app: FastifyInstance, db: Db) {
 
   app.post('/api/accounting/close/:month', async (req, reply) => {
     const month = ym.parse((req.params as { month: string }).month);
+    const goLive = getAppSettings().general.goLiveDate;
+    if (goLive && month < goLive.slice(0, 7)) return reply.code(400).send({ error: `Nothing is booked before the go-live date (${goLive}); ${month} cannot be closed.` });
     const body = z.object({ runIds: z.array(z.string().uuid()).nullable().default(null) }).parse(req.body ?? {});
     const { result, runs } = await preview(month, body.runIds);
     if (!result.entries.every((e) => entryBalance(e).balanced)) return reply.code(400).send({ error: 'Journals do not balance; nothing was closed.' });
@@ -538,6 +541,7 @@ export async function accountingRoutes(app: FastifyInstance, db: Db) {
 
   app.post('/api/accounting/periods/:month/reopen', async (req, reply) => {
     const month = ym.parse((req.params as { month: string }).month);
+    if (!getAppSettings().general.allowReopenClosedMonth) return reply.code(403).send({ error: 'Reopening a closed month is switched off (Setup › General › Period controls).' });
     const ps = await periods();
     const last = ps[ps.length - 1];
     if (!last || last.month !== month) return reply.code(400).send({ error: 'Only the latest closed month can be reopened.' });
@@ -803,7 +807,8 @@ export async function accountingRoutes(app: FastifyInstance, db: Db) {
   });
 
   /** A new amortization entered by hand. It books with the close of its capitalized month (or the next open month). */
-  app.post('/api/accounting/assets', async (req) => {
+  app.post('/api/accounting/assets', async (req, reply) => {
+    if (!getAppSettings().general.allowManualAmortizations) return reply.code(403).send({ error: 'Entering amortizations by hand is switched off (Setup › General › Allow direct input of amortization records).' });
     const built = await buildManual(manualSchema.parse(req.body));
     const [row] = await db
       .insert(amortizationAssets)

@@ -3,6 +3,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { api, type CompPlan, type PlanParams, type ThresholdType } from '../api';
 import { PeriodPicker } from './PeriodPicker';
 import { PlanStructureEditor } from './PlanStructureEditor';
+import { useSettings } from './SettingsProvider';
 
 type Draft = Omit<CompPlan, 'id' | 'updatedAt' | 'employeeCount'>;
 
@@ -37,6 +38,7 @@ function componentSummary(structure: CompPlan['structure']): string {
 }
 
 export function CompPlansView() {
+  const { feature } = useSettings();
   const [plans, setPlans] = useState<CompPlan[]>([]);
   const [selectedId, setSelectedId] = useState<string | 'new' | null>(null);
   const [draft, setDraft] = useState<Draft>(emptyDraft());
@@ -212,7 +214,7 @@ export function CompPlansView() {
               </div>
             </div>
 
-            <PlanStructureEditor key={editorKey} structure={draft.structure} onChange={(structure) => setDraft({ ...draft, structure })} />
+            {feature('weightedComponents') && <PlanStructureEditor key={editorKey} structure={draft.structure} onChange={(structure) => setDraft({ ...draft, structure })} />}
 
             <TierEditor
               tiers={draft.tiers}

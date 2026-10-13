@@ -2,7 +2,7 @@ import { BUILTIN_THRESHOLD_TYPES, makePlanLookup, planStructureSchema, planTiers
 import { asc, eq, sql } from 'drizzle-orm';
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
-import { config } from '../config.js';
+import { calendar } from '../appSettings.js';
 import type { Db } from '../db/client.js';
 import { auditLog, compPlans, employeeTypes, employees, planAssignments, thresholdTypes, typePlanAssignments } from '../db/schema.js';
 
@@ -129,7 +129,7 @@ export async function planRoutes(app: FastifyInstance, db: Db) {
   await seedThresholdTypes(db);
 
   /** Settings the client needs to resolve periods the same way the server does. */
-  app.get('/api/config', async () => ({ fiscalYearStartMonth: config.fiscalYearStartMonth, weekStartsOn: config.weekStartsOn }));
+  app.get('/api/config', async () => calendar());
 
   // -- Threshold types -------------------------------------------------------
   app.get('/api/threshold-types', async () => db.select().from(thresholdTypes).orderBy(asc(thresholdTypes.builtin), asc(thresholdTypes.name)));
