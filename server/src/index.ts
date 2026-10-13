@@ -13,6 +13,7 @@ import { createDb } from './db/client.js';
 import { commissionRoutes } from './routes/commissions.js';
 import { criteriaRoutes } from './routes/criteria.js';
 import { importRoutes } from './routes/imports.js';
+import { payoutRuleRoutes } from './routes/payoutRules.js';
 import { planRoutes } from './routes/plans.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -42,6 +43,7 @@ async function main() {
   await criteriaRoutes(app, db);
   await planRoutes(app, db);
   await commissionRoutes(app, db);
+  await payoutRuleRoutes(app, db);
 
   // In production the server also serves the built web app.
   const webDist = [path.resolve(here, '../../web/dist'), path.resolve(here, '../web/dist')].find((p) => fs.existsSync(p));

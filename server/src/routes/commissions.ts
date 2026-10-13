@@ -9,6 +9,7 @@ import {
   DEFAULT_HOLD_REASONS,
   LINE_STATUSES,
   applyHoldRules,
+  applyPayoutRules,
   buildSubledger,
   computeCommissionLines,
   formatDateMs,
@@ -28,6 +29,7 @@ import { accountingPolicy, auditLog, commissionLines, commissionRuns, employeeTy
 import { toCsv } from '../export.js';
 import { getRows } from '../rowcache.js';
 import { loadEmployeeRecords } from './plans.js';
+import { evalContext, loadPayoutRules } from './payoutRules.js';
 
 const dateStr = z.string().regex(/^\d{4}-\d{2}-\d{2}$/);
 const today = () => new Date().toISOString().slice(0, 10);
@@ -161,9 +163,23 @@ export async function commissionRoutes(app: FastifyInstance, db: Db) {
       contractEndField: body.contractEndField ?? null,
     };
 
-    const holds = applyHoldRules(cached.typed, body.holdRules, { types: cached.types, fiscalYearStartMonth: config.fiscalYearStartMonth, weekStartsOn: config.weekStartsOn });
+    const ctx = { types: cached.types, ...evalContext() };
+    // Workspace payout rules go first (they are policy), then this run's own hold rules.
+    const payoutRules_ = await loadPayoutRules(db);
+    const flagged = applyPayoutRules(cached.typed, payoutRules_, ctx);
+    const flagErrors = Object.entries(flagged.errors);
+    if (flagErrors.length) return reply.code(400).send({ error: `Payout rule problem: ${flagErrors.map(([, m]) => m).join('; ')}` });
+    const holds = applyHoldRules(cached.typed, body.holdRules, ctx);
     const ruleErrors = Object.entries(holds.errors);
     if (ruleErrors.length) return reply.code(400).send({ error: `Hold rule problem: ${ruleErrors.map(([, m]) => m).join('; ')}` });
+    const runWarnings: string[] = [];
+    if (flagged.skipped.length) {
+      const names = flagged.skipped.flatMap((id) => {
+        const r = payoutRules_.find((x) => x.id === id);
+        return r ? [...r.filters, ...r.requirements].map((c) => c.field).filter((f) => !(f in cached.types)) : [id];
+      });
+      runWarnings.push(`${flagged.skipped.length} payout rule${flagged.skipped.length === 1 ? '' : 's'} skipped: this import has no column ${[...new Set(names)].map((n) => `"${n}"`).join(', ')}.`);
+    }
 
     const deals: DealInput[] = [];
     const contract = new Map<number, { start: string | null; term: number | null }>();
@@ -212,14 +228,15 @@ export async function commissionRoutes(app: FastifyInstance, db: Db) {
         dealCount: result.dealCount,
         lineCount: result.lines.length,
         totalPayout: result.totalPayout,
-        warnings: result.warnings,
+        warnings: [...result.warnings, ...runWarnings],
       })
       .returning();
     const BATCH = 1000;
     for (let i = 0; i < result.lines.length; i += BATCH) {
       await db.insert(commissionLines).values(
         result.lines.slice(i, i + BATCH).map((l) => {
-          const reason = holds.reasons[l.rowIndex];
+          const flag = flagged.hits[l.rowIndex];
+          const reason = flag?.reasonKey ?? holds.reasons[l.rowIndex];
           return {
             runId: run.id,
             rowIndex: l.rowIndex,
@@ -241,6 +258,7 @@ export async function commissionRoutes(app: FastifyInstance, db: Db) {
             note: l.note,
             status: reason ? 'hold' : 'pay',
             holdReason: reason,
+            holdNote: flag ? flag.message || flag.ruleName : null,
             heldAt: reason ? (l.dealDate ?? runDate) : null,
             payMonth: reason ? null : payMonthFor(l.dealDate, body.payLagMonths),
             contractStart: contract.get(l.rowIndex)?.start ?? null,
@@ -253,7 +271,7 @@ export async function commissionRoutes(app: FastifyInstance, db: Db) {
       action: 'commission_run.create',
       entityType: 'commission_run',
       entityId: run.id,
-      detail: { deals: result.dealCount, lines: result.lines.length, held: holds.reasons.filter(Boolean).length },
+      detail: { deals: result.dealCount, lines: result.lines.length, held: result.lines.filter((l) => flagged.hits[l.rowIndex] || holds.reasons[l.rowIndex]).length, flaggedByPayoutRules: flagged.hits.filter(Boolean).length },
     });
     return { ...run, totals: result.totals };
   });
