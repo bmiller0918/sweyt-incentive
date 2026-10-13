@@ -1,6 +1,7 @@
 import type {
   AccountingSettings,
   AmortizationMethodDef,
+  AssetModification,
   AssetPosition,
   BookedLine,
   CloseResult,
@@ -350,11 +351,24 @@ export type ClosePreview = Omit<CloseResult, 'newAssets'> & {
   unmapped: string[];
   balanced: boolean;
 };
-export type RegisterRow = Omit<RegisterAsset, 'byMonth'> & AssetPosition;
+export type AssetStatusOrPending = AssetPosition['status'] | 'pending';
+export interface AssetInfo {
+  number: number;
+  /** AMRT0001 */
+  code: string;
+  name: string;
+  description: string | null;
+  typeId: string | null;
+  methodId: string | null;
+  createdAt: string;
+}
+export type RegisterRow = Omit<RegisterAsset, 'byMonth'> & AssetInfo & Omit<AssetPosition, 'status'> & { status: AssetStatusOrPending };
 export interface RegisterPayload {
   month: string;
   closed: boolean;
   rows: RegisterRow[];
+  /** Manual amortizations waiting for their month's close. */
+  pending: RegisterRow[];
   rollforward: RollforwardMonth;
   history: RollforwardMonth[];
   byType: { typeName: string; count: number; amount: number; remaining: number; current: number; noncurrent: number; amortizationThisMonth: number }[];
@@ -369,7 +383,61 @@ export interface ReclassRow {
   reclass: { target: number; priorCurrent: number; beforeReclass: number; netMove: number } | null;
   entries: JournalEntry[];
 }
-export type { BookedLine, JournalEntry, MethodSchedule };
+export interface ManualAmortizationInput {
+  name: string;
+  payee: string;
+  department: string;
+  typeId: string | null;
+  methodId: string | null;
+  amount: number;
+  capitalizedMonth: string;
+  startMonth: string;
+  months: number;
+  description: string | null;
+  dealKey: string | null;
+  opening: boolean;
+  offsetAccount: GlAccount | null;
+  note?: string | null;
+}
+export type ScheduleState = 'booked' | 'next_close' | 'scheduled' | 'pending';
+export interface AssetDetail extends Omit<RegisterAsset, 'byMonth' | 'bookedMonth'>, AssetInfo {
+  bookedMonth: string | null;
+  status: AssetStatusOrPending;
+  runName: string | null;
+  remaining: number;
+  amortizedToDate: number;
+  current: number;
+  noncurrent: number;
+  remainingPeriods: number;
+  asOf: string | null;
+  openMonth: string | null;
+  schedule: { period: number; type: string; start: string; end: string; amount: number; remaining: number; journal: string | null; state: ScheduleState }[];
+  accounts: { role: string; account: GlAccount; note: string }[];
+  history: AssetModification[];
+  editable: boolean;
+}
+export interface ReportAsset {
+  id: string;
+  code: string;
+  name: string;
+  origin: 'commission' | 'manual';
+  payee: string;
+  department: string;
+  typeName: string;
+}
+export interface RollforwardReport {
+  from: string;
+  to: string;
+  lastClosed: string | null;
+  projected: boolean;
+  rows: (ReportAsset & { initial: number; additions: number; amortization: number; writeOffs: number; ending: number })[];
+}
+export interface WaterfallReport {
+  asOf: string;
+  lastClosed: string | null;
+  rows: (ReportAsset & { balance: number; byMonth: Record<string, number> })[];
+}
+export type { AssetModification, BookedLine, JournalEntry, MethodSchedule };
 
 function download(href: string) {
   const a = document.createElement('a');
@@ -539,12 +607,21 @@ export const api = {
   listPeriods: () => request<PeriodsPayload>('/api/accounting/periods'),
   previewClose: (month: string, runIds: string[] | null) => request<ClosePreview>(`/api/accounting/close/${month}${runIds ? `?runIds=${runIds.join(',')}` : ''}`),
   closeMonth: (month: string, runIds: string[] | null) => request<{ month: string }>(`/api/accounting/close/${month}`, json('POST', { runIds })),
-  reopenMonth: (month: string) => request<{ ok: true }>(`/api/accounting/periods/${month}/reopen`, json('POST', {})),
+  reopenMonth: (month: string, force = false) => request<{ ok: true }>(`/api/accounting/periods/${month}/reopen`, json('POST', { force })),
   getJournals: (month: string) => request<{ month: string; closed: boolean; entries: JournalEntry[] }>(`/api/accounting/journals/${month}`),
   exportJournals: (month: string) => download(`/api/accounting/journals/${month}/entries.csv`),
   getRegister: (month?: string) => request<RegisterPayload>(`/api/accounting/register${month ? `?month=${month}` : ''}`),
   exportRegister: (month: string) => download(`/api/accounting/register.csv?month=${month}`),
   exportSchedule: () => download('/api/accounting/register/schedule.csv'),
+  getAsset: (id: string) => request<AssetDetail>(`/api/accounting/assets/${id}`),
+  previewAsset: (body: ManualAmortizationInput) =>
+    request<{ startMonth: string; endMonth: string; months: number; byMonth: Record<string, number> }>('/api/accounting/assets/preview', json('POST', body)),
+  createAsset: (body: ManualAmortizationInput) => request<{ id: string; code: string }>('/api/accounting/assets', json('POST', body)),
+  updateAsset: (id: string, body: Partial<ManualAmortizationInput> & { endMonth?: string; note?: string | null }) => request<{ ok: true }>(`/api/accounting/assets/${id}`, json('PUT', body)),
+  transferAsset: (id: string, body: { department: string; typeId: string | null; note: string | null }) => request<{ ok: true }>(`/api/accounting/assets/${id}/transfer`, json('POST', body)),
+  deleteAsset: (id: string) => request<{ ok: true }>(`/api/accounting/assets/${id}`, { method: 'DELETE' }),
+  rollforwardReport: (from: string, to: string) => request<RollforwardReport>(`/api/accounting/reports/rollforward?from=${from}&to=${to}`),
+  waterfallReport: (asOf?: string) => request<WaterfallReport>(`/api/accounting/reports/waterfall${asOf ? `?asOf=${asOf}` : ''}`),
   writeOffAsset: (id: string, reason: string) => request<{ writtenOffMonth: string }>(`/api/accounting/assets/${id}/write-off`, json('POST', { reason })),
   undoWriteOff: (id: string) => request<{ ok: true }>(`/api/accounting/assets/${id}/write-off`, { method: 'DELETE' }),
   getReclass: () => request<ReclassRow[]>('/api/accounting/reclass'),

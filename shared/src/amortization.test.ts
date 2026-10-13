@@ -5,6 +5,10 @@ import {
   assetPosition,
   bookedTotals,
   closeMonth,
+  futureAmortization,
+  manualSchedule,
+  rescheduleAsset,
+  rollforwardRange,
   entryBalance,
   lineSourceKey,
   registerRollforward,
@@ -165,7 +169,7 @@ describe('closeMonth', () => {
 
   it('books, amortizes and reclasses a first month', () => {
     const r = closeMonth(input({}));
-    expect(r.totals).toEqual({ capitalized: 36_000, expensed: 5000, amortization: 1000, impairment: 0, accrued: 41_000 });
+    expect(r.totals).toEqual({ capitalized: 36_000, expensed: 5000, amortization: 1000, impairment: 0, accrued: 41_000, manual: 0 });
     expect(r.newAssets).toHaveLength(1);
     const kinds = r.entries.map((e) => e.kind);
     expect(kinds).toEqual(['accrual', 'amortization', 'reclass']);
@@ -264,5 +268,66 @@ describe('closeMonth', () => {
     const r = closeMonth(input({ lines: [line({ payout: 40_000 }), line({ payout: 36_000 })] }));
     expect(r.totals.capitalized).toBe(40_000);
     expect(r.warnings.join(' ')).toMatch(/newest run/);
+  });
+});
+
+describe('manual amortizations', () => {
+  it('schedules straight-line from the start month, or by a method\'s curve', () => {
+    const s = manualSchedule({ amount: 2000, startMonth: '2025-08', months: 12 });
+    expect(s).toMatchObject({ startMonth: '2025-08', endMonth: '2026-07', months: 12 });
+    expect(s.byMonth['2025-08']).toBe(166.67);
+    expect(sum(s.byMonth)).toBe(2000);
+    const ramp = manualSchedule({ amount: 1000, startMonth: '2026-01', months: 36, def: method('ramped_20_30_50').def });
+    expect(ramp.endMonth).toBe('2028-12');
+    expect(Math.round(sum(Object.fromEntries(Object.entries(ramp.byMonth).filter(([m]) => m.startsWith('2026')))))).toBe(200);
+    expect(() => manualSchedule({ amount: 1000, startMonth: '2026-01', months: 12, def: method('immediate').def })).toThrow(/expenses immediately/);
+  });
+
+  it('enters the register at the close of its capitalized month, against its own offset account', () => {
+    const pending = [
+      asset({ id: 'm1', origin: 'manual', capitalizedMonth: '2026-02', bookedMonth: '', startMonth: '2026-02', amount: 1200, offsetAccount: { number: '2000', name: 'Accounts payable' } }),
+      asset({ id: 'm2', origin: 'manual', capitalizedMonth: '2026-03', bookedMonth: '', amount: 500 }),
+    ];
+    const types: AmortizationTypeDef[] = [];
+    const r = closeMonth({ month: '2026-02', lines: [], assets: [], booked: new Map(), registerStart: '2026-02', priorCurrent: 0, settings: DEFAULT_SETTINGS, methods, types, pending });
+    expect(r.newAssets.map((a) => [a.id, a.bookedMonth])).toEqual([['m1', '2026-02']]);
+    expect(r.totals.manual).toBe(1200);
+    const add = r.entries.find((e) => e.kind === 'addition')!;
+    expect(add.lines.find((l) => l.credit)).toMatchObject({ accountNumber: '2000', credit: 1200 });
+    expect(entryBalance(add).balanced).toBe(true);
+    // Feb and the Jan catch-up are both recognized now.
+    expect(r.rollforward).toMatchObject({ additions: 1200, amortization: 200, closing: 1000 });
+  });
+
+  it('books no addition for an opening balance and shows it as opening in the rollforward', () => {
+    const pending = [asset({ id: 'o1', origin: 'manual', opening: true, capitalizedMonth: '2026-02', bookedMonth: '', startMonth: '2026-02', amount: 1100, byMonth: Object.fromEntries(Array.from({ length: 11 }, (_, i) => [`2026-${String(i + 2).padStart(2, '0')}`, 100])) })];
+    const r = closeMonth({ month: '2026-02', lines: [], assets: [], booked: new Map(), registerStart: '2026-02', priorCurrent: 0, settings: DEFAULT_SETTINGS, methods, types: [], pending });
+    expect(r.entries.some((e) => e.kind === 'addition')).toBe(false);
+    expect(r.rollforward).toMatchObject({ opening: 1100, additions: 0, amortization: 100, closing: 1000 });
+  });
+});
+
+describe('modifications and reports', () => {
+  it('re-spreads only what is left from the effective month', () => {
+    // $1,200 over 2026; Jan–Mar closed ($300); extend to Jun 2027.
+    const r = rescheduleAsset(asset({}), '2026-04', { endMonth: '2027-06' });
+    expect(r).toMatchObject({ startMonth: '2026-01', endMonth: '2027-06', months: 18 });
+    expect(r.byMonth['2026-03']).toBe(100);
+    expect(r.byMonth['2026-04']).toBe(60);
+    expect(sum(r.byMonth)).toBe(1200);
+    expect(() => rescheduleAsset(asset({}), '2026-04', { startMonth: '2026-05', endMonth: '2026-12' })).toThrow(/start/);
+    // Not started yet: the start can move.
+    const later = rescheduleAsset(asset({ startMonth: '2026-06', byMonth: { '2026-06': 600, '2026-07': 600 } }), '2026-04', { startMonth: '2026-08', endMonth: '2026-09' });
+    expect(later.byMonth).toEqual({ '2026-08': 600, '2026-09': 600 });
+  });
+
+  it('rolls forward over a range and shows the waterfall still to come', () => {
+    const a = asset({ bookedMonth: '2025-12', capitalizedMonth: '2025-12', startMonth: '2025-12', byMonth: Object.fromEntries(Array.from({ length: 12 }, (_, i) => [`${i ? '2026' : '2025'}-${String(i ? i : 12).padStart(2, '0')}`, 100])) });
+    expect(rollforwardRange(a, '2026-01', '2026-06')).toEqual({ initial: 1100, additions: 0, amortization: 600, writeOffs: 0, ending: 500 });
+    expect(rollforwardRange(a, '2025-01', '2025-12')).toEqual({ initial: 0, additions: 1200, amortization: 100, writeOffs: 0, ending: 1100 });
+    const w = asset({ writtenOffMonth: '2026-05' });
+    expect(rollforwardRange(w, '2026-01', '2026-12')).toEqual({ initial: 0, additions: 1200, amortization: 400, writeOffs: 800, ending: 0 });
+    expect(Object.keys(futureAmortization(asset({}), '2026-09'))).toEqual(['2026-10', '2026-11', '2026-12']);
+    expect(futureAmortization(w, '2026-03')).toEqual({ '2026-04': 100 });
   });
 });

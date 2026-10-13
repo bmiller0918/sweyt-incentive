@@ -62,7 +62,7 @@ export function Warnings({ items }: { items: string[] }) {
   );
 }
 
-const KIND_LABEL: Record<string, string> = { accrual: 'Accrual', amortization: 'Amortization', impairment: 'Write-off', reclass: 'Reclass' };
+const KIND_LABEL: Record<string, string> = { accrual: 'Accrual', addition: 'Capitalize', amortization: 'Amortization', impairment: 'Write-off', reclass: 'Reclass' };
 
 export function JournalTable({ entries, empty = 'No entries.' }: { entries: JournalEntry[]; empty?: string }) {
   return (
@@ -132,4 +132,57 @@ export function Bars({ data, height = 64 }: { data: { label: string; value: numb
       ))}
     </div>
   );
+}
+
+export function Modal({ title, onClose, children, width = 'w-[32rem]' }: { title: string; onClose: () => void; children: ReactNode; width?: string }) {
+  return (
+    <div className="fixed inset-0 z-20 flex items-center justify-center bg-black/30" onClick={onClose}>
+      <div className={`${width} max-h-[90vh] max-w-[95vw] overflow-auto rounded-lg bg-panel p-4 shadow-xl`} onClick={(e) => e.stopPropagation()}>
+        <div className="mb-3 text-sm font-semibold">{title}</div>
+        {children}
+      </div>
+    </div>
+  );
+}
+
+/** A labelled read-only value, for record pages. */
+export function Field({ label, children }: { label: string; children: ReactNode }) {
+  return (
+    <div>
+      <div className="text-[10px] font-medium tracking-wide text-slate-400 uppercase">{label}</div>
+      <div className="text-sm text-slate-800">{children === null || children === undefined || children === '' ? <span className="text-slate-400">—</span> : children}</div>
+    </div>
+  );
+}
+
+export const STATUS_LABEL: Record<string, string> = {
+  pending: 'Pending',
+  not_started: 'Not started',
+  amortizing: 'Commenced',
+  fully_amortized: 'Complete',
+  written_off: 'Written off',
+};
+export const STATUS_TONE: Record<string, string> = {
+  pending: 'bg-amber-100 text-amber-800',
+  not_started: 'bg-sky-100 text-sky-800',
+  amortizing: 'bg-emerald-100 text-emerald-700',
+  fully_amortized: 'bg-slate-100 text-slate-500',
+  written_off: 'bg-rose-100 text-rose-700',
+};
+export function StatusBadge({ status }: { status: string }) {
+  return <span className={`rounded px-1.5 py-0.5 text-[10px] whitespace-nowrap ${STATUS_TONE[status] ?? ''}`}>{STATUS_LABEL[status] ?? status}</span>;
+}
+
+/** Download rows as a CSV file built in the browser. */
+export function downloadCsv(filename: string, header: string[], rows: (string | number | null | undefined)[][]) {
+  const cell = (v: string | number | null | undefined) => {
+    const s = v === null || v === undefined ? '' : String(v);
+    return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+  };
+  const csv = [header, ...rows].map((r) => r.map(cell).join(',')).join('\n');
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(new Blob([csv], { type: 'text/csv' }));
+  a.download = filename;
+  a.click();
+  URL.revokeObjectURL(a.href);
 }

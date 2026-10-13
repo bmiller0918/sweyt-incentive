@@ -85,7 +85,7 @@ export interface JournalLine {
   credit: number;
 }
 
-export type JournalKind = 'accrual' | 'amortization' | 'impairment' | 'reclass';
+export type JournalKind = 'accrual' | 'addition' | 'amortization' | 'impairment' | 'reclass';
 
 export interface JournalEntry {
   month: string;
