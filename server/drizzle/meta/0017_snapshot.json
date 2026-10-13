@@ -1,5 +1,5 @@
 {
-  "id": "68343ebe-f64a-4b13-85cb-bfdd849d3f57",
+  "id": "d4d96bc1-87b9-49d6-943e-7e273ac48cbb",
   "prevId": "b7215cf0-59b2-4a05-8f96-3acfa4fc0db1",
   "version": "7",
   "dialect": "postgresql",
@@ -287,6 +287,12 @@
         },
         "offset_account": {
           "name": "offset_account",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "accounts": {
+          "name": "accounts",
           "type": "jsonb",
           "primaryKey": false,
           "notNull": false
@@ -589,6 +595,26 @@
           "type": "jsonb",
           "primaryKey": false,
           "notNull": false
+        },
+        "accounts": {
+          "name": "accounts",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'{}'::jsonb"
+        },
+        "default_term_months": {
+          "name": "default_term_months",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "inactive": {
+          "name": "inactive",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true,
+          "default": false
         },
         "builtin_key": {
           "name": "builtin_key",
@@ -1934,100 +1960,6 @@
           "primaryKey": false,
           "notNull": true,
           "default": "'[]'::jsonb"
-        }
-      },
-      "indexes": {},
-      "foreignKeys": {},
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {},
-      "policies": {},
-      "checkConstraints": {},
-      "isRLSEnabled": false
-    },
-    "public.payout_rules": {
-      "name": "payout_rules",
-      "schema": "",
-      "columns": {
-        "id": {
-          "name": "id",
-          "type": "uuid",
-          "primaryKey": true,
-          "notNull": true
-        },
-        "organization_id": {
-          "name": "organization_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "created_at": {
-          "name": "created_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        },
-        "updated_at": {
-          "name": "updated_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        },
-        "name": {
-          "name": "name",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "''"
-        },
-        "message": {
-          "name": "message",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "''"
-        },
-        "reason_key": {
-          "name": "reason_key",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "filters": {
-          "name": "filters",
-          "type": "jsonb",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "'[]'::jsonb"
-        },
-        "requirements": {
-          "name": "requirements",
-          "type": "jsonb",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "'[]'::jsonb"
-        },
-        "require_all": {
-          "name": "require_all",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true,
-          "default": 1
-        },
-        "enabled": {
-          "name": "enabled",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true,
-          "default": 1
-        },
-        "sort_order": {
-          "name": "sort_order",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true,
-          "default": 0
         }
       },
       "indexes": {},

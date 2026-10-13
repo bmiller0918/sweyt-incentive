@@ -3,6 +3,7 @@ import { api, type ImportSummary } from './api';
 import { AccountingSettingsView } from './components/accounting/AccountingSettingsView';
 import { AmortizationRegisterView } from './components/accounting/AmortizationRegisterView';
 import { RollForwardReportView, WaterfallReportView } from './components/accounting/AmortizationReportsView';
+import { AmortizationMethodsView } from './components/accounting/AmortizationMethodsView';
 import { AmortizationTypesView } from './components/accounting/AmortizationTypesView';
 import { JournalsView, ReclassView } from './components/accounting/JournalsView';
 import { MonthlyCloseView } from './components/accounting/MonthlyCloseView';
@@ -31,6 +32,7 @@ type Screen =
   | 'holdreasons'
   | 'acctpolicy'
   | 'amorttypes'
+  | 'amortmethods'
   | 'register'
   | 'rollforward'
   | 'waterfall'
@@ -81,6 +83,7 @@ const SECTIONS: NavSection[] = [
     items: [
       { key: 'accounting-settings', label: 'Accounting Settings', screen: 'acctpolicy' },
       { key: 'amortization-types', label: 'Amortization Types', screen: 'amorttypes' },
+      { key: 'amortization-methods', label: 'Amortization Methods', screen: 'amortmethods' },
       {
         key: 'amortization-registers',
         label: 'Amortization Register',
@@ -247,9 +250,11 @@ export default function App() {
       case 'holdreasons':
         return <SettingsView tab="hold-reasons" />;
       case 'acctpolicy':
-        return <AccountingSettingsView />;
+        return <AccountingSettingsView onOpenMethods={() => go('amortization-methods')} />;
       case 'amorttypes':
         return <AmortizationTypesView />;
+      case 'amortmethods':
+        return <AmortizationMethodsView />;
       case 'register':
         return (
           <AmortizationRegisterView

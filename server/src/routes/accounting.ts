@@ -21,7 +21,10 @@ import {
   scheduleFor,
   suggestTypeKey,
   validateMethod,
+  assetAccount,
+  assetAccountsFor,
   futureAmortization,
+  typeAccounts,
   manualSchedule,
   rescheduleAsset,
   rollforwardRange,
@@ -57,13 +60,14 @@ import { toCsv } from '../export.js';
 const ym = z.string().regex(/^\d{4}-(0[1-9]|1[0-2])$/);
 const glAccount = z.object({ number: z.string().max(40), name: z.string().min(1).max(200) });
 const methodDef = z.object({
-  kind: z.enum(['straight_line', 'yearly_percent', 'monthly_percent', 'immediate']),
+  kind: z.enum(['straight_line', 'yearly_percent', 'monthly_percent', 'formula', 'immediate']),
   periodBasis: z.enum(['contract_term', 'fixed_months']).default('contract_term'),
   months: z.number().int().min(1).max(600).nullable().default(null),
   termMultiplier: z.number().min(0.1).max(20).default(1),
   yearPercents: z.array(z.number().min(0).max(100)).max(20).default([]),
   monthPercents: z.array(z.number().min(0).max(100)).max(240).default([]),
   startBasis: z.enum(['contract_start', 'pay_month', 'month_after_pay']).default('contract_start'),
+  formula: z.string().max(2000).nullable().optional(),
 });
 const methodSchema = z.object({ name: z.string().min(1), description: z.string().nullable().optional(), def: methodDef });
 const typeSchema = z.object({
@@ -73,7 +77,25 @@ const typeSchema = z.object({
   methodId: z.string().uuid().nullable().optional(),
   expenseAccount: glAccount.nullable().optional(),
   amortizationAccount: glAccount.nullable().optional(),
+  accounts: z
+    .object({ deferredCurrent: glAccount, deferredNoncurrent: glAccount, impairmentExpense: glAccount, accruedCommissions: glAccount })
+    .partial()
+    .optional(),
+  defaultTermMonths: z.number().int().min(1).max(600).nullable().optional(),
+  inactive: z.boolean().optional(),
   employeeTypeIds: z.array(z.string().uuid()).optional(),
+});
+/** Columns a type's create or update writes. */
+const typeValues = (body: z.infer<typeof typeSchema>) => ({
+  name: body.name,
+  description: body.description ?? null,
+  treatment: body.treatment,
+  methodId: body.methodId ?? null,
+  expenseAccount: body.expenseAccount ?? null,
+  amortizationAccount: body.amortizationAccount ?? null,
+  accounts: body.accounts ?? {},
+  defaultTermMonths: body.defaultTermMonths ?? null,
+  inactive: body.inactive ?? false,
 });
 const settingsSchema = z.object({
   defaultMethodId: z.string().uuid().nullable(),
@@ -153,6 +175,8 @@ export async function loadMethodsAndTypes(db: Db): Promise<{ methods: NamedMetho
     methodId: t.methodId,
     expenseAccount: t.expenseAccount ?? null,
     amortizationAccount: t.amortizationAccount ?? null,
+    accounts: t.accounts ?? {},
+    defaultTermMonths: t.defaultTermMonths,
   }));
   return { methods, types };
 }
@@ -190,6 +214,7 @@ const toAsset = (r: AssetDbRow): RegisterAsset => ({
   origin: r.origin,
   opening: r.opening,
   offsetAccount: r.offsetAccount ?? null,
+  accounts: r.accounts ?? null,
 });
 
 /** AMRT0001-style id of a register row. */
@@ -278,8 +303,12 @@ export async function accountingRoutes(app: FastifyInstance, db: Db) {
     const errors = validateMethod(body.def);
     if (errors.length) return { errors, schedule: null };
     const s = await loadSettings(db);
-    const sched = scheduleFor(body.amount, body.def, { payMonth: body.payMonth, contractStart: body.contractStart, termMonths: body.termMonths, defaultTermMonths: s.defaultTermMonths }, body.practicalExpedient);
-    return { errors, schedule: sched };
+    try {
+      const sched = scheduleFor(body.amount, body.def, { payMonth: body.payMonth, contractStart: body.contractStart, termMonths: body.termMonths, defaultTermMonths: s.defaultTermMonths }, body.practicalExpedient);
+      return { errors, schedule: sched };
+    } catch (e) {
+      return { errors: [(e as Error).message], schedule: null };
+    }
   });
 
   // -- Types -----------------------------------------------------------------
@@ -287,8 +316,21 @@ export async function accountingRoutes(app: FastifyInstance, db: Db) {
     const rows = await db.select().from(amortizationTypes).orderBy(asc(amortizationTypes.sortOrder), asc(amortizationTypes.name));
     const roles = await db.select({ id: employeeTypes.id, name: employeeTypes.name, amortizationTypeId: employeeTypes.amortizationTypeId, costTreatment: employeeTypes.costTreatment }).from(employeeTypes).orderBy(asc(employeeTypes.name));
     const builtinById = new Map(rows.filter((r) => r.builtinKey).map((r) => [r.builtinKey!, r.id]));
+    // What each type holds in the register at the last closed month.
+    const ps = await periods();
+    const asOf = ps[ps.length - 1]?.month ?? null;
+    const usage = new Map<string, { count: number; balance: number }>();
+    if (asOf)
+      for (const a of await allAssets()) {
+        const u = usage.get(a.typeName) ?? { count: 0, balance: 0 };
+        const rem = assetPosition(a, asOf).remaining;
+        if (rem !== 0) u.count++;
+        u.balance = Math.round((u.balance + rem) * 100) / 100;
+        usage.set(a.typeName, u);
+      }
     return {
-      types: rows.map((t) => ({ ...t, employeeTypes: roles.filter((r) => r.amortizationTypeId === t.id).map((r) => ({ id: r.id, name: r.name })) })),
+      asOf,
+      types: rows.map((t) => ({ ...t, usage: usage.get(t.name) ?? { count: 0, balance: 0 }, employeeTypes: roles.filter((r) => r.amortizationTypeId === t.id).map((r) => ({ id: r.id, name: r.name })) })),
       employeeTypes: roles.map((r) => {
         const key = suggestTypeKey(r.name);
         return { ...r, suggestedTypeId: r.amortizationTypeId ? null : key ? (builtinById.get(key) ?? null) : null };
@@ -305,7 +347,7 @@ export async function accountingRoutes(app: FastifyInstance, db: Db) {
     const body = typeSchema.parse(req.body);
     const [row] = await db
       .insert(amortizationTypes)
-      .values({ name: body.name, description: body.description ?? null, treatment: body.treatment, methodId: body.methodId ?? null, expenseAccount: body.expenseAccount ?? null, amortizationAccount: body.amortizationAccount ?? null, sortOrder: 100 })
+      .values({ ...typeValues(body), sortOrder: 100 })
       .returning();
     await setRoles(row.id, body.employeeTypeIds);
     await db.insert(auditLog).values({ actor: actor(req), action: 'amortization_type.create', entityType: 'amortization_type', entityId: row.id, detail: body });
@@ -316,7 +358,7 @@ export async function accountingRoutes(app: FastifyInstance, db: Db) {
     const body = typeSchema.parse(req.body);
     const [row] = await db
       .update(amortizationTypes)
-      .set({ name: body.name, description: body.description ?? null, treatment: body.treatment, methodId: body.methodId ?? null, expenseAccount: body.expenseAccount ?? null, amortizationAccount: body.amortizationAccount ?? null, updatedAt: new Date() })
+      .set({ ...typeValues(body), updatedAt: new Date() })
       .where(eq(amortizationTypes.id, id))
       .returning();
     if (!row) return reply.code(404).send({ error: 'Type not found' });
@@ -409,6 +451,7 @@ export async function accountingRoutes(app: FastifyInstance, db: Db) {
       booked: bookedTotals(ps.flatMap((p) => ((p.summary as { booked?: BookedLine[] }).booked ?? []))),
       registerStart: ps[0]?.month ?? month,
       priorCurrent: last?.currentPortion ?? 0,
+      priorCurrentByAccount: (last?.summary as { reclass?: { byAccount?: Record<string, number> } } | undefined)?.reclass?.byAccount,
       settings,
       methods,
       types,
@@ -749,6 +792,7 @@ export async function accountingRoutes(app: FastifyInstance, db: Db) {
       opening: b.opening,
       offsetAccount: b.opening ? null : b.offsetAccount,
       amortizationAccount: type?.amortizationAccount ?? null,
+      accounts: assetAccountsFor(type),
       ...sched,
     };
   };
@@ -835,18 +879,20 @@ export async function accountingRoutes(app: FastifyInstance, db: Db) {
     }
     const remainingPeriods = months.filter((m) => (!pos || !lastClosed || m > lastClosed) && !(r.writtenOffMonth && m >= r.writtenOffMonth)).length;
 
-    const deferredCredit = settings.reclassEnabled && settings.reclassMode === 'true_up' ? A.deferredCurrent : A.deferredNoncurrent;
+    const deferredCredit = assetAccount(a, settings.reclassEnabled && settings.reclassMode === 'true_up' ? 'deferredCurrent' : 'deferredNoncurrent', A);
+    const { types } = await loadMethodsAndTypes(db);
+    const typeAccts = typeAccounts(types.find((t) => t.id === r.typeId) ?? types.find((t) => t.name === r.typeName), A);
     const accounts = [
-      { role: 'Asset (non-current)', account: A.deferredNoncurrent, note: 'Debited when capitalized' },
-      ...(settings.reclassEnabled ? [{ role: 'Asset (current)', account: A.deferredCurrent, note: 'The next 12 months, moved by the monthly reclass' }] : []),
-      { role: 'Amortization expense', account: r.amortizationAccount ?? A.amortizationExpense, note: `Debited monthly to ${r.department}, against ${deferredCredit.number} ${deferredCredit.name}` },
-      { role: 'Write-off expense', account: A.impairmentExpense, note: 'If written off' },
+      { role: 'Asset (non-current)', account: assetAccount(a, 'deferredNoncurrent', A), note: 'Debited when capitalized' },
+      ...(settings.reclassEnabled ? [{ role: 'Asset (current)', account: assetAccount(a, 'deferredCurrent', A), note: 'The next 12 months, moved by the monthly reclass' }] : []),
+      { role: 'Amortization expense', account: assetAccount(a, 'amortizationExpense', A), note: `Debited monthly to ${r.department}, against ${deferredCredit.number} ${deferredCredit.name}` },
+      { role: 'Write-off expense', account: assetAccount(a, 'impairmentExpense', A), note: 'If written off' },
       ...(r.opening
         ? []
         : [
             {
               role: 'Offset (credit when capitalized)',
-              account: r.origin === 'manual' ? (r.offsetAccount ?? A.accruedCommissions) : A.accruedCommissions,
+              account: r.origin === 'manual' ? (r.offsetAccount ?? A.accruedCommissions) : typeAccts.accruedCommissions,
               note: r.origin === 'manual' ? 'Chosen on the amortization' : 'Commissions owed to the payee',
             },
           ]),
@@ -867,7 +913,7 @@ export async function accountingRoutes(app: FastifyInstance, db: Db) {
       asOf: lastClosed,
       openMonth,
       schedule,
-      accounts,
+      accountRoles: accounts,
       history: r.history,
       editable: !booked,
     };
@@ -976,6 +1022,7 @@ export async function accountingRoutes(app: FastifyInstance, db: Db) {
       .update(amortizationAssets)
       .set({
         department: b.department,
+        // Future amortization follows the new type's expense account; the balance stays in the deferred accounts it was booked to.
         ...(type ? { typeId: type.id, typeName: type.name, amortizationAccount: type.amortizationAccount ?? null } : {}),
         history: [...r.history, note(req, 'transferred', changes, { effectiveMonth: r.bookedMonth ? openMonthOf(ps) : null, note: b.note })],
         updatedAt: new Date(),
