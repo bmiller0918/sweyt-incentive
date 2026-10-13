@@ -1,6 +1,5 @@
 import type { FeatureKey } from '@commissions/shared';
-import { useCallback, useEffect, useMemo, useState } from 'react';
-import { api, type ImportSummary } from './api';
+import { useMemo, useState } from 'react';
 import { AccountingSettingsView } from './components/accounting/AccountingSettingsView';
 import { AmortizationRegisterView } from './components/accounting/AmortizationRegisterView';
 import { RollForwardReportView, WaterfallReportView } from './components/accounting/AmortizationReportsView';
@@ -8,25 +7,22 @@ import { AmortizationMethodsView } from './components/accounting/AmortizationMet
 import { AmortizationTypesView } from './components/accounting/AmortizationTypesView';
 import { JournalsView, ReclassView } from './components/accounting/JournalsView';
 import { MonthlyCloseView } from './components/accounting/MonthlyCloseView';
-import { CommissionsView } from './components/CommissionsView';
+import { CommissionsView, type PayrollNav } from './components/CommissionsView';
 import { ComingSoon } from './components/ComingSoon';
 import { DashboardView } from './components/DashboardView';
 import { EmployeeTypesView } from './components/EmployeeTypesView';
 import { EmployeesView } from './components/EmployeesView';
-import { ImportView } from './components/ImportView';
 import { ProgramsView } from './components/ProgramsView';
 import { PayoutRulesView } from './components/PayoutRulesView';
 import { SettingsView } from './components/SettingsView';
 import { useSettings } from './components/SettingsProvider';
 import { SetupView, UpgradeNotice, type SetupTarget } from './components/setup/SetupView';
-import { UploadFlow } from './components/UploadFlow';
 import { useAuth } from './components/AuthGate';
 
 /** The existing screens a sidebar item can open. 'soon' = a page that isn't built yet. */
 type Screen =
   | 'dashboard'
   | 'runs'
-  | 'imports'
   | 'incentives'
   | 'employees'
   | 'types'
@@ -52,14 +48,6 @@ const PINNED: NavItem[] = [{ key: 'overview', label: 'Overview', screen: 'dashbo
 
 /** Sidebar layout, designed in Sidebar Studio (Oct 2026). */
 const SECTIONS: NavSection[] = [
-  {
-    key: 'data',
-    label: 'Data & Imports',
-    items: [
-      { key: 'integrations', label: 'Integrations', screen: 'soon' },
-      { key: 'imports', label: 'Imports', screen: 'imports' },
-    ],
-  },
   {
     key: 'plans',
     label: 'Comp Plans',
@@ -133,7 +121,6 @@ const SECTIONS: NavSection[] = [
 
 /** Sidebar items a system feature (Setup › System Features) can hide. */
 const FEATURE_OF: Record<string, FeatureKey> = {
-  integrations: 'integrations',
   'spiffs-accelerators-bonus': 'incentives',
   'mid-year-recasts': 'recasts',
   clawbacks: 'clawbacks',
@@ -149,7 +136,7 @@ const FEATURE_OF: Record<string, FeatureKey> = {
   'annual-plan-design': 'planDesign',
 };
 
-type Page = { key: string; importId?: string | null; setId?: string | null; uploading?: boolean; assetId?: string | null };
+type Page = { key: string; assetId?: string | null; payroll?: PayrollNav };
 
 /** key -> item, its section label, and its parent (for sub-pages). */
 function indexNav() {
@@ -175,42 +162,24 @@ export default function App() {
     () => SECTIONS.map((s) => ({ ...s, items: s.items.filter((it) => !FEATURE_OF[it.key] || feature(FEATURE_OF[it.key])) })).filter((s) => s.items.length > 0),
     [feature],
   );
-  const [imports, setImports] = useState<ImportSummary[]>([]);
   const [page, setPage] = useState<Page>({ key: 'overview' });
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
-  const [error, setError] = useState<string | null>(null);
-
-  const refresh = useCallback(async () => {
-    try {
-      const list = await api.listImports();
-      setImports(list);
-      return list;
-    } catch (e) {
-      setError((e as Error).message);
-      return [];
-    }
-  }, []);
-
-  useEffect(() => {
-    refresh();
-  }, [refresh]);
 
   const go = (key: string) => setPage({ key });
   const openAsset = (assetId: string) => setPage({ key: 'amortization-registers', assetId });
-  const openImport = (importId: string | null, setId: string | null = null) => setPage({ key: 'imports', importId, setId });
-  const openUpload = () => setPage({ key: 'imports', importId: null, uploading: true });
+  // Imports live on the Commission Payroll screen.
+  const openPayroll = (payroll: PayrollNav) => setPage({ key: 'commission-payroll', payroll });
+  const openImport = (importId: string | null, setId: string | null = null) => openPayroll({ tab: 'imports', importId, setId });
   const openSetupTarget = (t: SetupTarget) => {
-    if (t === 'upload') return openUpload();
-    if (t === 'imports') return openImport(imports[0]?.id ?? null);
-    const key: Record<Exclude<SetupTarget, 'upload' | 'imports'>, string> = { employees: 'employees', types: 'employee-types', users: 'users', plans: 'plans-rates-quotas', holdreasons: 'payout-rules', acctpolicy: 'accounting-settings' };
+    if (t === 'upload') return openPayroll({ tab: 'imports', uploading: true });
+    if (t === 'imports') return openPayroll({ tab: 'imports' });
+    if (t === 'templates') return openPayroll({ tab: 'templates' });
+    const key: Record<Exclude<SetupTarget, 'upload' | 'imports' | 'templates'>, string> = { employees: 'employees', types: 'employee-types', users: 'users', plans: 'plans-rates-quotas', holdreasons: 'payout-rules', acctpolicy: 'accounting-settings' };
     go(key[t]);
   };
 
   const entry = nav.get(page.key) ?? nav.get('overview')!;
   const screen = entry.item.screen;
-
-  // "Imports" with nothing selected shows the first import, or the upload screen.
-  const selectedImport = screen === 'imports' && !page.uploading ? (page.importId ?? imports[0]?.id ?? null) : null;
 
   const renderItem = (it: NavItem, depth: number) => {
     const active = page.key === it.key;
@@ -240,24 +209,6 @@ export default function App() {
           )}
         </button>
         {open && <div className="nav-sub mt-0.5 space-y-0.5">{it.children!.map((c) => renderItem(c, depth + 1))}</div>}
-        {/* Imports: the list of spreadsheets lives one level deeper. */}
-        {it.screen === 'imports' && (
-          <div className="nav-sub mt-0.5 space-y-0.5">
-            {imports.map((imp) => (
-              <button
-                key={imp.id}
-                onClick={() => openImport(imp.id)}
-                className={`nav-item py-1 text-xs ${screen === 'imports' && !page.uploading && selectedImport === imp.id ? 'nav-item-active' : ''}`}
-                title={`${imp.rowCount.toLocaleString()} rows · ${new Date(imp.createdAt).toLocaleDateString()}`}
-              >
-                <span className="truncate">{imp.name}</span>
-              </button>
-            ))}
-            <button className={`nav-item nav-add py-1 text-xs ${screen === 'imports' && page.uploading ? 'nav-item-active' : ''}`} onClick={openUpload}>
-              + New import
-            </button>
-          </div>
-        )}
       </div>
     );
   };
@@ -267,13 +218,13 @@ export default function App() {
       case 'dashboard':
         return (
           <DashboardView
-            onOpenRuns={() => go('commission-payroll')}
+            onOpenRuns={() => openPayroll({ tab: 'runs' })}
             onOpenImport={(id) => openImport(id)}
             onOpenIncentive={(importId, setId) => openImport(importId, setId)}
           />
         );
       case 'runs':
-        return <CommissionsView />;
+        return <CommissionsView key={page.key} nav={page.payroll ?? {}} onNavigate={(n) => setPage({ key: page.key, payroll: n })} />;
       case 'incentives':
         return <ProgramsView />;
       case 'employees':
@@ -314,28 +265,6 @@ export default function App() {
         return <SetupView onNavigate={openSetupTarget} />;
       case 'soon':
         return <ComingSoon key={entry.item.key} title={entry.item.label} section={[entry.section, entry.parent?.label].filter(Boolean).join(' › ')} />;
-      case 'imports':
-        return page.uploading || !selectedImport ? (
-          <UploadFlow
-            onDone={async (imp) => {
-              await refresh();
-              openImport(imp.id);
-            }}
-            onCancel={imports.length ? () => openImport(imports[0].id) : undefined}
-          />
-        ) : (
-          <ImportView
-            key={`${selectedImport}:${page.setId ?? ''}`}
-            importId={selectedImport}
-            initialSetId={page.setId ?? null}
-            onDeleted={async () => {
-              const list = await refresh();
-              if (list.length) openImport(list[0].id);
-              else openUpload();
-            }}
-            onRenamed={refresh}
-          />
-        );
     }
   };
 
@@ -391,14 +320,6 @@ export default function App() {
       </aside>
 
       <main className="flex min-w-0 flex-1 flex-col">
-        {error && (
-          <div className="border-b border-red-200 bg-red-50 px-4 py-2 text-sm text-red-700">
-            {error}{' '}
-            <button className="underline" onClick={() => setError(null)}>
-              dismiss
-            </button>
-          </div>
-        )}
         <UpgradeNotice />
         {renderScreen()}
       </main>

@@ -1,8 +1,11 @@
-import { LINE_STATUS_LABELS, OPERATOR_LABELS, componentKey, familyOf, operandArity, type Condition, type HoldRule, type LineStatus, type Operator } from '@commissions/shared';
+import { LINE_STATUS_LABELS, templateProblems, type Criteria, type LineStatus } from '@commissions/shared';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useSettings } from './SettingsProvider';
-import { api, type CommissionLine, type CommissionRun, type CompPlan, type HoldReason, type ImportColumn, type ImportDetail, type ImportSummary, type Subledger } from '../api';
+import { api, type CommissionLine, type CommissionRun, type HoldReason, type ImportSummary, type PayrollTemplate, type Subledger } from '../api';
+import { ImportView } from './ImportView';
+import { PayrollTemplatesView } from './PayrollTemplatesView';
 import { PeriodPicker } from './PeriodPicker';
+import { UploadFlow } from './UploadFlow';
 
 const money = (n: number | null | undefined) => (n === null || n === undefined ? '' : n.toLocaleString(undefined, { style: 'currency', currency: 'USD' }));
 const pct = (n: number | null) => (n === null ? '' : `${Math.round(n * 10000) / 100}%`);
@@ -10,106 +13,169 @@ const num = (n: number | null) => (n === null ? '' : n.toLocaleString());
 const today = () => new Date().toISOString().slice(0, 10);
 const monthLabel = (ym: string) => new Date(`${ym}-01T00:00:00Z`).toLocaleDateString(undefined, { month: 'short', year: 'numeric', timeZone: 'UTC' });
 
-/** Operators offered in the hold-rule editor, by column family. Enough for the usual "box not ticked" checks. */
-const RULE_OPERATORS: Record<ReturnType<typeof familyOf>, Operator[]> = {
-  text: ['is', 'is_not', 'contains', 'not_contains', 'empty', 'not_empty'],
-  number: ['eq', 'neq', 'gt', 'gte', 'lt', 'lte', 'empty', 'not_empty'],
-  date: ['before', 'after', 'on_or_before', 'on_or_after', 'empty', 'not_empty'],
-  boolean: ['is_true', 'is_false', 'empty', 'not_empty'],
-};
-
-interface Draft {
-  name: string;
-  importId: string;
-  repField: string;
-  payees: { role: string; field: string }[];
-  amountField: string;
-  dateField: string;
-  dealKeyField: string;
-  from: string | null;
-  to: string | null;
-  holdRules: HoldRule[];
-  payLagMonths: number;
-  contractStartField: string;
-  termMonthsField: string;
-  contractEndField: string;
-  /** Component name -> column; '' = not mapped. */
-  components: Record<string, string>;
-  /** Gross profit column for percent-of-margin quotas; '' = not mapped. */
-  marginField: string;
-  /** Pay enabled spiffs, accelerators and bonuses in this run. */
-  includePrograms: boolean;
-}
-
-/** Guess the obvious columns so most runs are two clicks. */
-function guess(imp: ImportDetail): Pick<Draft, 'repField' | 'amountField' | 'dateField' | 'dealKeyField' | 'contractStartField' | 'termMonthsField' | 'contractEndField'> {
-  const names = imp.columns.map((c) => c.name);
-  const find = (re: RegExp, type?: (t: string) => boolean) => names.find((n) => re.test(n) && (!type || type(imp.columns.find((c) => c.name === n)!.type))) ?? '';
-  const isNum = (t: string) => ['currency', 'decimal', 'integer'].includes(t);
-  const isDate = (t: string) => t === 'date' || t === 'datetime';
-  return {
-    repField: find(/\b(rep|owner|salesperson|employee|ae)\b/i) || find(/rep|owner/i),
-    amountField: find(/\b(acv|amount|arr|bookings?|value)\b/i, isNum) || find(/./, isNum),
-    dateField: find(/close|booked|signed/i, isDate) || find(/./, isDate),
-    dealKeyField: find(/\b(deal|opportunity|opp)\b.*\b(id|number|#)/i) || find(/^id$/i),
-    contractStartField: find(/(subscription|contract|service).*start|start.*date|go.?live/i, isDate),
-    termMonthsField: find(/term|months|duration/i, isNum),
-    contractEndField: find(/(subscription|contract|service).*end|end.*date/i, isDate),
-  };
-}
-
-/** A gross profit / margin column, by name. */
-function guessMargin(imp: ImportDetail): string {
-  const isNum = (t: string) => ['currency', 'decimal', 'integer'].includes(t);
-  return imp.columns.find((c) => isNum(c.type) && /gross.?profit|\bgp\b|margin/i.test(c.name) && !/%|percent|pct/i.test(c.name))?.name ?? '';
-}
-
 /** The deal a line pays on, or the program for spiff / accelerator / bonus lines without one. */
 const lineLabel = (l: CommissionLine) => l.dealKey ?? (l.rowIndex < 0 ? (l.planName ?? 'Incentive') : `row ${l.rowIndex + 1}`);
 
 const pctLabel = (n: number | null) => (n === null ? '' : `${Math.round(n * 1000) / 10}%`);
 
-/** Map each plan component to the column with the same name, or to the amount column when it is the only component. */
-function guessComponents(imp: ImportDetail, names: string[]): Record<string, string> {
-  const isNum = (t: string) => ['currency', 'decimal', 'integer'].includes(t);
-  const numCols = imp.columns.filter((c) => isNum(c.type)).map((c) => c.name);
-  const norm = (s: string) => s.toLowerCase().replace(/[^a-z0-9]+/g, '');
-  const out: Record<string, string> = {};
-  for (const n of names) {
-    const nn = norm(n);
-    // A name that normalizes to '' (e.g. only non-ASCII) must not partial-match everything via includes('').
-    const match = nn
-      ? (numCols.find((c) => norm(c) === nn) ??
-        numCols.find((c) => {
-          const cc = norm(c);
-          return !!cc && (cc.includes(nn) || nn.includes(cc));
-        }))
-      : undefined;
-    out[n] = match ?? (names.length === 1 ? (guess(imp).amountField ?? '') : '');
-  }
-  return out;
+/**
+ * Commission Payroll: dump in the data (Imports), filter it by date and
+ * summarize it, then apply payroll templates (one per employee type) to pay
+ * it as a run. Runs keep their lines for holds, statements and accounting.
+ */
+export type PayrollTab = 'imports' | 'templates' | 'runs';
+export interface PayrollNav {
+  tab?: PayrollTab;
+  importId?: string | null;
+  /** A saved view to open on the import. */
+  setId?: string | null;
+  uploading?: boolean;
+  runId?: string | null;
 }
 
-const newRule = (reasonKey: string, field: string): HoldRule => ({
-  id: `r${Math.random().toString(36).slice(2, 8)}`,
-  reasonKey,
-  condition: { type: 'condition', id: `c${Math.random().toString(36).slice(2, 8)}`, field, operator: 'is', values: [{ kind: 'literal', value: '' }] },
-});
+const TABS: { key: PayrollTab; label: string }[] = [
+  { key: 'imports', label: 'Imports' },
+  { key: 'templates', label: 'Payroll templates' },
+  { key: 'runs', label: 'Runs' },
+];
 
-export function CommissionsView() {
-  const { settings } = useSettings();
-  const [runs, setRuns] = useState<CommissionRun[]>([]);
-  const [imports, setImports] = useState<ImportSummary[]>([]);
-  const [reasons, setReasons] = useState<HoldReason[]>([]);
-  const [plans, setPlans] = useState<CompPlan[]>([]);
-  const [selectedId, setSelectedId] = useState<string | 'new' | null>(null);
-  const [run, setRun] = useState<(CommissionRun & { lines: CommissionLine[] }) | null>(null);
-  const [draft, setDraft] = useState<Draft | null>(null);
-  const [importDetail, setImportDetail] = useState<ImportDetail | null>(null);
+export function CommissionsView({ nav, onNavigate }: { nav: PayrollNav; onNavigate: (n: PayrollNav) => void }) {
+  const [imports, setImports] = useState<ImportSummary[] | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [busy, setBusy] = useState(false);
+  const [runFrom, setRunFrom] = useState<{ importId: string; criteria?: Criteria; params?: Record<string, string> } | 'pick' | null>(null);
+  const tab = nav.tab ?? 'runs';
+
+  const refreshImports = useCallback(async () => {
+    try {
+      const list = await api.listImports();
+      setImports(list);
+      return list;
+    } catch (e) {
+      setError((e as Error).message);
+      return [];
+    }
+  }, []);
+  useEffect(() => {
+    refreshImports();
+  }, [refreshImports]);
+
+  const openImport = (importId: string | null) => onNavigate({ tab: 'imports', importId });
+  const openUpload = () => onNavigate({ tab: 'imports', uploading: true });
+  const selectedImport = tab === 'imports' && !nav.uploading ? (nav.importId ?? imports?.[0]?.id ?? null) : null;
+
+  return (
+    <div className="flex h-full flex-col">
+      <div className="flex items-end gap-1 border-b border-slate-200 bg-panel px-4 pt-2 text-sm">
+        <div className="mr-4 pb-2">
+          <div className="text-[11px] text-slate-400">Payouts</div>
+          <div className="font-semibold">Commission Payroll</div>
+        </div>
+        {TABS.map((t) => (
+          <button
+            key={t.key}
+            className={`-mb-px border-b-2 px-3 py-2 ${tab === t.key ? 'border-indigo-600 font-semibold text-slate-900' : 'border-transparent text-slate-500 hover:text-slate-800'}`}
+            onClick={() => onNavigate({ tab: t.key })}
+          >
+            {t.label}
+          </button>
+        ))}
+      </div>
+      {error && (
+        <div className="border-b border-red-200 bg-red-50 px-4 py-1.5 text-xs text-red-700">
+          {error}{' '}
+          <button className="underline" onClick={() => setError(null)}>
+            dismiss
+          </button>
+        </div>
+      )}
+
+      <div className="flex min-h-0 flex-1">
+        {tab === 'imports' && imports && (
+          <>
+            <aside className="flex w-56 shrink-0 flex-col border-r border-slate-200 bg-panel">
+              <div className="flex items-center border-b border-slate-200 px-3 py-2">
+                <span className="text-sm font-semibold">Imports</span>
+                <div className="flex-1" />
+                <button className="btn btn-sm btn-primary" onClick={openUpload}>
+                  + New import
+                </button>
+              </div>
+              <div className="flex-1 overflow-auto p-2">
+                {imports.map((imp) => (
+                  <button
+                    key={imp.id}
+                    onClick={() => openImport(imp.id)}
+                    className={`block w-full rounded-md px-2 py-1.5 text-left text-sm hover:bg-slate-100 ${selectedImport === imp.id ? 'bg-indigo-50 text-indigo-700' : 'text-slate-700'}`}
+                  >
+                    <div className="truncate font-medium">{imp.name}</div>
+                    <div className="truncate text-xs text-slate-400">
+                      {imp.rowCount.toLocaleString()} rows · {new Date(imp.createdAt).toLocaleDateString()}
+                    </div>
+                  </button>
+                ))}
+                {imports.length === 0 && <div className="px-2 py-4 text-xs text-slate-400">No imports yet. Export what you need from your CRM or ERP and drop it in.</div>}
+              </div>
+            </aside>
+            <main className="flex min-w-0 flex-1 flex-col overflow-hidden">
+              {nav.uploading || !selectedImport ? (
+                <div className="flex-1 overflow-auto">
+                  <UploadFlow
+                    onDone={async (imp) => {
+                      await refreshImports();
+                      openImport(imp.id);
+                    }}
+                    onCancel={imports.length ? () => openImport(imports[0].id) : undefined}
+                  />
+                </div>
+              ) : (
+                <ImportView
+                  key={`${selectedImport}:${nav.setId ?? ''}`}
+                  importId={selectedImport}
+                  initialSetId={nav.setId ?? null}
+                  onRunPayroll={(criteria, params) => setRunFrom({ importId: selectedImport, criteria, params })}
+                  onDeleted={async () => {
+                    const list = await refreshImports();
+                    if (list.length) openImport(list[0].id);
+                    else openUpload();
+                  }}
+                  onRenamed={refreshImports}
+                />
+              )}
+            </main>
+          </>
+        )}
+
+        {tab === 'templates' && <PayrollTemplatesView onError={setError} />}
+
+        {tab === 'runs' && <RunsTab runId={nav.runId ?? null} onOpenRun={(id) => onNavigate({ tab: 'runs', runId: id })} onNewRun={() => setRunFrom('pick')} onImports={() => onNavigate({ tab: 'imports' })} onError={setError} />}
+      </div>
+
+      {runFrom && imports && (
+        <RunPayrollDialog
+          imports={imports}
+          source={runFrom === 'pick' ? null : runFrom}
+          onTemplates={() => {
+            setRunFrom(null);
+            onNavigate({ tab: 'templates' });
+          }}
+          onClose={() => setRunFrom(null)}
+          onCreated={(run) => {
+            setRunFrom(null);
+            onNavigate({ tab: 'runs', runId: run.id });
+          }}
+        />
+      )}
+    </div>
+  );
+}
+
+// -- Runs ----------------------------------------------------------------------
+
+function RunsTab({ runId, onOpenRun, onNewRun, onImports, onError }: { runId: string | null; onOpenRun: (id: string) => void; onNewRun: () => void; onImports: () => void; onError: (m: string) => void }) {
+  const [runs, setRuns] = useState<CommissionRun[] | null>(null);
+  const [reasons, setReasons] = useState<HoldReason[]>([]);
+  const [run, setRun] = useState<(CommissionRun & { lines: CommissionLine[] }) | null>(null);
   const [showReasons, setShowReasons] = useState(false);
-  const [payoutRuleCount, setPayoutRuleCount] = useState(0);
 
   const refresh = useCallback(async () => {
     const r = await api.listCommissionRuns();
@@ -117,121 +183,43 @@ export function CommissionsView() {
     return r;
   }, []);
   const refreshReasons = useCallback(() => api.listHoldReasons().then(setReasons), []);
-
   useEffect(() => {
-    api.listPayoutRules().then((rs) => setPayoutRuleCount(rs.filter((r) => r.enabled).length)).catch(() => undefined);
-    Promise.all([refresh(), api.listImports(), refreshReasons(), api.listPlans()])
-      .then(([r, imps, , p]) => {
-        setImports(imps);
-        setPlans(p);
-        setSelectedId(r.length ? r[0].id : 'new');
-      })
-      .catch((e) => setError(e.message));
-  }, [refresh, refreshReasons]);
+    Promise.all([refresh(), refreshReasons()]).catch((e) => onError(e.message));
+  }, [refresh, refreshReasons, onError]);
 
-  /** Every component name across all plans, one per engine key, so a run can map each to a column. */
-  const componentNames = useMemo(() => {
-    const seen = new Map<string, string>();
-    for (const p of plans) {
-      for (const c of p.structure?.components ?? []) {
-        const key = componentKey(c.name);
-        if (key && !seen.has(key)) seen.set(key, c.name.trim());
-      }
-    }
-    return [...seen.values()];
-  }, [plans]);
-
-  /** Any plan paying a percent of margin needs the run to name its gross profit column. */
-  const usesMargin = useMemo(() => plans.some((p) => p.quotas?.percentOfMargin.applies), [plans]);
-
-  const loadRun = useCallback((id: string) => api.getCommissionRun(id).then(setRun).catch((e) => setError(e.message)), []);
+  // A run deleted elsewhere (or just now) falls back to the newest.
+  const selectedId = runs?.some((r) => r.id === runId) ? runId : (runs?.[0]?.id ?? null);
+  const loadRun = useCallback((id: string) => api.getCommissionRun(id).then(setRun).catch((e) => onError(e.message)), [onError]);
   useEffect(() => {
-    if (!selectedId || selectedId === 'new') {
+    if (!selectedId) {
       setRun(null);
       return;
     }
     loadRun(selectedId);
   }, [selectedId, loadRun]);
 
-  // A fresh draft points at the first import and guesses its columns.
-  useEffect(() => {
-    if (selectedId !== 'new') return;
-    const first = imports[0];
-    setDraft({ name: '', importId: first?.id ?? '', repField: '', payees: [], amountField: '', dateField: '', dealKeyField: '', from: settings.general.goLiveDate, to: null, holdRules: [], payLagMonths: settings.general.defaultPayLagMonths, contractStartField: '', termMonthsField: '', contractEndField: '', components: {}, marginField: '', includePrograms: true });
-  }, [selectedId, imports, settings]);
-
-  useEffect(() => {
-    if (!draft?.importId) {
-      setImportDetail(null);
-      return;
-    }
-    api
-      .getImport(draft.importId)
-      .then((d) => {
-        setImportDetail(d);
-        setDraft((cur) => (cur && cur.importId === d.id && !cur.repField && !cur.amountField ? { ...cur, ...guess(d), components: guessComponents(d, componentNames), marginField: usesMargin ? guessMargin(d) : '', name: cur.name || `${d.name} commissions` } : cur));
-      })
-      .catch((e) => setError(e.message));
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [draft?.importId, componentNames, usesMargin]);
-
-  const create = async () => {
-    if (!draft) return;
-    setBusy(true);
-    setError(null);
-    try {
-      const created = await api.createCommissionRun({
-        name: draft.name.trim() || 'Commission run',
-        importId: draft.importId,
-        repField: draft.repField,
-        payees: draft.payees.filter((p) => p.role.trim() && p.field),
-        amountField: draft.amountField,
-        dateField: draft.dateField || null,
-        dealKeyField: draft.dealKeyField || null,
-        from: draft.from,
-        to: draft.to,
-        holdRules: draft.holdRules.filter((r) => r.condition.field),
-        payLagMonths: draft.payLagMonths,
-        contractStartField: draft.contractStartField || null,
-        termMonthsField: draft.termMonthsField || null,
-        contractEndField: draft.contractEndField || null,
-        components: Object.entries(draft.components)
-          .filter(([, field]) => field)
-          .map(([name, field]) => ({ name, field })),
-        marginField: draft.marginField || null,
-        includePrograms: draft.includePrograms,
-      });
-      await refresh();
-      setSelectedId(created.id);
-    } catch (e) {
-      setError((e as Error).message);
-    } finally {
-      setBusy(false);
-    }
-  };
-
   const remove = async (r: CommissionRun) => {
     if (!window.confirm(`Delete run "${r.name}" and its ${r.lineCount} lines?`)) return;
     await api.deleteCommissionRun(r.id);
     const list = await refresh();
-    setSelectedId(list[0]?.id ?? 'new');
+    if (list[0]) onOpenRun(list[0].id);
   };
 
   return (
-    <div className="flex h-full">
+    <>
       <aside className="flex w-64 shrink-0 flex-col border-r border-slate-200 bg-panel">
         <div className="flex items-center border-b border-slate-200 px-3 py-2">
           <span className="text-sm font-semibold">Commission runs</span>
           <div className="flex-1" />
-          <button className="btn btn-sm btn-primary" onClick={() => setSelectedId('new')}>
+          <button className="btn btn-sm btn-primary" onClick={onNewRun}>
             + New run
           </button>
         </div>
         <div className="flex-1 overflow-auto p-2">
-          {runs.map((r) => (
+          {(runs ?? []).map((r) => (
             <button
               key={r.id}
-              onClick={() => setSelectedId(r.id)}
+              onClick={() => onOpenRun(r.id)}
               className={`block w-full rounded-md px-2 py-1.5 text-left text-sm hover:bg-slate-100 ${selectedId === r.id ? 'bg-indigo-50 text-indigo-700' : 'text-slate-700'}`}
             >
               <div className="truncate font-medium">{r.name}</div>
@@ -240,7 +228,7 @@ export function CommissionsView() {
               </div>
             </button>
           ))}
-          {runs.length === 0 && <div className="px-2 py-4 text-xs text-slate-400">No runs yet.</div>}
+          {runs?.length === 0 && <div className="px-2 py-4 text-xs text-slate-400">No runs yet.</div>}
         </div>
         <div className="border-t border-slate-200 p-2">
           <button className="block w-full rounded-md px-2 py-1.5 text-left text-sm text-slate-600 hover:bg-slate-100" onClick={() => setShowReasons((v) => !v)}>
@@ -251,99 +239,119 @@ export function CommissionsView() {
       </aside>
 
       <main className="flex min-w-0 flex-1 flex-col overflow-hidden">
-        {error && (
-          <div className="border-b border-red-200 bg-red-50 px-4 py-1.5 text-xs text-red-700">
-            {error}{' '}
-            <button className="underline" onClick={() => setError(null)}>
-              dismiss
-            </button>
-          </div>
-        )}
-
-        {showReasons && <HoldReasonsPanel reasons={reasons} onChange={refreshReasons} onClose={() => setShowReasons(false)} onError={setError} />}
-
-        {selectedId === 'new' && draft && (
-          <NewRunForm
-            draft={draft}
-            setDraft={setDraft}
-            imports={imports}
-            importDetail={importDetail}
+        {showReasons && <HoldReasonsPanel reasons={reasons} onChange={refreshReasons} onClose={() => setShowReasons(false)} onError={onError} />}
+        {run && selectedId === run.id ? (
+          <RunDetail
+            run={run}
             reasons={reasons}
-            componentNames={componentNames}
-            usesMargin={usesMargin}
-            payoutRuleCount={payoutRuleCount}
-            busy={busy}
-            onCreate={create}
-            onCancel={runs.length ? () => setSelectedId(runs[0].id) : undefined}
+            onChanged={() => loadRun(run.id)}
+            onDelete={() => remove(run)}
+            onError={onError}
           />
+        ) : (
+          runs?.length === 0 && (
+            <div className="m-6 max-w-xl rounded-lg border border-dashed border-slate-300 bg-panel p-6 text-sm text-slate-500">
+              No runs yet. Bring in your deals under{' '}
+              <button className="underline" onClick={onImports}>
+                Imports
+              </button>
+              , filter them to the payroll period, then use <em>Run payroll</em> to apply your payroll templates.
+            </div>
+          )
         )}
-
-        {selectedId !== 'new' && run && <RunDetail run={run} reasons={reasons} onChanged={() => loadRun(run.id)} onDelete={() => remove(run)} onError={setError} />}
       </main>
-    </div>
+    </>
   );
 }
 
-// -- New run form --------------------------------------------------------------
+// -- Run payroll -----------------------------------------------------------------
 
-function NewRunForm({
-  draft,
-  setDraft,
+/**
+ * Apply payroll templates to an import. From the Imports tab it pays the rows
+ * on screen (the date filter and any column filters); from Runs it asks for
+ * the import and a close-date range.
+ */
+function RunPayrollDialog({
   imports,
-  importDetail,
-  reasons,
-  componentNames,
-  usesMargin,
-  busy,
-  onCreate,
-  onCancel,
-  payoutRuleCount,
+  source,
+  onClose,
+  onCreated,
+  onTemplates,
 }: {
-  draft: Draft;
-  setDraft: (d: Draft) => void;
   imports: ImportSummary[];
-  importDetail: ImportDetail | null;
-  reasons: HoldReason[];
-  /** Active workspace payout rules, which apply to every run before this run's own hold rules. */
-  payoutRuleCount: number;
-  componentNames: string[];
-  /** Some plan pays a percent of margin, so the run needs a gross profit column. */
-  usesMargin: boolean;
-  busy: boolean;
-  onCreate: () => void;
-  onCancel?: () => void;
+  source: { importId: string; criteria?: Criteria; params?: Record<string, string> } | null;
+  onClose: () => void;
+  onCreated: (run: CommissionRun) => void;
+  onTemplates: () => void;
 }) {
-  const columns = importDetail?.columns ?? [];
-  const textCols = columns.filter((c) => c.type === 'text');
-  const numCols = columns.filter((c) => ['currency', 'decimal', 'integer', 'percent'].includes(c.type));
-  const dateCols = columns.filter((c) => c.type === 'date' || c.type === 'datetime');
+  const { settings } = useSettings();
+  const [templates, setTemplates] = useState<PayrollTemplate[] | null>(null);
+  const [picked, setPicked] = useState<Set<string>>(new Set());
+  const [importId, setImportId] = useState(source?.importId ?? imports[0]?.id ?? '');
+  const [from, setFrom] = useState<string | null>(settings.general.goLiveDate);
+  const [to, setTo] = useState<string | null>(null);
+  const [name, setName] = useState('');
+  const [payLag, setPayLag] = useState(settings.general.defaultPayLagMonths);
+  const [includePrograms, setIncludePrograms] = useState(true);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    api
+      .listPayrollTemplates()
+      .then((ts) => {
+        setTemplates(ts);
+        setPicked(new Set(ts.filter((t) => !templateProblems(t.definition, t.employeeTypeId).length).map((t) => t.id)));
+      })
+      .catch((e) => setError(e.message));
+  }, []);
+
+  const imp = imports.find((i) => i.id === importId);
+  const filters = source?.criteria?.root.children.length ?? 0;
+
+  const create = async () => {
+    setBusy(true);
+    setError(null);
+    try {
+      const run = await api.createCommissionRun({
+        name: name.trim() || `${imp?.name ?? 'Commission'} payroll`,
+        importId,
+        templateIds: (templates ?? []).filter((t) => picked.has(t.id)).map((t) => t.id),
+        ...(source?.criteria ? { criteria: { ...source.criteria, summary: undefined, calc: undefined }, params: source.params } : { from, to }),
+        payLagMonths: payLag,
+        includePrograms,
+      });
+      onCreated(run);
+    } catch (e) {
+      setError((e as Error).message);
+      setBusy(false);
+    }
+  };
 
   return (
-    <div className="flex-1 overflow-auto p-6">
-      <div className="max-w-3xl space-y-5">
-        <div>
-          <div className="text-base font-semibold">New commission run</div>
-          <div className="text-xs text-slate-500">
-            One line per person per deal. Each person's rate comes from the comp plan in force on the deal's close date; a deal that crosses a tier is split into one
-            line per band. Attainment accrues in close-date order over the deals in the run. Each line then pays on the next payroll unless a hold rule puts it on hold.
-          </div>
+    <div className="fixed inset-0 z-20 flex items-center justify-center bg-black/30" onClick={onClose}>
+      <div className="max-h-[90vh] w-[36rem] max-w-[95vw] overflow-auto rounded-lg bg-panel p-4 shadow-xl" onClick={(e) => e.stopPropagation()}>
+        <div className="text-sm font-semibold">Run payroll</div>
+        <div className="mt-1 text-xs text-slate-500">
+          Each template pays its employee type one line per person per deal, at the rate from their plan in force on the close date. Lines then pay on the next payroll unless a
+          hold rule puts them on hold.
         </div>
-        {imports.length === 0 ? (
-          <div className="rounded-lg border border-dashed border-slate-300 bg-panel p-6 text-sm text-slate-400">Import a deals file first.</div>
-        ) : (
-          <>
-            <label className="block text-sm">
-              <span className="text-xs text-slate-500">Name</span>
-              <input className="input mt-1 w-full" value={draft.name} onChange={(e) => setDraft({ ...draft, name: e.target.value })} placeholder="FY2026 commissions" />
-            </label>
+
+        <div className="mt-3 space-y-3">
+          <label className="block text-sm">
+            <span className="text-xs text-slate-500">Name</span>
+            <input className="input mt-1 w-full" value={name} placeholder={`${imp?.name ?? 'Commission'} payroll`} onChange={(e) => setName(e.target.value)} />
+          </label>
+          {source ? (
+            <div className="rounded-md bg-slate-50 px-3 py-2 text-xs text-slate-600">
+              Pays the rows on screen in <strong>{imp?.name}</strong>
+              {filters ? `, after its ${filters} filter${filters === 1 ? '' : 's'} (including the date filter)` : ' (no filters, so every row)'}.
+            </div>
+          ) : (
             <div className="grid grid-cols-2 gap-3">
               <label className="block text-sm">
-                <span className="text-xs text-slate-500">Deals import</span>
-                <select
-                  className="select mt-1 w-full"
-                  value={draft.importId}
-                  onChange={(e) => setDraft({ ...draft, importId: e.target.value, repField: '', amountField: '', dateField: '', dealKeyField: '', payees: [], holdRules: [], contractStartField: '', termMonthsField: '', contractEndField: '', components: {}, marginField: '', includePrograms: draft.includePrograms })}
-                >
+                <span className="text-xs text-slate-500">Import</span>
+                <select className="select mt-1 w-full" value={importId} onChange={(e) => setImportId(e.target.value)}>
                   {imports.map((i) => (
                     <option key={i.id} value={i.id}>
                       {i.name} ({i.rowCount.toLocaleString()} rows)
@@ -354,192 +362,83 @@ function NewRunForm({
               <label className="block text-sm">
                 <span className="text-xs text-slate-500">Close date range</span>
                 <div className="mt-1">
-                  <PeriodPicker from={draft.from} to={draft.to} onChange={(from, to) => setDraft({ ...draft, from, to })} compact />
+                  <PeriodPicker
+                    from={from}
+                    to={to}
+                    onChange={(f, t) => {
+                      setFrom(f);
+                      setTo(t);
+                    }}
+                    compact
+                  />
                 </div>
               </label>
-              <Field label="Rep column" value={draft.repField} onChange={(v) => setDraft({ ...draft, repField: v })} options={textCols.map((c) => c.name)} required />
-              <Field label="Amount column" value={draft.amountField} onChange={(v) => setDraft({ ...draft, amountField: v })} options={numCols.map((c) => c.name)} required />
-              <Field label="Close date column" value={draft.dateField} onChange={(v) => setDraft({ ...draft, dateField: v })} options={dateCols.map((c) => c.name)} />
-              <Field label="Deal ID column" value={draft.dealKeyField} onChange={(v) => setDraft({ ...draft, dealKeyField: v })} options={columns.map((c) => c.name)} />
             </div>
+          )}
 
-            <div>
-              <span className="text-xs text-slate-500">For amortization (optional)</span>
-              <div className="mt-1 text-xs text-slate-400">Where the subscription starts and how long it runs, so capitalized commissions can amortize over the contract term.</div>
-              <div className="mt-2 grid grid-cols-3 gap-3">
-                <Field label="Subscription start" value={draft.contractStartField} onChange={(v) => setDraft({ ...draft, contractStartField: v })} options={dateCols.map((c) => c.name)} />
-                <Field label="Term (months)" value={draft.termMonthsField} onChange={(v) => setDraft({ ...draft, termMonthsField: v })} options={numCols.map((c) => c.name)} />
-                <Field label="Or subscription end" value={draft.contractEndField} onChange={(v) => setDraft({ ...draft, contractEndField: v })} options={dateCols.map((c) => c.name)} />
+          <div>
+            <div className="text-xs text-slate-500">Payroll templates</div>
+            {templates === null ? (
+              <div className="mt-1 text-xs text-slate-400">Loading…</div>
+            ) : templates.length === 0 ? (
+              <div className="mt-1 rounded-md border border-dashed border-slate-300 p-3 text-xs text-slate-500">
+                No payroll templates yet.{' '}
+                <button className="underline" onClick={onTemplates}>
+                  Create one per employee type
+                </button>{' '}
+                first.
               </div>
-            </div>
-
-            <label className="flex items-center gap-2 text-xs text-slate-600">
-              <input type="checkbox" checked={draft.includePrograms} onChange={(e) => setDraft({ ...draft, includePrograms: e.target.checked })} />
-              Also pay spiffs, accelerators and bonuses whose time period overlaps this run (each reads its own import)
-            </label>
-
-            {usesMargin && (
-              <div>
-                <span className="text-xs text-slate-500">Margin</span>
-                <div className="mt-1 text-xs text-slate-400">Plans with a percent-of-margin quota pay on each deal’s gross profit (amount minus cost). Leave it blank and those plans pay nothing on margin in this run.</div>
-                <div className="mt-2 grid grid-cols-3 gap-3">
-                  <Field label="Gross profit" value={draft.marginField} onChange={(v) => setDraft({ ...draft, marginField: v })} options={numCols.map((c) => c.name)} />
-                </div>
+            ) : (
+              <div className="mt-1 divide-y divide-slate-100 rounded-md border border-slate-200">
+                {templates.map((t) => {
+                  const problems = templateProblems(t.definition, t.employeeTypeId);
+                  return (
+                    <label key={t.id} className={`flex items-start gap-2 px-3 py-2 text-sm ${problems.length ? 'text-slate-400' : ''}`} title={problems.join(' ')}>
+                      <input
+                        type="checkbox"
+                        className="mt-0.5"
+                        disabled={problems.length > 0}
+                        checked={picked.has(t.id)}
+                        onChange={(e) => {
+                          const next = new Set(picked);
+                          if (e.target.checked) next.add(t.id);
+                          else next.delete(t.id);
+                          setPicked(next);
+                        }}
+                      />
+                      <span>
+                        <span className="font-medium">{t.name}</span>
+                        <span className="block text-xs text-slate-400">
+                          {problems.length ? problems.join(' ') : t.definition.crediting === 'all' ? 'All deals' : `Own deals · ${t.definition.creditField}`}
+                        </span>
+                      </span>
+                    </label>
+                  );
+                })}
               </div>
             )}
+          </div>
 
-            {componentNames.length > 0 && (
-              <div>
-                <span className="text-xs text-slate-500">Plan components</span>
-                <div className="mt-1 text-xs text-slate-400">
-                  Plans with weighted components pay one line per component from its own column (New ARR, Renewals…), each against that component's quota. A component left
-                  unmapped pays nothing in this run; plans without components use the amount column.
-                </div>
-                <div className="mt-2 grid grid-cols-3 gap-3">
-                  {componentNames.map((n) => (
-                    <Field key={n} label={n} value={draft.components[n] ?? ''} onChange={(v) => setDraft({ ...draft, components: { ...draft.components, [n]: v } })} options={numCols.map((c) => c.name)} />
-                  ))}
-                </div>
-              </div>
-            )}
+          <label className="flex items-center gap-2 text-xs text-slate-600">
+            <input type="checkbox" checked={includePrograms} onChange={(e) => setIncludePrograms(e.target.checked)} />
+            Also pay spiffs, accelerators and bonuses whose time period overlaps this run (each reads its own import)
+          </label>
+          <label className="block text-sm">
+            <span className="text-xs text-slate-500">Pay on the payroll this many months after the close (or the release)</span>
+            <input type="number" min={0} max={12} className="input mt-1 w-24" value={payLag} onChange={(e) => setPayLag(Math.max(0, Math.min(12, Number(e.target.value) || 0)))} />
+          </label>
+          {error && <div className="rounded bg-red-50 px-2 py-1 text-xs text-red-700">{error}</div>}
+        </div>
 
-            <div>
-              <div className="flex items-center">
-                <span className="text-xs text-slate-500">Other people paid on each deal</span>
-                <div className="flex-1" />
-                <button className="btn btn-sm" onClick={() => setDraft({ ...draft, payees: [...draft.payees, { role: '', field: '' }] })}>
-                  + Add
-                </button>
-              </div>
-              <div className="mt-1 text-xs text-slate-400">E.g. a Sales Engineer or Manager column. Each gets their own line under their own plan.</div>
-              {draft.payees.map((p, i) => (
-                <div key={i} className="mt-2 flex items-center gap-2">
-                  <input
-                    className="input w-40"
-                    placeholder="Role, e.g. SE"
-                    value={p.role}
-                    onChange={(e) => setDraft({ ...draft, payees: draft.payees.map((x, j) => (j === i ? { ...x, role: e.target.value } : x)) })}
-                  />
-                  <select className="select flex-1" value={p.field} onChange={(e) => setDraft({ ...draft, payees: draft.payees.map((x, j) => (j === i ? { ...x, field: e.target.value } : x)) })}>
-                    <option value="">Pick a column…</option>
-                    {textCols.map((c) => (
-                      <option key={c.name} value={c.name}>
-                        {c.name}
-                      </option>
-                    ))}
-                  </select>
-                  <button className="text-slate-400 hover:text-rose-600" onClick={() => setDraft({ ...draft, payees: draft.payees.filter((_, j) => j !== i) })}>
-                    ✕
-                  </button>
-                </div>
-              ))}
-            </div>
-
-            <div>
-              <div className="flex items-center">
-                <span className="text-xs text-slate-500">Hold rules</span>
-                <div className="flex-1" />
-                <button className="btn btn-sm" disabled={!columns.length || !reasons.length} onClick={() => setDraft({ ...draft, holdRules: [...draft.holdRules, newRule(reasons[0]?.key ?? 'other', columns[0]?.name ?? '')] })}>
-                  + Add rule
-                </button>
-              </div>
-              <div className="mt-1 text-xs text-slate-400">
-                A deal that matches a rule starts on hold with that reason instead of paying next payroll. The first matching rule wins. Anything can still be held or
-                released by hand afterwards.
-                {payoutRuleCount > 0 && (
-                  <>
-                    {' '}
-                    The {payoutRuleCount} active payout rule{payoutRuleCount === 1 ? '' : 's'} under <em>Payouts › Payout Rules</em> {payoutRuleCount === 1 ? 'applies' : 'apply'} first, on every run.
-                  </>
-                )}
-              </div>
-              {draft.holdRules.map((r, i) => (
-                <HoldRuleRow
-                  key={r.id}
-                  rule={r}
-                  columns={columns}
-                  reasons={reasons}
-                  onChange={(nr) => setDraft({ ...draft, holdRules: draft.holdRules.map((x, j) => (j === i ? nr : x)) })}
-                  onRemove={() => setDraft({ ...draft, holdRules: draft.holdRules.filter((_, j) => j !== i) })}
-                />
-              ))}
-            </div>
-
-            <label className="block text-sm">
-              <span className="text-xs text-slate-500">Pay on the payroll this many months after the close (or the release)</span>
-              <input type="number" min={0} max={12} className="input mt-1 w-24" value={draft.payLagMonths} onChange={(e) => setDraft({ ...draft, payLagMonths: Math.max(0, Math.min(12, Number(e.target.value) || 0)) })} />
-            </label>
-
-            <div className="flex items-center gap-2">
-              <button className="btn btn-primary" disabled={busy || !draft.importId || !draft.repField || !draft.amountField} onClick={onCreate}>
-                {busy ? 'Calculating…' : 'Calculate'}
-              </button>
-              {onCancel && (
-                <button className="btn" onClick={onCancel}>
-                  Cancel
-                </button>
-              )}
-            </div>
-          </>
-        )}
+        <div className="mt-4 flex justify-end gap-2">
+          <button className="btn" onClick={onClose}>
+            Cancel
+          </button>
+          <button className="btn btn-primary" disabled={busy || !importId || picked.size === 0} onClick={create}>
+            {busy ? 'Calculating…' : 'Calculate'}
+          </button>
+        </div>
       </div>
-    </div>
-  );
-}
-
-function HoldRuleRow({ rule, columns, reasons, onChange, onRemove }: { rule: HoldRule; columns: ImportColumn[]; reasons: HoldReason[]; onChange: (r: HoldRule) => void; onRemove: () => void }) {
-  const col = columns.find((c) => c.name === rule.condition.field);
-  const family = col ? familyOf(col.type) : 'text';
-  const ops = RULE_OPERATORS[family];
-  const cond = rule.condition as Condition;
-  const arity = operandArity(cond.operator);
-  const setCond = (patch: Partial<Condition>) => onChange({ ...rule, condition: { ...cond, ...patch } });
-  const value = cond.values[0]?.kind === 'literal' ? cond.values[0].value : '';
-  return (
-    <div className="mt-2 flex flex-wrap items-center gap-2 text-sm">
-      <span className="text-xs text-slate-500">Hold for</span>
-      <select className="select" value={rule.reasonKey} onChange={(e) => onChange({ ...rule, reasonKey: e.target.value })}>
-        {reasons.map((r) => (
-          <option key={r.key} value={r.key}>
-            {r.name}
-          </option>
-        ))}
-      </select>
-      <span className="text-xs text-slate-500">when</span>
-      <select
-        className="select"
-        value={cond.field}
-        onChange={(e) => {
-          const c = columns.find((x) => x.name === e.target.value);
-          const fam = c ? familyOf(c.type) : 'text';
-          setCond({ field: e.target.value, operator: RULE_OPERATORS[fam][0], values: [{ kind: 'literal', value: '' }] });
-        }}
-      >
-        {columns.map((c) => (
-          <option key={c.name} value={c.name}>
-            {c.name}
-          </option>
-        ))}
-      </select>
-      <select className="select" value={cond.operator} onChange={(e) => setCond({ operator: e.target.value as Operator })}>
-        {ops.map((o) => (
-          <option key={o} value={o}>
-            {OPERATOR_LABELS[o]}
-          </option>
-        ))}
-      </select>
-      {arity !== 0 && (
-        <input
-          type={family === 'date' ? 'date' : family === 'number' ? 'number' : 'text'}
-          className="input w-44"
-          placeholder="value"
-          value={value}
-          onChange={(e) => setCond({ values: [{ kind: 'literal', value: e.target.value }] })}
-        />
-      )}
-      <button className="text-slate-400 hover:text-rose-600" onClick={onRemove}>
-        ✕
-      </button>
     </div>
   );
 }
@@ -647,10 +546,10 @@ function RunDetail({ run, reasons, onChanged, onDelete, onError }: { run: Commis
         <div className="min-w-0">
           <div className="truncate text-sm font-semibold">{run.name}</div>
           <div className="truncate text-xs text-slate-400">
-            {run.importName} · {run.config.repField}
-            {run.config.payees.length ? ` + ${run.config.payees.map((p) => p.role).join(', ')}` : ''} · {run.config.amountField}
-            {run.config.components?.length ? ` · ${run.config.components.map((c) => `${c.name} ← ${c.field}`).join(', ')}` : ''}
-            {run.config.marginField ? ` · Gross profit ← ${run.config.marginField}` : ''}
+            {run.importName}
+            {run.config.templates?.length
+              ? ` · ${run.config.templates.map((t) => t.name).join(', ')}${run.config.filtered ? ' · screen filters' : ''}`
+              : ` · ${run.config.repField}${run.config.payees.length ? ` + ${run.config.payees.map((p) => p.role).join(', ')}` : ''} · ${run.config.amountField}`}
             {run.config.from || run.config.to ? ` · ${run.config.from ?? '…'} → ${run.config.to ?? '…'}` : ' · all dates'} · {run.config.holdRules?.length ?? 0} hold rule
             {(run.config.holdRules?.length ?? 0) === 1 ? '' : 's'} · {new Date(run.createdAt).toLocaleString()}
           </div>
@@ -1250,25 +1149,6 @@ function HoldReasonsPanel({ reasons, onChange, onClose, onError }: { reasons: Ho
 }
 
 // -- Bits ----------------------------------------------------------------------
-
-function Field({ label, value, onChange, options, required }: { label: string; value: string; onChange: (v: string) => void; options: string[]; required?: boolean }) {
-  return (
-    <label className="block text-sm">
-      <span className="text-xs text-slate-500">
-        {label}
-        {required ? '' : ' (optional)'}
-      </span>
-      <select className="select mt-1 w-full" value={value} onChange={(e) => onChange(e.target.value)}>
-        <option value="">{required ? 'Pick a column…' : 'None'}</option>
-        {options.map((o) => (
-          <option key={o} value={o}>
-            {o}
-          </option>
-        ))}
-      </select>
-    </label>
-  );
-}
 
 function Stat({ label, value, sub, tone }: { label: string; value: string; sub?: string; tone?: 'warn' | 'hold' }) {
   const border = tone === 'warn' ? 'border-amber-200' : tone === 'hold' ? 'border-orange-200' : 'border-slate-200';

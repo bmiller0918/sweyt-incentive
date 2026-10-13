@@ -19,6 +19,7 @@ const RULES: Rule[] = [
   { key: 'plans', methods: ['POST', 'PUT', 'DELETE'], test: /^\/api\/(comp-plans|threshold-types|employee-types|type-assignments)(\/.*)?$/ },
   { key: 'employees', methods: ['POST', 'PUT', 'DELETE'], test: /^\/api\/(employees|assignments)(\/.*)?$/ },
   { key: 'runs', methods: ['POST'], test: /^\/api\/commission-runs$/ },
+  { key: 'runs', methods: ['POST', 'PUT', 'DELETE'], test: /^\/api\/payroll-templates(\/.*)?$/ },
   { key: 'runs', methods: ['DELETE'], test: /^\/api\/commission-runs\/[^/]+$/ },
   { key: 'holds', methods: ['POST'], test: /^\/api\/commission-runs\/[^/]+\/(hold|release|pay)$/ },
   { key: 'holds', methods: ['POST', 'DELETE'], test: /^\/api\/hold-reasons(\/.*)?$/ },

@@ -16,6 +16,7 @@ import type {
   HoldRule,
   JournalEntry,
   PlanQuotas,
+  PayrollTemplateDefinition,
   ProgramDefinition,
   ProgramKind,
   PlanStructure,
@@ -194,6 +195,19 @@ export const incentivePrograms = pgTable('incentive_programs', {
   definition: jsonb('definition').$type<ProgramDefinition>().notNull(),
 });
 
+/**
+ * A commission payroll template: how one employee type is credited on the
+ * deals in an import (their own deals, or all deals), plus the columns and
+ * hold rules a run reads. Applied on the Commission Payroll screen.
+ */
+export const payrollTemplates = pgTable('payroll_templates', {
+  ...base,
+  name: text('name').notNull(),
+  description: text('description'),
+  employeeTypeId: uuid('employee_type_id').references(() => employeeTypes.id, { onDelete: 'set null' }),
+  definition: jsonb('definition').$type<PayrollTemplateDefinition>().notNull(),
+});
+
 /** A person who earns commission. `name` must match the rep column in the data. */
 export const employees = pgTable(
   'employees',
@@ -268,6 +282,10 @@ export interface CommissionRunConfig {
   marginField?: string | null;
   /** Pay enabled spiffs, accelerators and bonuses whose window overlaps the run (default true). */
   includePrograms?: boolean;
+  /** Payroll templates the run applied (by id and name at the time); absent on runs mapped by hand. */
+  templates?: { id: string; name: string; role: string }[];
+  /** True when the run read only the rows that passed the Commission Payroll screen's filters. */
+  filtered?: boolean;
 }
 
 /** Company-wide amortization policy (one row). */

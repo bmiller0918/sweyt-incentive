@@ -1,14 +1,10 @@
 import {
   OPERATOR_LABELS,
   RELATIVE_LABELS,
-  emptyCalc,
   emptyCriteria,
   emptySummary,
-  isCalcActive,
   isSummaryActive,
   listConditions,
-  summaryColumns as summaryColumnsOf,
-  type CalcSpec,
   type ColumnDef,
   type ColumnType,
   type Criteria,
@@ -30,7 +26,6 @@ import {
   type HeaderFilterState,
 } from '../headerFilters';
 import { PeriodBar } from './PeriodBar';
-import { CalcPanel } from './CalcPanel';
 import { CriteriaBuilder } from './CriteriaBuilder';
 import { DataGrid, type GridRow } from './DataGrid';
 import { HeaderFilterPopover } from './HeaderFilterPopover';
@@ -40,6 +35,9 @@ import { SummaryGrid, groupValuesOf, type GroupState } from './SummaryGrid';
 import { SummaryPanel } from './SummaryPanel';
 
 const PAGE = 500;
+
+/** Formulas over summary rows moved out with the calculation step; payroll templates pay the rows now. */
+const withoutCalc = (c: Criteria): Criteria => ({ ...c, calc: undefined });
 
 function formatTotal(n: number, type: ColumnType): string {
   if (type === 'currency') return n.toLocaleString(undefined, { style: 'currency', currency: 'USD' });
@@ -51,11 +49,13 @@ interface Props {
   importId: string;
   /** Saved incentive to load on open (from the Incentives register). */
   initialSetId?: string | null;
+  /** Apply payroll templates to the rows on screen (the date and column filters). */
+  onRunPayroll?: (criteria: Criteria, params: Record<string, string>) => void;
   onDeleted: () => void;
   onRenamed: () => void;
 }
 
-export function ImportView({ importId, initialSetId, onDeleted, onRenamed }: Props) {
+export function ImportView({ importId, initialSetId, onRunPayroll, onDeleted, onRenamed }: Props) {
   const [imp, setImp] = useState<ImportDetail | null>(null);
   const [criteria, setCriteria] = useState<Criteria>(emptyCriteria);
   const [params, setParams] = useState<Record<string, string>>({});
@@ -95,10 +95,10 @@ export function ImportView({ importId, initialSetId, onDeleted, onRenamed }: Pro
       const found = s.find((x) => x.id === initialSetId);
       if (found) {
         setCurrentSet(found);
-        setCriteria(found.criteria);
+        setCriteria(withoutCalc(found.criteria));
         setParams(found.criteria.params ?? {});
         if (isSummaryActive(found.criteria.summary)) setViewMode('summary');
-      } else setError('That incentive could not be found.');
+      } else setError('That saved view could not be found.');
     });
   }, [importId, initialSetId, loadSets]);
 
@@ -162,8 +162,6 @@ export function ImportView({ importId, initialSetId, onDeleted, onRenamed }: Pro
 
   const setRoot = (root: Group) => setCriteria((c) => ({ ...c, root }));
   const setSummary = (summary: SummarySpec) => setCriteria((c) => ({ ...c, summary }));
-  const setCalc = (calc: CalcSpec) => setCriteria((c) => ({ ...c, calc }));
-  const calcOn = (criteria.calc?.items.length ?? 0) > 0 || !!criteria.calc?.repField;
   const setFieldFilter = (col: ColumnDef, state: HeaderFilterState) => setRoot(setHeaderFilter(criteria.root, col, state));
   const headerFields = activeHeaderFields(criteria.root);
   const popoverColumn = filterPopover ? imp?.columns.find((c) => c.name === filterPopover.field) : undefined;
@@ -211,7 +209,7 @@ export function ImportView({ importId, initialSetId, onDeleted, onRenamed }: Pro
   const loadSet = (id: string) => {
     const s = sets.find((x) => x.id === id) ?? null;
     setCurrentSet(s);
-    setCriteria(s ? s.criteria : emptyCriteria());
+    setCriteria(s ? withoutCalc(s.criteria) : emptyCriteria());
     setParams(s?.criteria.params ?? {});
   };
 
@@ -252,7 +250,7 @@ export function ImportView({ importId, initialSetId, onDeleted, onRenamed }: Pro
         <button className="truncate text-sm font-semibold hover:underline" onClick={rename} title="Rename">
           {imp.name}
         </button>
-        <span className="text-xs text-slate-400">
+        <span className="truncate text-xs text-slate-400">
           {imp.filename}
           {imp.sheetName ? ` · ${imp.sheetName}` : ''}
         </span>
@@ -268,7 +266,7 @@ export function ImportView({ importId, initialSetId, onDeleted, onRenamed }: Pro
           </button>
         )}
         <div className="flex-1" />
-        <div className="inline-flex overflow-hidden rounded-md border border-slate-300 text-xs">
+        <div className="inline-flex shrink-0 overflow-hidden rounded-md border border-slate-300 text-xs">
           {(['detail', 'summary'] as const).map((m) => (
             <button
               key={m}
@@ -299,16 +297,21 @@ export function ImportView({ importId, initialSetId, onDeleted, onRenamed }: Pro
             </>
           )}
         </span>
-        <button className="btn" onClick={() => api.export(importId, { criteria, params, mode, format: 'csv' }).catch((e) => setError(e.message))}>
+        {onRunPayroll && (
+          <button className="btn btn-sm btn-primary whitespace-nowrap" onClick={() => onRunPayroll(criteria, params)} title="Apply payroll templates to the rows on screen">
+            Run payroll
+          </button>
+        )}
+        <button className="btn btn-sm whitespace-nowrap" onClick={() => api.export(importId, { criteria, params, mode, format: 'csv' }).catch((e) => setError(e.message))}>
           Export CSV
         </button>
-        <button className="btn" onClick={() => api.export(importId, { criteria, params, mode, format: 'xlsx' }).catch((e) => setError(e.message))}>
+        <button className="btn btn-sm whitespace-nowrap" onClick={() => api.export(importId, { criteria, params, mode, format: 'xlsx' }).catch((e) => setError(e.message))}>
           Export XLSX
         </button>
-        <button className="btn text-rose-600" onClick={remove}>
+        <button className="btn btn-sm whitespace-nowrap text-rose-600" onClick={remove}>
           Delete
         </button>
-        <button className="btn" onClick={() => setPanelOpen((o) => !o)}>
+        <button className="btn btn-sm whitespace-nowrap" onClick={() => setPanelOpen((o) => !o)}>
           {panelOpen ? 'Hide criteria' : 'Show criteria'}
         </button>
       </div>
@@ -326,15 +329,15 @@ export function ImportView({ importId, initialSetId, onDeleted, onRenamed }: Pro
         {panelOpen && (
           <div className="flex w-[30rem] shrink-0 flex-col border-r border-slate-200 bg-slate-50">
             <div className="flex items-center gap-2 border-b border-slate-200 bg-panel px-3 py-2 text-xs">
-              <select className="select flex-1" value={currentSet?.id ?? ''} onChange={(e) => loadSet(e.target.value)} title="Saved incentives for this import">
-                <option value="">— unsaved incentive —</option>
+              <select className="select flex-1" value={currentSet?.id ?? ''} onChange={(e) => loadSet(e.target.value)} title="Saved views for this import">
+                <option value="">— unsaved view —</option>
                 {sets.map((s) => (
                   <option key={s.id} value={s.id}>
                     {s.name} (v{s.version})
                   </option>
                 ))}
               </select>
-              <button className="btn btn-sm btn-primary" onClick={() => save(false)} title={currentSet ? 'Save a new version of this incentive' : 'Save as an incentive'}>
+              <button className="btn btn-sm btn-primary" onClick={() => save(false)} title={currentSet ? 'Save a new version of this view' : 'Save as a view'}>
                 Save
               </button>
               {currentSet && (
@@ -345,7 +348,7 @@ export function ImportView({ importId, initialSetId, onDeleted, onRenamed }: Pro
                   <button
                     className="btn btn-sm text-rose-600"
                     onClick={async () => {
-                      if (!window.confirm(`Delete incentive "${currentSet.name}"?`)) return;
+                      if (!window.confirm(`Delete view "${currentSet.name}"?`)) return;
                       await api.deleteCriteriaSet(currentSet.id);
                       setCurrentSet(null);
                       loadSets();
@@ -437,44 +440,6 @@ export function ImportView({ importId, initialSetId, onDeleted, onRenamed }: Pro
                 </div>
               )}
 
-              {summaryOn && (
-                <>
-                  <div className="mt-4 mb-1 flex items-center text-xs">
-                    <span className="font-semibold text-slate-600">3 · Calculate</span>
-                    <span className="ml-2 text-slate-400">(formulas over the summary rows, with comp-plan lookup)</span>
-                    <div className="flex-1" />
-                    {calcOn ? (
-                      <button className="btn btn-sm" onClick={() => setCalc(emptyCalc())}>
-                        Clear
-                      </button>
-                    ) : (
-                      <button
-                        className="btn btn-sm"
-                        onClick={() => {
-                          const spec = criteria.summary ?? emptySummary();
-                          const repField = spec.groupBy.find((g) => /rep|owner|sales|employee|name/i.test(g)) ?? spec.groupBy[0];
-                          setCalc({ repField, items: [] });
-                          switchView('summary');
-                        }}
-                      >
-                        + Calculate
-                      </button>
-                    )}
-                  </div>
-                  {calcOn && (
-                    <div className="rounded-lg border border-slate-200 bg-panel p-2">
-                      <CalcPanel
-                        spec={criteria.calc ?? emptyCalc()}
-                        summaryColumns={summaryColumnsOf(criteria.summary ?? emptySummary(), Object.fromEntries(imp.columns.map((c) => [c.name, c.type])))}
-                        errors={meta.errors}
-                        noPlan={meta.calc?.noPlan}
-                        asOf={meta.calc?.asOf ?? undefined}
-                        onChange={setCalc}
-                      />
-                    </div>
-                  )}
-                </>
-              )}
             </div>
           </div>
         )}
@@ -582,7 +547,7 @@ export function ImportView({ importId, initialSetId, onDeleted, onRenamed }: Pro
       {saveDialog && (
         <div className="fixed inset-0 z-20 flex items-center justify-center bg-black/30" onClick={() => setSaveDialog(null)}>
           <div className="w-[28rem] rounded-lg bg-panel p-4 shadow-xl" onClick={(e) => e.stopPropagation()}>
-            <div className="mb-3 text-sm font-semibold">{saveDialog.asNew || !currentSet ? 'Save incentive' : `Save new version of “${currentSet.name}”`}</div>
+            <div className="mb-3 text-sm font-semibold">{saveDialog.asNew || !currentSet ? 'Save view' : `Save new version of “${currentSet.name}”`}</div>
             <label className="block text-xs text-slate-600">
               Name
               <input
@@ -599,7 +564,7 @@ export function ImportView({ importId, initialSetId, onDeleted, onRenamed }: Pro
               <textarea className="input mt-1 block h-20 w-full" value={saveDialog.description} onChange={(e) => setSaveDialog({ ...saveDialog, description: e.target.value })} />
             </label>
             <div className="mt-2 text-[11px] text-slate-400">
-              Saves the period, filters, summary, drill-down columns and calculations for <strong>{imp.name}</strong>. Find it later under Incentives.
+              Saves the period, filters, summary and drill-down columns for <strong>{imp.name}</strong>.
             </div>
             <div className="mt-3 flex justify-end gap-2">
               <button className="btn" onClick={() => setSaveDialog(null)}>

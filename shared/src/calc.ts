@@ -210,6 +210,28 @@ export function asOfFromCriteria(criteria: { root: { children: CriteriaNode[] } 
   return toIso(today);
 }
 
+/**
+ * The period filter's inclusive bounds as ISO dates (a condition whose id
+ * starts with "period:"), or null when there is none. A relative preset
+ * resolves against `today`.
+ */
+export function periodFromCriteria(criteria: { root: { children: CriteriaNode[] } }, ctx: DateContext, today = Date.now()): { from: string | null; to: string | null } | null {
+  const toIso = (ms: number) => new Date(ms).toISOString().slice(0, 10);
+  const node = criteria.root.children.find((c) => c.type === 'condition' && c.id.startsWith('period:'));
+  if (!node || node.type !== 'condition') return null;
+  const v = node.values[0];
+  if (node.operator === 'relative' && v?.kind === 'relative') {
+    const [a, b] = resolveRelativeRange(v.preset, v.n, { ...ctx, now: today });
+    return { from: toIso(a), to: toIso(b) };
+  }
+  if (node.operator === 'between') {
+    const [a, b] = node.values.map((x) => (x.kind === 'literal' ? parseDate(x.value) : null));
+    if (a == null && b == null) return null;
+    return { from: a == null ? null : toIso(a), to: b == null ? null : toIso(b) };
+  }
+  return null;
+}
+
 export interface AssignmentRecord {
   slot: string;
   planName: string;

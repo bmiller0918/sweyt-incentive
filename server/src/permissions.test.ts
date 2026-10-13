@@ -37,6 +37,7 @@ describe('permissionFor', () => {
     expect(permissionFor('DELETE', '/api/assignments/a1')).toBe('employees');
     expect(permissionFor('POST', '/api/commission-runs')).toBe('runs');
     expect(permissionFor('DELETE', '/api/commission-runs/r1')).toBe('runs');
+    expect(permissionFor('PUT', '/api/payroll-templates/t1')).toBe('runs');
     expect(permissionFor('POST', '/api/commission-runs/r1/hold')).toBe('holds');
     expect(permissionFor('POST', '/api/commission-runs/r1/release')).toBe('holds');
     expect(permissionFor('POST', '/api/commission-runs/r1/pay')).toBe('holds');

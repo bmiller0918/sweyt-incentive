@@ -17,6 +17,7 @@ import { criteriaRoutes } from './routes/criteria.js';
 import { importRoutes } from './routes/imports.js';
 import { payoutRuleRoutes } from './routes/payoutRules.js';
 import { planRoutes } from './routes/plans.js';
+import { payrollTemplateRoutes } from './routes/payrollTemplates.js';
 import { programRoutes } from './routes/programs.js';
 import { setupRoutes } from './routes/setup.js';
 
@@ -50,6 +51,7 @@ async function main() {
   await criteriaRoutes(app, db);
   await planRoutes(app, db);
   await programRoutes(app, db);
+  await payrollTemplateRoutes(app, db);
   await commissionRoutes(app, db);
   await payoutRuleRoutes(app, db);
   await accountingRoutes(app, db);
