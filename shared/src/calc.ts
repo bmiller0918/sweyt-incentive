@@ -6,6 +6,7 @@ import type { CalcSpec, CriteriaNode } from './criteria.js';
 import { resolveRelativeRange, type DateContext } from './dates.js';
 import { FormulaError, compileFormula, type CompiledFormula, type FormulaValue, type Scope } from './formula.js';
 import type { SummaryResult } from './summary.js';
+import { resolveStructure, type PlanStructure } from './components.js';
 import type { PlanTiers } from './tiers.js';
 import type { ColumnDef, ColumnType, RawRow, TypedRow } from './types.js';
 
@@ -16,6 +17,8 @@ export interface ResolvedPlan {
   params: PlanParams;
   /** Tier table for TIER() / TIER_RATE(); optional. */
   tiers?: PlanTiers;
+  /** Weighted components for COMPONENT() / COMPONENT_RATE(); optional. */
+  structure?: PlanStructure;
 }
 
 export interface EmployeeInfo {
@@ -162,6 +165,19 @@ export function repScope(r: ResolvedRep | null): Record<string, Record<string, u
     // A person's own quota beats the plan's default, so one plan serves many quotas.
     const quota = r.employee.quota ?? p.params.quota;
     out[slot] = { ...p.params, ...(quota != null ? { quota } : {}), name: p.planName, tiers: p.tiers };
+    if (p.structure?.components.length) {
+      // Weighted components: plan.target_incentive, plan.components (for
+      // COMPONENT()), and per component plan.<key>_quota / _rate / _target.
+      const s = resolveStructure(p.structure);
+      out[slot].target_incentive = s.targetIncentive;
+      out[slot].components = s.components;
+      for (const c of s.components) {
+        if (!c.key) continue;
+        out[slot][`${c.key}_quota`] = c.quota;
+        out[slot][`${c.key}_rate`] = c.rate;
+        out[slot][`${c.key}_target`] = c.targetIncentive;
+      }
+    }
   }
   return out;
 }
@@ -191,6 +207,7 @@ export interface AssignmentRecord {
   planName: string;
   params: PlanParams;
   tiers?: PlanTiers;
+  structure?: PlanStructure;
   effectiveFrom: string | null;
   effectiveTo: string | null;
   /** Where it came from; an employee's own assignment beats one inherited from their type. */
@@ -227,7 +244,7 @@ export function makeDatedPlanLookup(employees: EmployeeRecord[]): DatedPlanLooku
     live.sort((a, b) => rank(a) - rank(b) || (b.effectiveFrom ?? '').localeCompare(a.effectiveFrom ?? ''));
     for (const a of live) {
       const slot = scopeKey(a.slot) || DEFAULT_SLOT;
-      if (!(slot in plans)) plans[slot] = { planName: a.planName, params: a.params, tiers: a.tiers };
+      if (!(slot in plans)) plans[slot] = { planName: a.planName, params: a.params, tiers: a.tiers, structure: a.structure };
     }
     return { employee: { name: e.name, status: e.status, type: e.type, baseSalary: e.baseSalary, quota: e.quota, bonuses: e.bonuses }, plans };
   };

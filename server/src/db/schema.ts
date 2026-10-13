@@ -11,6 +11,7 @@ import type {
   GlAccount,
   HoldRule,
   JournalEntry,
+  PlanStructure,
   PlanTiers,
   RawRow,
   ReclassMode,
@@ -125,6 +126,8 @@ export const compPlans = pgTable('comp_plans', {
   params: jsonb('params').$type<Record<string, number | string | boolean | null>>().notNull().default({}),
   /** Tier table used by TIER() / TIER_RATE() in formulas. */
   tiers: jsonb('tiers').$type<PlanTiers>().notNull().default({ mode: 'marginal', basis: 'amount', scaleParam: null, rows: [] }),
+  /** Weighted components (target incentive split by weight, each with a quota and payout tiers). */
+  structure: jsonb('structure').$type<PlanStructure>().notNull().default({ targetIncentive: null, components: [] }),
   /** YYYY-MM-DD; null = open-ended. */
   effectiveFrom: text('effective_from'),
   effectiveTo: text('effective_to'),
