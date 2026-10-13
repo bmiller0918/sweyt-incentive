@@ -59,6 +59,7 @@ const SECTIONS: NavSection[] = [
     items: [
       { key: 'integrations', label: 'Integrations', screen: 'soon' },
       { key: 'imports', label: 'Imports', screen: 'imports' },
+      { key: 'payout-settings', label: 'Payout Settings', screen: 'holdreasons' },
     ],
   },
   {
@@ -78,7 +79,6 @@ const SECTIONS: NavSection[] = [
       { key: 'payout-rules', label: 'Payout Rules', screen: 'payoutrules' },
       { key: 'payouts-on-hold', label: 'Payouts On Hold', screen: 'runs' },
       { key: 'commission-payroll', label: 'Commission Payroll', screen: 'runs' },
-      { key: 'payout-settings', label: 'Payout Settings', screen: 'holdreasons' },
     ],
   },
   {
