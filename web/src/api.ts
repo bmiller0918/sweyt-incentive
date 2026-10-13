@@ -1,4 +1,5 @@
 import type {
+  AccountMap,
   AccountingSettings,
   AmortizationMethodDef,
   AssetModification,
@@ -319,10 +320,18 @@ export interface AmortizationTypeRow {
   methodId: string | null;
   expenseAccount: GlAccount | null;
   amortizationAccount: GlAccount | null;
+  accounts: TypeAccountOverrides;
+  defaultTermMonths: number | null;
+  inactive: boolean;
   builtinKey: string | null;
+  createdAt: string;
+  updatedAt: string;
   employeeTypes: { id: string; name: string }[];
+  /** Amortizations with a balance, and that balance, at the last closed month. */
+  usage: { count: number; balance: number };
 }
-export type AmortizationTypeInput = Omit<AmortizationTypeRow, 'id' | 'builtinKey' | 'employeeTypes'> & { employeeTypeIds?: string[] };
+export type TypeAccountOverrides = Partial<Pick<AccountMap, 'deferredCurrent' | 'deferredNoncurrent' | 'impairmentExpense' | 'accruedCommissions'>>;
+export type AmortizationTypeInput = Omit<AmortizationTypeRow, 'id' | 'builtinKey' | 'employeeTypes' | 'usage' | 'createdAt' | 'updatedAt'> & { employeeTypeIds?: string[] };
 export interface RoleMapping {
   id: string;
   name: string;
@@ -331,6 +340,8 @@ export interface RoleMapping {
   suggestedTypeId: string | null;
 }
 export interface AmortizationTypesPayload {
+  /** Last closed month, for usage. */
+  asOf: string | null;
   types: AmortizationTypeRow[];
   employeeTypes: RoleMapping[];
 }
@@ -418,7 +429,7 @@ export interface AssetDetail extends Omit<RegisterAsset, 'byMonth' | 'bookedMont
   asOf: string | null;
   openMonth: string | null;
   schedule: { period: number; type: string; start: string; end: string; amount: number; remaining: number; journal: string | null; state: ScheduleState }[];
-  accounts: { role: string; account: GlAccount; note: string }[];
+  accountRoles: { role: string; account: GlAccount; note: string }[];
   history: AssetModification[];
   editable: boolean;
 }
