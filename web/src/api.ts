@@ -12,7 +12,7 @@ import type {
   RegisterAsset,
   RollforwardMonth,
 } from '@commissions/shared';
-import type { AccountingPolicy, Aggregate, ColumnDef, ColumnType, CostTreatment, Criteria, HoldRule, LineStatus, PlanStructure, PlanTiers, RawRow, ScheduleLine, SubledgerResult } from '@commissions/shared';
+import type { AccountingPolicy, Aggregate, ColumnDef, ColumnType, CostTreatment, Criteria, HoldRule, LineStatus, PayoutRule, PlanStructure, PlanTiers, RawRow, ScheduleLine, SubledgerResult } from '@commissions/shared';
 
 export interface ImportSummary {
   id: string;
@@ -220,6 +220,28 @@ export interface HoldReason {
   name: string;
   builtin: number;
   sortOrder: number;
+}
+
+/** A saved payout rule, with its position (rules apply in order; the first flagging rule's reason wins). */
+export type PayoutRuleRow = PayoutRule & { sortOrder: number; updatedAt: string };
+export type PayoutRuleInput = Omit<PayoutRule, 'id'>;
+
+/** A column header seen across imports, with the type most imports give it. */
+export interface RuleField {
+  name: string;
+  type: ColumnType;
+  imports: string[];
+}
+
+/** Dry run of the payout rules against one import. */
+export interface PayoutRulesPreview {
+  total: number;
+  flaggedCount: number;
+  counts: Record<string, number>;
+  errors: Record<string, string>;
+  skipped: string[];
+  columns: ColumnDef[];
+  rows: { index: number; ruleIds: string[]; data: RawRow }[];
 }
 
 export interface CommissionRun {
@@ -606,6 +628,14 @@ export const api = {
   },
   getAccountingPolicy: () => request<AccountingPolicyRow>('/api/accounting-policy'),
   updateAccountingPolicy: (body: AccountingPolicy) => request<AccountingPolicyRow>('/api/accounting-policy', json('PUT', body)),
+
+  listPayoutRules: () => request<PayoutRuleRow[]>('/api/payout-rules'),
+  listRuleFields: () => request<RuleField[]>('/api/payout-rules/fields'),
+  createPayoutRule: (body: PayoutRuleInput) => request<PayoutRuleRow>('/api/payout-rules', json('POST', body)),
+  updatePayoutRule: (id: string, body: PayoutRuleInput) => request<PayoutRuleRow>(`/api/payout-rules/${id}`, json('PUT', body)),
+  reorderPayoutRules: (ids: string[]) => request<PayoutRuleRow[]>('/api/payout-rules/order', json('PUT', { ids })),
+  deletePayoutRule: (id: string) => request<void>(`/api/payout-rules/${id}`, { method: 'DELETE' }),
+  previewPayoutRules: (body: { importId: string; rules?: PayoutRule[]; limit?: number }) => request<PayoutRulesPreview>('/api/payout-rules/preview', json('POST', body)),
 
   getAccountingSettings: () => request<AccountingSettingsRow>('/api/accounting-settings'),
   updateAccountingSettings: (body: AccountingSettings) => request<AccountingSettingsRow>('/api/accounting-settings', json('PUT', body)),

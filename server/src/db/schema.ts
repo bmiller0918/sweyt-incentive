@@ -8,6 +8,7 @@ import type {
   AssetAccounts,
   AssetModification,
   ColumnDef,
+  Condition,
   CostTreatment,
   Criteria,
   GlAccount,
@@ -17,6 +18,7 @@ import type {
   PlanTiers,
   RawRow,
   ReclassMode,
+  Requirement,
 } from '@commissions/shared';
 
 // Every table carries timestamps and a nullable organization_id so multi-
@@ -351,6 +353,26 @@ export const holdReasons = pgTable('hold_reasons', {
   key: text('key').notNull().unique(),
   name: text('name').notNull(),
   builtin: integer('builtin').notNull().default(0),
+  sortOrder: integer('sort_order').notNull().default(0),
+});
+
+/**
+ * Workspace-wide payout rules, shaped like a cross-validation rule: filters
+ * say which deals a rule applies to, requirements say what must (or cannot)
+ * be true of them. A deal that breaks a rule starts on hold on every
+ * commission run, with the rule's reason and message.
+ */
+export const payoutRules = pgTable('payout_rules', {
+  ...base,
+  name: text('name').notNull().default(''),
+  /** Hold note for flagged lines; empty = the requirements in words. */
+  message: text('message').notNull().default(''),
+  reasonKey: text('reason_key').notNull(),
+  filters: jsonb('filters').$type<Condition[]>().notNull().default([]),
+  requirements: jsonb('requirements').$type<Requirement[]>().notNull().default([]),
+  /** 1: every requirement must hold; 0: any one is enough. */
+  requireAll: integer('require_all').notNull().default(1),
+  enabled: integer('enabled').notNull().default(1),
   sortOrder: integer('sort_order').notNull().default(0),
 });
 

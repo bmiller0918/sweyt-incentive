@@ -92,6 +92,7 @@ export function CommissionsView() {
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [showReasons, setShowReasons] = useState(false);
+  const [payoutRuleCount, setPayoutRuleCount] = useState(0);
 
   const refresh = useCallback(async () => {
     const r = await api.listCommissionRuns();
@@ -101,6 +102,7 @@ export function CommissionsView() {
   const refreshReasons = useCallback(() => api.listHoldReasons().then(setReasons), []);
 
   useEffect(() => {
+    api.listPayoutRules().then((rs) => setPayoutRuleCount(rs.filter((r) => r.enabled).length)).catch(() => undefined);
     Promise.all([refresh(), api.listImports(), refreshReasons(), api.listPlans()])
       .then(([r, imps, , p]) => {
         setImports(imps);
@@ -246,6 +248,7 @@ export function CommissionsView() {
             importDetail={importDetail}
             reasons={reasons}
             componentNames={componentNames}
+            payoutRuleCount={payoutRuleCount}
             busy={busy}
             onCreate={create}
             onCancel={runs.length ? () => setSelectedId(runs[0].id) : undefined}
@@ -270,12 +273,15 @@ function NewRunForm({
   busy,
   onCreate,
   onCancel,
+  payoutRuleCount,
 }: {
   draft: Draft;
   setDraft: (d: Draft) => void;
   imports: ImportSummary[];
   importDetail: ImportDetail | null;
   reasons: HoldReason[];
+  /** Active workspace payout rules, which apply to every run before this run's own hold rules. */
+  payoutRuleCount: number;
   componentNames: string[];
   busy: boolean;
   onCreate: () => void;
@@ -399,6 +405,12 @@ function NewRunForm({
               <div className="mt-1 text-xs text-slate-400">
                 A deal that matches a rule starts on hold with that reason instead of paying next payroll. The first matching rule wins. Anything can still be held or
                 released by hand afterwards.
+                {payoutRuleCount > 0 && (
+                  <>
+                    {' '}
+                    The {payoutRuleCount} active payout rule{payoutRuleCount === 1 ? '' : 's'} under <em>Payouts › Payout Rules</em> {payoutRuleCount === 1 ? 'applies' : 'apply'} first, on every run.
+                  </>
+                )}
               </div>
               {draft.holdRules.map((r, i) => (
                 <HoldRuleRow

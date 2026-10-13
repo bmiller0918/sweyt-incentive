@@ -14,6 +14,7 @@ import { EmployeeTypesView } from './components/EmployeeTypesView';
 import { EmployeesView } from './components/EmployeesView';
 import { ImportView } from './components/ImportView';
 import { IncentivesView } from './components/IncentivesView';
+import { PayoutRulesView } from './components/PayoutRulesView';
 import { SettingsView } from './components/SettingsView';
 import { UploadFlow } from './components/UploadFlow';
 import { useAuth } from './components/AuthGate';
@@ -27,6 +28,7 @@ type Screen =
   | 'employees'
   | 'types'
   | 'plans'
+  | 'payoutrules'
   | 'holdreasons'
   | 'acctpolicy'
   | 'amorttypes'
@@ -69,7 +71,7 @@ const SECTIONS: NavSection[] = [
     key: 'payouts',
     label: 'Payouts',
     items: [
-      { key: 'payout-rules', label: 'Payout Rules', screen: 'soon' },
+      { key: 'payout-rules', label: 'Payout Rules', screen: 'payoutrules' },
       { key: 'payouts-on-hold', label: 'Payouts On Hold', screen: 'runs' },
       { key: 'commission-payroll', label: 'Commission Payroll', screen: 'runs' },
       { key: 'payout-settings', label: 'Payout Settings', screen: 'holdreasons' },
@@ -243,6 +245,8 @@ export default function App() {
         return <EmployeeTypesView />;
       case 'plans':
         return <SettingsView tab="plans" />;
+      case 'payoutrules':
+        return <PayoutRulesView onOpenHoldReasons={() => go('payout-settings')} />;
       case 'holdreasons':
         return <SettingsView tab="hold-reasons" />;
       case 'acctpolicy':
