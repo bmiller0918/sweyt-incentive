@@ -21,7 +21,12 @@ import {
   scheduleFor,
   suggestTypeKey,
   validateMethod,
+  futureAmortization,
+  manualSchedule,
+  rescheduleAsset,
+  rollforwardRange,
   type AccountingSettings,
+  type AssetModification,
   type AmortizationMethodDef,
   type AmortizationTypeDef,
   type BookedLine,
@@ -30,8 +35,9 @@ import {
   type NamedMethod,
   type RegisterAsset,
 } from '@commissions/shared';
-import { asc, desc, eq, inArray } from 'drizzle-orm';
+import { and, asc, desc, eq, inArray, isNotNull, isNull } from 'drizzle-orm';
 import type { FastifyInstance, FastifyRequest } from 'fastify';
+import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
 import type { Db } from '../db/client.js';
 import {
@@ -160,7 +166,8 @@ export async function payeeAccounting(db: Db) {
   return new Map(emps.map((e) => [e.name.trim().toLowerCase(), e]));
 }
 
-const toAsset = (r: typeof amortizationAssets.$inferSelect): RegisterAsset => ({
+type AssetDbRow = typeof amortizationAssets.$inferSelect;
+const toAsset = (r: AssetDbRow): RegisterAsset => ({
   id: r.id,
   sourceKey: r.sourceKey,
   runId: r.runId,
@@ -172,7 +179,7 @@ const toAsset = (r: typeof amortizationAssets.$inferSelect): RegisterAsset => ({
   methodName: r.methodName,
   amount: r.amount,
   capitalizedMonth: r.capitalizedMonth,
-  bookedMonth: r.bookedMonth,
+  bookedMonth: r.bookedMonth ?? '',
   startMonth: r.startMonth,
   endMonth: r.endMonth,
   months: r.months,
@@ -180,6 +187,24 @@ const toAsset = (r: typeof amortizationAssets.$inferSelect): RegisterAsset => ({
   amortizationAccount: r.amortizationAccount ?? null,
   writtenOffMonth: r.writtenOffMonth,
   writeOffReason: r.writeOffReason,
+  origin: r.origin,
+  opening: r.opening,
+  offsetAccount: r.offsetAccount ?? null,
+});
+
+/** AMRT0001-style id of a register row. */
+export const assetCode = (n: number) => `AMRT${String(n).padStart(4, '0')}`;
+/** What to call a row in lists: its name, or deal and payee for a commission. */
+const assetName = (r: AssetDbRow) => r.name || [r.dealKey, r.payee].filter(Boolean).join(' · ');
+/** Display fields every register row carries alongside its accounting. */
+const assetInfo = (r: AssetDbRow) => ({
+  number: r.number,
+  code: assetCode(r.number),
+  name: assetName(r),
+  description: r.description,
+  typeId: r.typeId,
+  methodId: r.methodId,
+  createdAt: r.createdAt,
 });
 
 export async function accountingRoutes(app: FastifyInstance, db: Db) {
@@ -315,7 +340,21 @@ export async function accountingRoutes(app: FastifyInstance, db: Db) {
 
   // -- Register and close ----------------------------------------------------
   const periods = () => db.select().from(accountingPeriods).orderBy(asc(accountingPeriods.month));
-  const allAssets = async () => (await db.select().from(amortizationAssets).orderBy(asc(amortizationAssets.bookedMonth), asc(amortizationAssets.payee))).map(toAsset);
+  /** Booked register rows (every commission asset, and manual ones whose month has closed). */
+  const bookedRows = () => db.select().from(amortizationAssets).where(isNotNull(amortizationAssets.bookedMonth)).orderBy(asc(amortizationAssets.number));
+  const allAssets = async () => (await bookedRows()).map(toAsset);
+  /** Manual amortizations entered but not booked by a close yet. */
+  const pendingRows = () => db.select().from(amortizationAssets).where(isNull(amortizationAssets.bookedMonth)).orderBy(asc(amortizationAssets.number));
+  const openMonthOf = (ps: { month: string }[]) => (ps.length ? addMonths(ps[ps.length - 1].month, 1) : null);
+  const note = (req: FastifyRequest, action: string, changes: AssetModification['changes'] = [], extra: Partial<AssetModification> = {}): AssetModification => ({
+    at: new Date().toISOString(),
+    by: actor(req),
+    action,
+    effectiveMonth: null,
+    changes,
+    note: null,
+    ...extra,
+  });
 
   /** Commission lines from the chosen runs (all runs by default), ready for the close. */
   const closeLines = async (runIds: string[] | null): Promise<{ lines: CloseLineInput[]; runs: { id: string; name: string }[] }> => {
@@ -361,10 +400,12 @@ export async function accountingRoutes(app: FastifyInstance, db: Db) {
     const { methods, types } = await loadMethodsAndTypes(db);
     const { lines, runs } = await closeLines(runIds);
     const assets = await allAssets();
+    const pending = (await pendingRows()).map(toAsset);
     const result = closeMonth({
       month,
       lines,
       assets,
+      pending,
       booked: bookedTotals(ps.flatMap((p) => ((p.summary as { booked?: BookedLine[] }).booked ?? []))),
       registerStart: ps[0]?.month ?? month,
       priorCurrent: last?.currentPortion ?? 0,
@@ -421,8 +462,28 @@ export async function accountingRoutes(app: FastifyInstance, db: Db) {
           closedBy: actor(req),
         })
         .returning();
-      for (let i = 0; i < newAssets.length; i += 500) {
-        await tx.insert(amortizationAssets).values(newAssets.slice(i, i + 500).map(({ id: _id, ...a }) => ({ ...a, periodId: period.id })));
+      const fromLines = newAssets.filter((a) => a.origin !== 'manual');
+      const booked: AssetModification = { at: new Date().toISOString(), by: actor(req), action: 'booked', effectiveMonth: month, changes: [], note: `Booked by the ${month} close` };
+      for (let i = 0; i < fromLines.length; i += 500) {
+        await tx
+          .insert(amortizationAssets)
+          .values(
+            fromLines.slice(i, i + 500).map(({ id, origin: _o, opening: _op, offsetAccount: _oa, ...a }) => ({
+              ...a,
+              // A recalculated payout's difference is its own row; say so, since it shares the deal and payee.
+              name: id.endsWith(':adj') ? `${[a.dealKey, a.payee].filter(Boolean).join(' · ')} (recalculated)` : null,
+              origin: 'commission' as const,
+              periodId: period.id,
+              history: [booked],
+            })),
+          );
+      }
+      for (const m of newAssets.filter((a) => a.origin === 'manual')) {
+        const [cur] = await tx.select({ history: amortizationAssets.history }).from(amortizationAssets).where(eq(amortizationAssets.id, m.id));
+        await tx
+          .update(amortizationAssets)
+          .set({ periodId: period.id, bookedMonth: month, history: [...(cur?.history ?? []), booked], updatedAt: new Date() })
+          .where(and(eq(amortizationAssets.id, m.id), isNull(amortizationAssets.bookedMonth)));
       }
       await tx.insert(auditLog).values({ actor: actor(req), action: 'accounting_period.close', entityType: 'accounting_period', entityId: period.id, detail: { month, totals: result.totals } });
       // Re-check order inside the transaction: the previous month must still be the latest closed.
@@ -437,8 +498,30 @@ export async function accountingRoutes(app: FastifyInstance, db: Db) {
     const ps = await periods();
     const last = ps[ps.length - 1];
     if (!last || last.month !== month) return reply.code(400).send({ error: 'Only the latest closed month can be reopened.' });
+    // Commission amortizations booked by this month are rebuilt by the next close, so edits made to them since would be lost.
+    const { force } = z.object({ force: z.boolean().default(false) }).parse(req.body ?? {});
+    if (!force) {
+      const changed = (await db.select({ history: amortizationAssets.history }).from(amortizationAssets).where(and(eq(amortizationAssets.periodId, last.id), eq(amortizationAssets.origin, 'commission')))).filter(
+        (r) => r.history.some((h) => h.action !== 'booked'),
+      ).length;
+      if (changed)
+        return reply.code(409).send({
+          error: `${changed} commission amortization${changed === 1 ? ' booked in this month was' : 's booked in this month were'} modified, transferred or written off since. Reopening removes them and the next close books them again as calculated, without those changes.`,
+          code: 'changes_lost',
+        });
+    }
     // Write-offs recorded for this month stay pending for the next close.
-    await db.delete(accountingPeriods).where(eq(accountingPeriods.id, last.id));
+    // Commission assets it booked are deleted (the next close books them again); manual ones go back to pending.
+    await db.transaction(async (tx) => {
+      await tx.delete(amortizationAssets).where(and(eq(amortizationAssets.periodId, last.id), eq(amortizationAssets.origin, 'commission')));
+      const manual = await tx.select().from(amortizationAssets).where(and(eq(amortizationAssets.periodId, last.id), eq(amortizationAssets.origin, 'manual')));
+      for (const m of manual)
+        await tx
+          .update(amortizationAssets)
+          .set({ periodId: null, bookedMonth: null, history: [...m.history, note(req, 'unbooked', [], { effectiveMonth: month, note: `${month} was reopened` })], updatedAt: new Date() })
+          .where(eq(amortizationAssets.id, m.id));
+      await tx.delete(accountingPeriods).where(eq(accountingPeriods.id, last.id));
+    });
     await db.insert(auditLog).values({ actor: actor(req), action: 'accounting_period.reopen', entityType: 'accounting_period', entityId: last.id, detail: { month } });
     return { ok: true };
   });
@@ -477,11 +560,18 @@ export async function accountingRoutes(app: FastifyInstance, db: Db) {
 
   // -- Register --------------------------------------------------------------
   const registerAt = async (month: string) => {
-    const assets = await allAssets();
+    const dbRows = await bookedRows();
+    const assets = dbRows.map(toAsset);
     const inScope = assets.filter((a) => a.bookedMonth <= month);
+    const info = new Map(dbRows.map((r) => [r.id, assetInfo(r)]));
     const rows = inScope.map((a) => {
       const { byMonth: _b, ...rest } = a;
-      return { ...rest, ...assetPosition(a, month) };
+      return { ...rest, ...info.get(a.id)!, ...assetPosition(a, month) };
+    });
+    // Manual amortizations waiting for their month's close.
+    const pending = (await pendingRows()).map((r) => {
+      const { byMonth: _b, ...rest } = toAsset(r);
+      return { ...rest, ...assetInfo(r), amortizedToDate: 0, impaired: 0, remaining: r.amount, amortizationThisMonth: 0, impairmentThisMonth: 0, current: 0, noncurrent: 0, status: 'pending' as const };
     });
     const ps = await periods();
     const history = ps.filter((p) => p.month <= month).map((p) => registerRollforward(assets, p.month));
@@ -509,6 +599,7 @@ export async function accountingRoutes(app: FastifyInstance, db: Db) {
       month,
       closed: ps.some((p) => p.month === month),
       rows,
+      pending,
       rollforward: registerRollforward(assets, month),
       history,
       byType: [...byType.values()].map((t) => ({ ...t, amount: round(t.amount), remaining: round(t.remaining), current: round(t.current), noncurrent: round(t.noncurrent), amortizationThisMonth: round(t.amortizationThisMonth) })),
@@ -529,8 +620,11 @@ export async function accountingRoutes(app: FastifyInstance, db: Db) {
     const q = z.object({ month: ym.optional() }).parse(req.query ?? {});
     const month = q.month ?? ps[ps.length - 1]?.month ?? new Date().toISOString().slice(0, 7);
     const reg = await registerAt(month);
-    const cols = ['Deal', 'Payee', 'Department', 'Amortization Type', 'Method', 'Amount', 'Capitalized', 'Booked', 'Start', 'End', 'Months', 'Amortized To Date', 'Written Off', 'Remaining', 'Current', 'Non-current', `Amortization ${month}`, 'Status', 'Write-off Month', 'Write-off Reason'];
-    const rows = reg.rows.map((r) => ({
+    const cols = ['ID', 'Name', 'Source', 'Deal', 'Payee', 'Department', 'Amortization Type', 'Method', 'Amount', 'Capitalized', 'Booked', 'Start', 'End', 'Months', 'Amortized To Date', 'Written Off', 'Remaining', 'Current', 'Non-current', `Amortization ${month}`, 'Status', 'Write-off Month', 'Write-off Reason'];
+    const rows = [...reg.rows, ...reg.pending].map((r) => ({
+      ID: r.code,
+      Name: r.name,
+      Source: r.origin === 'manual' ? 'Manual' : 'Commission',
       Deal: r.dealKey ?? '',
       Payee: r.payee,
       Department: r.department,
@@ -538,7 +632,7 @@ export async function accountingRoutes(app: FastifyInstance, db: Db) {
       Method: r.methodName,
       Amount: String(r.amount),
       Capitalized: r.capitalizedMonth,
-      Booked: r.bookedMonth,
+      Booked: r.bookedMonth || 'Pending',
       Start: r.startMonth,
       End: r.endMonth,
       Months: String(r.months),
@@ -582,8 +676,13 @@ export async function accountingRoutes(app: FastifyInstance, db: Db) {
     const open = addMonths(ps[ps.length - 1].month, 1);
     const [a] = await db.select().from(amortizationAssets).where(eq(amortizationAssets.id, id));
     if (!a) return reply.code(404).send({ error: 'Asset not found' });
+    if (!a.bookedMonth) return reply.code(400).send({ error: 'This amortization is not booked yet; delete it instead.' });
     if (a.writtenOffMonth && a.writtenOffMonth < open) return reply.code(400).send({ error: `Already written off in ${a.writtenOffMonth}.` });
-    await db.update(amortizationAssets).set({ writtenOffMonth: open, writeOffReason: body.reason, updatedAt: new Date() }).where(eq(amortizationAssets.id, id));
+    const pos = assetPosition(toAsset(a), ps[ps.length - 1].month);
+    await db
+      .update(amortizationAssets)
+      .set({ writtenOffMonth: open, writeOffReason: body.reason, history: [...a.history, note(req, 'written_off', [{ field: 'Remaining balance', from: pos.remaining, to: 0 }], { effectiveMonth: open, note: body.reason })], updatedAt: new Date() })
+      .where(eq(amortizationAssets.id, id));
     await db.insert(auditLog).values({ actor: actor(req), action: 'amortization_asset.write_off', entityType: 'amortization_asset', entityId: id, detail: { month: open, reason: body.reason } });
     return { writtenOffMonth: open };
   });
@@ -594,9 +693,335 @@ export async function accountingRoutes(app: FastifyInstance, db: Db) {
     const [a] = await db.select().from(amortizationAssets).where(eq(amortizationAssets.id, id));
     if (!a) return reply.code(404).send({ error: 'Asset not found' });
     if (!a.writtenOffMonth || (open && a.writtenOffMonth < open)) return reply.code(400).send({ error: 'Only a pending write-off (in the open month) can be undone.' });
-    await db.update(amortizationAssets).set({ writtenOffMonth: null, writeOffReason: null, updatedAt: new Date() }).where(eq(amortizationAssets.id, id));
+    await db
+      .update(amortizationAssets)
+      .set({ writtenOffMonth: null, writeOffReason: null, history: [...a.history, note(req, 'write_off_undone', [], { effectiveMonth: a.writtenOffMonth })], updatedAt: new Date() })
+      .where(eq(amortizationAssets.id, id));
     await db.insert(auditLog).values({ actor: actor(req), action: 'amortization_asset.undo_write_off', entityType: 'amortization_asset', entityId: id });
     return { ok: true };
+  });
+
+
+  // -- Amortization records (create, view, modify, transfer, delete) --------
+  const manualSchema = z.object({
+    name: z.string().trim().min(1).max(200),
+    payee: z.string().trim().min(1).max(200),
+    department: z.string().trim().max(200).default(''),
+    typeId: z.string().uuid().nullable().default(null),
+    methodId: z.string().uuid().nullable().default(null),
+    amount: z.number().finite().refine((n) => n !== 0, 'Enter an amount.'),
+    capitalizedMonth: ym,
+    startMonth: ym,
+    months: z.number().int().min(1).max(600),
+    description: z.string().max(2000).nullable().default(null),
+    dealKey: z.string().max(200).nullable().default(null),
+    opening: z.boolean().default(false),
+    offsetAccount: glAccount.nullable().default(null),
+  });
+  type ManualInput = z.infer<typeof manualSchema>;
+
+  /** Type, method, accounts and schedule of a manual amortization, from its inputs. */
+  const buildManual = async (b: ManualInput) => {
+    const { methods, types } = await loadMethodsAndTypes(db);
+    const type = b.typeId ? types.find((t) => t.id === b.typeId) : null;
+    if (b.typeId && !type) throw Object.assign(new Error('That amortization type no longer exists.'), { statusCode: 400 });
+    const method = b.methodId ? methods.find((m) => m.id === b.methodId) : null;
+    if (b.methodId && !method) throw Object.assign(new Error('That method no longer exists.'), { statusCode: 400 });
+    if (b.startMonth < b.capitalizedMonth && !b.opening) throw Object.assign(new Error('Amortization cannot start before the month the cost is capitalized.'), { statusCode: 400 });
+    let sched: ReturnType<typeof manualSchedule>;
+    try {
+      sched = manualSchedule({ amount: b.amount, startMonth: b.startMonth, months: b.months, def: method?.def ?? null });
+    } catch (e) {
+      throw Object.assign(e as Error, { statusCode: 400 });
+    }
+    return {
+      name: b.name,
+      payee: b.payee,
+      department: b.department || 'Unassigned',
+      typeId: type?.id ?? null,
+      typeName: type?.name ?? 'No amortization type',
+      methodId: method?.id ?? null,
+      methodName: method?.name ?? 'Straight-line',
+      amount: Math.round(b.amount * 100) / 100,
+      capitalizedMonth: b.capitalizedMonth,
+      description: b.description,
+      dealKey: b.dealKey,
+      opening: b.opening,
+      offsetAccount: b.opening ? null : b.offsetAccount,
+      amortizationAccount: type?.amortizationAccount ?? null,
+      ...sched,
+    };
+  };
+
+  app.post('/api/accounting/assets/preview', async (req) => {
+    const built = await buildManual(manualSchema.parse(req.body));
+    return { startMonth: built.startMonth, endMonth: built.endMonth, months: built.months, byMonth: built.byMonth };
+  });
+
+  /** A new amortization entered by hand. It books with the close of its capitalized month (or the next open month). */
+  app.post('/api/accounting/assets', async (req) => {
+    const built = await buildManual(manualSchema.parse(req.body));
+    const [row] = await db
+      .insert(amortizationAssets)
+      .values({
+        ...built,
+        origin: 'manual',
+        sourceKey: `manual:${randomUUID()}`,
+        runId: null,
+        lineId: null,
+        periodId: null,
+        bookedMonth: null,
+        history: [note(req, 'created', [], { note: built.opening ? 'Opening balance' : null })],
+      })
+      .returning();
+    await db.insert(auditLog).values({ actor: actor(req), action: 'amortization_asset.create', entityType: 'amortization_asset', entityId: row.id, detail: { code: assetCode(row.number), amount: row.amount } });
+    return { id: row.id, code: assetCode(row.number) };
+  });
+
+  /** One amortization with its schedule, journals, accounts and history. */
+  app.get('/api/accounting/assets/:id', async (req, reply) => {
+    const { id } = req.params as { id: string };
+    const [r] = await db.select().from(amortizationAssets).where(eq(amortizationAssets.id, id));
+    if (!r) return reply.code(404).send({ error: 'Amortization not found' });
+    const ps = await periods();
+    const settings = await loadSettings(db);
+    const A = settings.accounts;
+    const lastClosed = ps[ps.length - 1]?.month ?? null;
+    const openMonth = openMonthOf(ps);
+    const closed = new Map(ps.map((p) => [p.month, p]));
+    const a = toAsset(r);
+    const booked = !!r.bookedMonth;
+    const pos = booked && lastClosed && r.bookedMonth! <= lastClosed ? assetPosition(a, lastClosed) : null;
+    /** Journal id of an entry kind in a closed month, numbered as the CSV export numbers it. */
+    const journalRef = (month: string, kind: string) => {
+      const p = closed.get(month);
+      if (!p) return null;
+      const i = p.entries.findIndex((e) => e.kind === kind);
+      return i < 0 ? null : `COMM-${month}-${String(i + 1).padStart(2, '0')}`;
+    };
+    const lastDay = (m: string) => {
+      const [y, mo] = m.split('-').map(Number);
+      return new Date(Date.UTC(y, mo, 0)).toISOString().slice(0, 10);
+    };
+    type State = 'booked' | 'next_close' | 'scheduled' | 'pending';
+    const stateOf = (m: string): State => (closed.has(m) ? 'booked' : !booked ? 'pending' : m === openMonth ? 'next_close' : 'scheduled');
+
+    // Schedule: the initial balance, each month's amortization, and a write-off if any.
+    const schedule: { period: number; type: string; start: string; end: string; amount: number; remaining: number; journal: string | null; state: State }[] = [];
+    const addMonth = r.bookedMonth ?? r.capitalizedMonth;
+    schedule.push({
+      period: 0,
+      type: r.opening ? 'Opening balance' : 'Initial balance',
+      start: `${addMonth}-01`,
+      end: lastDay(addMonth),
+      amount: r.amount,
+      remaining: r.amount,
+      journal: r.opening ? null : journalRef(addMonth, r.origin === 'manual' ? 'addition' : 'accrual'),
+      state: stateOf(addMonth),
+    });
+    let remaining = r.amount;
+    const months = Object.keys(r.byMonth).sort();
+    let n = 0;
+    for (const m of months) {
+      if (r.writtenOffMonth && m >= r.writtenOffMonth) break;
+      n++;
+      remaining = Math.round((remaining - r.byMonth[m]) * 100) / 100;
+      // Amortization scheduled before the asset was booked is caught up in its booked month.
+      const bookedIn = r.bookedMonth && m < r.bookedMonth ? r.bookedMonth : m;
+      schedule.push({ period: n, type: 'Amortization', start: `${m}-01`, end: lastDay(m), amount: r.byMonth[m], remaining, journal: journalRef(bookedIn, 'amortization'), state: stateOf(bookedIn) });
+    }
+    if (r.writtenOffMonth) {
+      schedule.push({ period: n + 1, type: 'Write-off', start: `${r.writtenOffMonth}-01`, end: lastDay(r.writtenOffMonth), amount: remaining, remaining: 0, journal: journalRef(r.writtenOffMonth, 'impairment'), state: stateOf(r.writtenOffMonth) });
+    }
+    const remainingPeriods = months.filter((m) => (!pos || !lastClosed || m > lastClosed) && !(r.writtenOffMonth && m >= r.writtenOffMonth)).length;
+
+    const deferredCredit = settings.reclassEnabled && settings.reclassMode === 'true_up' ? A.deferredCurrent : A.deferredNoncurrent;
+    const accounts = [
+      { role: 'Asset (non-current)', account: A.deferredNoncurrent, note: 'Debited when capitalized' },
+      ...(settings.reclassEnabled ? [{ role: 'Asset (current)', account: A.deferredCurrent, note: 'The next 12 months, moved by the monthly reclass' }] : []),
+      { role: 'Amortization expense', account: r.amortizationAccount ?? A.amortizationExpense, note: `Debited monthly to ${r.department}, against ${deferredCredit.number} ${deferredCredit.name}` },
+      { role: 'Write-off expense', account: A.impairmentExpense, note: 'If written off' },
+      ...(r.opening
+        ? []
+        : [
+            {
+              role: 'Offset (credit when capitalized)',
+              account: r.origin === 'manual' ? (r.offsetAccount ?? A.accruedCommissions) : A.accruedCommissions,
+              note: r.origin === 'manual' ? 'Chosen on the amortization' : 'Commissions owed to the payee',
+            },
+          ]),
+    ];
+    const run = r.runId ? (await db.select({ name: commissionRuns.name }).from(commissionRuns).where(eq(commissionRuns.id, r.runId)))[0] : undefined;
+    const { byMonth: _b, ...rest } = a;
+    return {
+      ...rest,
+      ...assetInfo(r),
+      bookedMonth: r.bookedMonth,
+      status: !booked ? 'pending' : pos ? pos.status : 'not_started',
+      runName: run?.name ?? null,
+      remaining: pos ? pos.remaining : r.amount,
+      amortizedToDate: pos?.amortizedToDate ?? 0,
+      current: pos?.current ?? 0,
+      noncurrent: pos?.noncurrent ?? 0,
+      remainingPeriods,
+      asOf: lastClosed,
+      openMonth,
+      schedule,
+      accounts,
+      history: r.history,
+      editable: !booked,
+    };
+  });
+
+  const modifySchema = z.object({
+    name: z.string().trim().min(1).max(200).optional(),
+    description: z.string().max(2000).nullable().optional(),
+    dealKey: z.string().max(200).nullable().optional(),
+    startMonth: ym.optional(),
+    endMonth: ym.optional(),
+    note: z.string().max(500).nullable().default(null),
+  });
+
+  /**
+   * Modify an amortization. Before it is booked every field can change.
+   * After, the name and description can, and the schedule changes
+   * prospectively: closed months stay as booked and what is left is
+   * spread evenly from the open month to the new end.
+   */
+  app.put('/api/accounting/assets/:id', async (req, reply) => {
+    const { id } = req.params as { id: string };
+    const [r] = await db.select().from(amortizationAssets).where(eq(amortizationAssets.id, id));
+    if (!r) return reply.code(404).send({ error: 'Amortization not found' });
+    const changes: AssetModification['changes'] = [];
+    const track = (field: string, from: string | number | null, to: string | number | null) => {
+      if (from !== to) changes.push({ field, from, to });
+    };
+    if (!r.bookedMonth) {
+      if (r.origin !== 'manual') return reply.code(400).send({ error: 'Commission amortizations come from a close.' });
+      const b = manualSchema.extend({ note: z.string().max(500).nullable().default(null) }).parse(req.body);
+      const built = await buildManual(b);
+      track('Name', r.name, built.name);
+      track('Payee', r.payee, built.payee);
+      track('Department', r.department, built.department);
+      track('Type', r.typeName, built.typeName);
+      track('Method', r.methodName, built.methodName);
+      track('Amount', r.amount, built.amount);
+      track('Capitalized', r.capitalizedMonth, built.capitalizedMonth);
+      track('Start', r.startMonth, built.startMonth);
+      track('End', r.endMonth, built.endMonth);
+      track('Offset account', r.offsetAccount?.number ?? null, built.offsetAccount?.number ?? null);
+      track('Opening balance', r.opening ? 'Yes' : 'No', built.opening ? 'Yes' : 'No');
+      track('Description', r.description, built.description);
+      track('Reference', r.dealKey, built.dealKey);
+      if (!changes.length) return { ok: true };
+      await db
+        .update(amortizationAssets)
+        .set({ ...built, history: [...r.history, note(req, 'modified', changes, { note: b.note })], updatedAt: new Date() })
+        .where(eq(amortizationAssets.id, id));
+      return { ok: true };
+    }
+    const b = modifySchema.parse(req.body);
+    const open = openMonthOf(await periods())!;
+    const set: Partial<typeof amortizationAssets.$inferInsert> = {};
+    if (b.name !== undefined) {
+      track('Name', assetName(r), b.name);
+      set.name = b.name;
+    }
+    if (b.description !== undefined) {
+      track('Description', r.description, b.description);
+      set.description = b.description;
+    }
+    if (b.dealKey !== undefined) {
+      track('Reference', r.dealKey, b.dealKey);
+      set.dealKey = b.dealKey;
+    }
+    let effectiveMonth: string | null = null;
+    if ((b.endMonth && b.endMonth !== r.endMonth) || (b.startMonth && b.startMonth !== r.startMonth)) {
+      if (r.writtenOffMonth) return reply.code(400).send({ error: 'A written-off amortization cannot be rescheduled.' });
+      try {
+        const next = rescheduleAsset(r, open, { startMonth: b.startMonth, endMonth: b.endMonth ?? r.endMonth });
+        track('Start', r.startMonth, next.startMonth);
+        track('End', r.endMonth, next.endMonth);
+        track('Term (months)', r.months, next.months);
+        Object.assign(set, next, { methodName: r.methodName.endsWith('(modified)') ? r.methodName : `${r.methodName} (modified)` });
+        effectiveMonth = open;
+      } catch (e) {
+        return reply.code(400).send({ error: (e as Error).message });
+      }
+    }
+    if (!changes.length) return { ok: true };
+    await db
+      .update(amortizationAssets)
+      .set({ ...set, history: [...r.history, note(req, 'modified', changes, { effectiveMonth, note: b.note })], updatedAt: new Date() })
+      .where(eq(amortizationAssets.id, id));
+    await db.insert(auditLog).values({ actor: actor(req), action: 'amortization_asset.modify', entityType: 'amortization_asset', entityId: id, detail: { changes } });
+    return { ok: true };
+  });
+
+  /** Move an amortization to another department or type; its amortization from the open month on is charged there. */
+  app.post('/api/accounting/assets/:id/transfer', async (req, reply) => {
+    const { id } = req.params as { id: string };
+    const b = z.object({ department: z.string().trim().min(1).max(200), typeId: z.string().uuid().nullable(), note: z.string().max(500).nullable().default(null) }).parse(req.body);
+    const [r] = await db.select().from(amortizationAssets).where(eq(amortizationAssets.id, id));
+    if (!r) return reply.code(404).send({ error: 'Amortization not found' });
+    const { types } = await loadMethodsAndTypes(db);
+    const type = b.typeId ? types.find((t) => t.id === b.typeId) : null;
+    if (b.typeId && !type) return reply.code(400).send({ error: 'That amortization type no longer exists.' });
+    const changes: AssetModification['changes'] = [];
+    if (r.department !== b.department) changes.push({ field: 'Department', from: r.department, to: b.department });
+    if (type && r.typeName !== type.name) changes.push({ field: 'Type', from: r.typeName, to: type.name });
+    if (!changes.length) return { ok: true };
+    const ps = await periods();
+    await db
+      .update(amortizationAssets)
+      .set({
+        department: b.department,
+        ...(type ? { typeId: type.id, typeName: type.name, amortizationAccount: type.amortizationAccount ?? null } : {}),
+        history: [...r.history, note(req, 'transferred', changes, { effectiveMonth: r.bookedMonth ? openMonthOf(ps) : null, note: b.note })],
+        updatedAt: new Date(),
+      })
+      .where(eq(amortizationAssets.id, id));
+    await db.insert(auditLog).values({ actor: actor(req), action: 'amortization_asset.transfer', entityType: 'amortization_asset', entityId: id, detail: { changes } });
+    return { ok: true };
+  });
+
+  /** Delete a manual amortization that is not booked yet. */
+  app.delete('/api/accounting/assets/:id', async (req, reply) => {
+    const { id } = req.params as { id: string };
+    const [r] = await db.select().from(amortizationAssets).where(eq(amortizationAssets.id, id));
+    if (!r) return reply.code(404).send({ error: 'Amortization not found' });
+    if (r.origin !== 'manual' || r.bookedMonth) return reply.code(400).send({ error: 'Only a manual amortization that is not booked yet can be deleted. Write it off instead.' });
+    await db.delete(amortizationAssets).where(eq(amortizationAssets.id, id));
+    await db.insert(auditLog).values({ actor: actor(req), action: 'amortization_asset.delete', entityType: 'amortization_asset', entityId: id, detail: { code: assetCode(r.number), name: r.name } });
+    return { ok: true };
+  });
+
+  // -- Reports ---------------------------------------------------------------
+  /** Rollforward of each amortization over a range of months; the page groups and totals it. */
+  app.get('/api/accounting/reports/rollforward', async (req) => {
+    const q = z.object({ from: ym, to: ym }).parse(req.query ?? {});
+    if (q.to < q.from) throw Object.assign(new Error('"To" must be on or after "From".'), { statusCode: 400 });
+    const ps = await periods();
+    const rows = (await bookedRows())
+      .map((r) => ({ r, rf: rollforwardRange(toAsset(r), q.from, q.to) }))
+      .filter(({ rf }) => rf.initial || rf.additions || rf.amortization || rf.writeOffs || rf.ending)
+      .map(({ r, rf }) => ({ id: r.id, code: assetCode(r.number), name: assetName(r), origin: r.origin, payee: r.payee, department: r.department, typeName: r.typeName, ...rf }));
+    const lastClosed = ps[ps.length - 1]?.month ?? null;
+    return { from: q.from, to: q.to, lastClosed, projected: !lastClosed || q.to > lastClosed, rows };
+  });
+
+  /** When each amortization's balance at `asOf` will be expensed, by month. */
+  app.get('/api/accounting/reports/waterfall', async (req) => {
+    const ps = await periods();
+    const q = z.object({ asOf: ym.optional() }).parse(req.query ?? {});
+    const asOf = q.asOf ?? ps[ps.length - 1]?.month ?? new Date().toISOString().slice(0, 7);
+    const rows = (await bookedRows())
+      .map((r) => {
+        const a = toAsset(r);
+        return { id: r.id, code: assetCode(r.number), name: assetName(r), origin: r.origin, payee: r.payee, department: r.department, typeName: r.typeName, balance: assetPosition(a, asOf).remaining, byMonth: futureAmortization(a, asOf) };
+      })
+      .filter((x) => x.balance !== 0);
+    return { asOf, lastClosed: ps[ps.length - 1]?.month ?? null, rows };
   });
 
   // -- Reclass ---------------------------------------------------------------

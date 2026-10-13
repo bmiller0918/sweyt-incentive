@@ -13,7 +13,7 @@
 //   balance into current and non-current, and produces the journals.
 //
 // Everything here is pure; the server persists assets and closed periods.
-import { ACCOUNTS, addMonths, straightLine, type CostTreatment, type JournalEntry, type JournalLine } from './accounting.js';
+import { ACCOUNTS, addMonths, monthsBetween, straightLine, type CostTreatment, type JournalEntry, type JournalLine } from './accounting.js';
 import { roundCents } from './lines.js';
 
 export type MethodKind = 'straight_line' | 'yearly_percent' | 'monthly_percent' | 'immediate';
@@ -305,7 +305,18 @@ export interface RegisterAsset {
   /** YYYY-MM the remaining balance was written off (churn, termination), if any. */
   writtenOffMonth: string | null;
   writeOffReason: string | null;
+  /** 'manual' for amortizations entered by hand (not from a commission run). Defaults to 'commission'. */
+  origin?: AssetOrigin;
+  /**
+   * An opening balance already on the books (e.g. migrated from a spreadsheet):
+   * it enters the rollforward as opening balance and books no addition entry.
+   */
+  opening?: boolean;
+  /** Credit side of a manual amortization's addition entry; accrued commissions when null. */
+  offsetAccount?: GlAccount | null;
 }
+
+export type AssetOrigin = 'commission' | 'manual';
 
 export type AssetStatus = 'not_started' | 'amortizing' | 'fully_amortized' | 'written_off';
 
@@ -381,6 +392,7 @@ export function registerRollforward(assets: RegisterAsset[], month: string): Rol
     if (a.bookedMonth > month) continue;
     const p = assetPosition(a, month);
     if (a.bookedMonth < month) opening += assetPosition(a, prev).remaining;
+    else if (a.opening) opening += a.amount;
     else additions += a.amount;
     amortization += p.amortizationThisMonth;
     impairment += p.impairmentThisMonth;
@@ -437,6 +449,11 @@ export interface CloseInput {
   settings: AccountingSettings;
   methods: NamedMethod[];
   types: AmortizationTypeDef[];
+  /**
+   * Manual amortizations entered but not yet booked. Those whose capitalized
+   * month is on or before this month enter the register with this close.
+   */
+  pending?: RegisterAsset[];
 }
 
 export interface BookedLine {
@@ -478,7 +495,7 @@ export interface CloseResult {
   entries: JournalEntry[];
   excluded: { sourceKey: string; lineId: number; payee: string; reason: string }[];
   warnings: string[];
-  totals: { capitalized: number; expensed: number; amortization: number; impairment: number; accrued: number };
+  totals: { capitalized: number; expensed: number; amortization: number; impairment: number; accrued: number; manual: number };
 }
 
 export function resolveLine(
@@ -616,6 +633,11 @@ export function closeMonth(input: CloseInput): CloseResult {
   if (lateCount) warnings.add(`${lateCount} line${lateCount === 1 ? '' : 's'} paid in an earlier closed month ${lateCount === 1 ? 'was' : 'were'} booked now as late additions.`);
   if (booked.some((b) => b.amount < 0)) warnings.add('Some lines are negative (clawbacks or reversals); they reduce the balance and expense.');
 
+  // Manual amortizations due by this month enter the register now, keeping their own ids.
+  const manual = (input.pending ?? []).filter((p) => p.capitalizedMonth <= month).map((p) => ({ ...p, origin: 'manual' as const, bookedMonth: month }));
+  for (const m of manual) if (m.startMonth < month && !m.opening) warnings.add('Some manual amortizations started before this month; the catch-up is in this month\'s amortization.');
+  newAssets.push(...manual);
+
   const typeById = new Map(types.map((t) => [t.name, t]));
   const all = [...input.assets.filter((a) => a.bookedMonth <= month), ...newAssets];
   const rollforward = registerRollforward(all, month);
@@ -636,6 +658,14 @@ export function closeMonth(input: CloseInput): CloseResult {
     );
     const credits = grouped([{ account: A.accruedCommissions, department: null, amount: booked.reduce((s, b) => s + b.amount, 0) }], 'credit');
     entries.push({ month, kind: 'accrual', memo: `Accrue commissions approved for ${month} payroll${lateCount ? ' (incl. late lines)' : ''}`, lines: [...debits, ...credits] });
+  }
+
+  // 1b. Manual amortizations: the asset against the account each one names. Opening balances are already on the books.
+  const added = manual.filter((m) => !m.opening && m.amount !== 0);
+  if (added.length) {
+    const debits = grouped(added.map((m) => ({ account: A.deferredNoncurrent, department: m.department, amount: m.amount })), 'debit');
+    const credits = grouped(added.map((m) => ({ account: m.offsetAccount ?? A.accruedCommissions, department: null, amount: m.amount })), 'credit');
+    entries.push({ month, kind: 'addition', memo: `Capitalize manual amortizations for ${month}`, lines: [...debits, ...credits] });
   }
 
   // 2. Amortization of the register for the month.
@@ -692,7 +722,14 @@ export function closeMonth(input: CloseInput): CloseResult {
     entries,
     excluded,
     warnings: [...warnings],
-    totals: { capitalized, expensed, amortization: rollforward.amortization, impairment: rollforward.impairment, accrued: roundCents(capitalized + expensed) },
+    totals: {
+      capitalized,
+      expensed,
+      amortization: rollforward.amortization,
+      impairment: rollforward.impairment,
+      accrued: roundCents(capitalized + expensed),
+      manual: roundCents(manual.reduce((s, m) => s + m.amount, 0)),
+    },
   };
 }
 
@@ -711,4 +748,113 @@ export function bookedTotals(lines: { sourceKey: string; amount: number }[]): Ma
   const m = new Map<string, number>();
   for (const b of lines) m.set(b.sourceKey, roundCents((m.get(b.sourceKey) ?? 0) + b.amount));
   return m;
+}
+
+// -- Manual amortizations, modifications and reporting -----------------------
+
+/** Straight-line over the term from the start month: the default for a manual amortization. */
+export const STRAIGHT_LINE: AmortizationMethodDef = { kind: 'straight_line', periodBasis: 'contract_term', months: null, termMultiplier: 1, yearPercents: [], monthPercents: [], startBasis: 'contract_start' };
+
+/** Months from `from` to `to`, inclusive (0 when `to` is before `from`). */
+export function monthCount(from: string, to: string): number {
+  return Math.max(0, monthsBetween(from, to) + 1);
+}
+
+export interface ManualScheduleInput {
+  amount: number;
+  /** YYYY-MM the amortization starts. */
+  startMonth: string;
+  /** Term in months; a fixed-period method (e.g. a 48-month customer life) uses its own. */
+  months: number;
+  /** Shape of the curve; straight-line when omitted. */
+  def?: AmortizationMethodDef | null;
+}
+
+/**
+ * The schedule of an amortization entered by hand. It always starts in the
+ * month given; a method only shapes the curve (and, for a fixed period, its length).
+ */
+export function manualSchedule(input: ManualScheduleInput): { startMonth: string; endMonth: string; months: number; byMonth: Record<string, number> } {
+  const def = { ...(input.def ?? STRAIGHT_LINE), startBasis: 'contract_start' as const };
+  if (def.kind === 'immediate') throw new Error('That method expenses immediately, so there is nothing to amortize. Pick another method.');
+  if (!(input.months >= 1)) throw new Error('The term must be at least one month.');
+  const errs = validateMethod(def);
+  if (errs.length) throw new Error(errs[0]);
+  const sched = scheduleFor(input.amount, def, { payMonth: input.startMonth, contractStart: `${input.startMonth}-01`, termMonths: Math.round(input.months), defaultTermMonths: Math.round(input.months) });
+  return { startMonth: sched.startMonth, endMonth: addMonths(sched.startMonth, sched.months - 1), months: sched.months, byMonth: sched.byMonth };
+}
+
+/**
+ * Change an asset's schedule from `fromMonth` on (a change in estimate,
+ * applied prospectively). Months before `fromMonth` are closed and stay
+ * as booked; what is left is spread evenly from `fromMonth` (or the new
+ * start, if the asset has not started) through the new end month.
+ */
+export function rescheduleAsset(
+  a: Pick<RegisterAsset, 'amount' | 'startMonth' | 'endMonth' | 'byMonth'>,
+  fromMonth: string,
+  change: { startMonth?: string; endMonth: string },
+): { startMonth: string; endMonth: string; months: number; byMonth: Record<string, number> } {
+  const kept: Record<string, number> = {};
+  for (const [m, v] of Object.entries(a.byMonth)) if (m < fromMonth) kept[m] = v;
+  const started = Object.keys(kept).length > 0;
+  if (started && change.startMonth && change.startMonth !== a.startMonth) throw new Error('The start can only change before amortization has been booked.');
+  const startMonth = started ? a.startMonth : (change.startMonth ?? a.startMonth);
+  if (!started && startMonth < fromMonth) throw new Error(`The start must be ${fromMonth} or later; earlier months are closed.`);
+  const spreadFrom = started ? fromMonth : startMonth;
+  if (change.endMonth < spreadFrom) throw new Error(`The end must be ${spreadFrom} or later.`);
+  const remaining = roundCents(a.amount - Object.values(kept).reduce((s, v) => s + v, 0));
+  const byMonth = { ...kept, ...straightLine(remaining, spreadFrom, monthCount(spreadFrom, change.endMonth)) };
+  return { startMonth, endMonth: change.endMonth, months: monthCount(startMonth, change.endMonth), byMonth };
+}
+
+export interface RangeRollforward {
+  initial: number;
+  additions: number;
+  amortization: number;
+  writeOffs: number;
+  ending: number;
+}
+
+/**
+ * Rollforward of a set of assets over a range of months (e.g. a fiscal
+ * year): initial balance + additions − amortization − write-offs = ending.
+ * Opening balances entered in the range count as initial balance.
+ */
+export function rollforwardRange(a: RegisterAsset, from: string, to: string): RangeRollforward {
+  const zero = { initial: 0, additions: 0, amortization: 0, writeOffs: 0, ending: 0 };
+  if (a.bookedMonth > to) return zero;
+  const end = assetPosition(a, to);
+  const before = a.bookedMonth < from ? assetPosition(a, addMonths(from, -1)) : null;
+  const initial = before ? before.remaining : a.opening ? a.amount : 0;
+  return {
+    initial,
+    additions: before || a.opening ? 0 : a.amount,
+    amortization: roundCents(end.amortizedToDate - (before?.amortizedToDate ?? 0)),
+    writeOffs: roundCents(end.impaired - (before?.impaired ?? 0)),
+    ending: end.remaining,
+  };
+}
+
+/**
+ * Amortization still to come after `month`, by month: the waterfall of
+ * today's balance. Nothing after a write-off; an asset not booked by
+ * `month` contributes nothing.
+ */
+export function futureAmortization(a: RegisterAsset, month: string): Record<string, number> {
+  const out: Record<string, number> = {};
+  if (a.bookedMonth > month || (a.writtenOffMonth && a.writtenOffMonth <= month)) return out;
+  for (const [m, v] of Object.entries(a.byMonth)) if (m > month && !(a.writtenOffMonth && m >= a.writtenOffMonth) && v !== 0) out[m] = v;
+  return out;
+}
+
+export interface AssetModification {
+  at: string;
+  by: string;
+  /** created, modified, transferred, written_off, write_off_undone, booked, unbooked */
+  action: string;
+  /** First month the change affects (YYYY-MM), when it is a schedule change. */
+  effectiveMonth: string | null;
+  changes: { field: string; from: string | number | null; to: string | number | null }[];
+  note: string | null;
 }

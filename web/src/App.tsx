@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { api, type ImportSummary } from './api';
 import { AccountingSettingsView } from './components/accounting/AccountingSettingsView';
 import { AmortizationRegisterView } from './components/accounting/AmortizationRegisterView';
+import { RollForwardReportView, WaterfallReportView } from './components/accounting/AmortizationReportsView';
 import { AmortizationTypesView } from './components/accounting/AmortizationTypesView';
 import { JournalsView, ReclassView } from './components/accounting/JournalsView';
 import { MonthlyCloseView } from './components/accounting/MonthlyCloseView';
@@ -31,6 +32,8 @@ type Screen =
   | 'acctpolicy'
   | 'amorttypes'
   | 'register'
+  | 'rollforward'
+  | 'waterfall'
   | 'close'
   | 'journals'
   | 'reclass'
@@ -78,7 +81,15 @@ const SECTIONS: NavSection[] = [
     items: [
       { key: 'accounting-settings', label: 'Accounting Settings', screen: 'acctpolicy' },
       { key: 'amortization-types', label: 'Amortization Types', screen: 'amorttypes' },
-      { key: 'amortization-registers', label: 'Amortization Register', screen: 'register' },
+      {
+        key: 'amortization-registers',
+        label: 'Amortization Register',
+        screen: 'register',
+        children: [
+          { key: 'amortization-rollforward', label: 'Roll Forward', screen: 'rollforward' },
+          { key: 'amortization-waterfall', label: 'Waterfall', screen: 'waterfall' },
+        ],
+      },
       {
         key: 'process-monthly-accounting',
         label: 'Process Monthly Accounting',
@@ -110,7 +121,7 @@ const SECTIONS: NavSection[] = [
   },
 ];
 
-type Page = { key: string; importId?: string | null; setId?: string | null; uploading?: boolean };
+type Page = { key: string; importId?: string | null; setId?: string | null; uploading?: boolean; assetId?: string | null };
 
 /** key -> item, its section label, and its parent (for sub-pages). */
 function indexNav() {
@@ -151,6 +162,7 @@ export default function App() {
   }, [refresh]);
 
   const go = (key: string) => setPage({ key });
+  const openAsset = (assetId: string) => setPage({ key: 'amortization-registers', assetId });
   const openImport = (importId: string | null, setId: string | null = null) => setPage({ key: 'imports', importId, setId });
   const openUpload = () => setPage({ key: 'imports', importId: null, uploading: true });
 
@@ -239,7 +251,17 @@ export default function App() {
       case 'amorttypes':
         return <AmortizationTypesView />;
       case 'register':
-        return <AmortizationRegisterView onOpenClose={() => go('process-monthly-accounting')} />;
+        return (
+          <AmortizationRegisterView
+            onOpenClose={() => go('process-monthly-accounting')}
+            openId={page.assetId ?? null}
+            onOpenId={(assetId) => setPage({ key: 'amortization-registers', assetId })}
+          />
+        );
+      case 'rollforward':
+        return <RollForwardReportView onOpenAsset={openAsset} />;
+      case 'waterfall':
+        return <WaterfallReportView onOpenAsset={openAsset} />;
       case 'close':
         return <MonthlyCloseView onOpenTypes={() => go('amortization-types')} onOpenRegister={() => go('amortization-registers')} />;
       case 'journals':

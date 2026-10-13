@@ -1,10 +1,11 @@
 import { randomUUID } from 'node:crypto';
-import { doublePrecision, index, integer, jsonb, pgTable, text, timestamp, uuid } from 'drizzle-orm/pg-core';
+import { boolean, doublePrecision, index, integer, jsonb, pgTable, serial, text, timestamp, uuid } from 'drizzle-orm/pg-core';
 import type {
   AccountMap,
   Aggregate,
   AmortizationMethod,
   AmortizationMethodDef,
+  AssetModification,
   ColumnDef,
   Condition,
   CostTreatment,
@@ -294,14 +295,27 @@ export const accountingPeriods = pgTable('accounting_periods', {
   closedBy: text('closed_by'),
 });
 
-/** The amortization register: one capitalized commission per row. */
+/**
+ * The amortization register: one capitalized commission per row, booked by
+ * a month's close, or an amortization entered by hand (origin 'manual'),
+ * which is pending (no period, no booked month) until its month closes.
+ */
 export const amortizationAssets = pgTable(
   'amortization_assets',
   {
     ...base,
-    periodId: uuid('period_id')
-      .notNull()
-      .references(() => accountingPeriods.id, { onDelete: 'cascade' }),
+    /** Shown as AMRT0001. */
+    number: serial('number').notNull(),
+    /** Null for a manual amortization not booked yet. Reopening a month deletes its commission assets and unbooks its manual ones. */
+    periodId: uuid('period_id').references(() => accountingPeriods.id, { onDelete: 'set null' }),
+    origin: text('origin').$type<'commission' | 'manual'>().notNull().default('commission'),
+    name: text('name'),
+    description: text('description'),
+    typeId: uuid('type_id'),
+    methodId: uuid('method_id'),
+    opening: boolean('opening').notNull().default(false),
+    offsetAccount: jsonb('offset_account').$type<GlAccount>(),
+    history: jsonb('history').$type<AssetModification[]>().notNull().default([]),
     sourceKey: text('source_key').notNull(),
     runId: uuid('run_id'),
     lineId: integer('line_id'),
@@ -312,7 +326,7 @@ export const amortizationAssets = pgTable(
     methodName: text('method_name').notNull(),
     amount: doublePrecision('amount').notNull(),
     capitalizedMonth: text('capitalized_month').notNull(),
-    bookedMonth: text('booked_month').notNull(),
+    bookedMonth: text('booked_month'),
     startMonth: text('start_month').notNull(),
     endMonth: text('end_month').notNull(),
     months: integer('months').notNull(),
