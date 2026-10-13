@@ -1,5 +1,5 @@
-// Setup › Global Settings: General, System Features, Import Tools, Licensing,
-// Manage Upgrades. The layout follows NetAsset's setup page; the contents are
+// Setup › Global Settings: General, System Features, Integrations, Import
+// Tools, Licensing, Manage Upgrades. The layout follows NetAsset's setup page; the contents are
 // what applies to a commissions tool.
 import {
   FEATURES,
@@ -17,9 +17,9 @@ import { ErrorBar, Field, PageHeader } from '../accounting/ui';
 import { useAuth } from '../AuthGate';
 import { useSettings } from '../SettingsProvider';
 
-export type SetupTarget = 'upload' | 'imports' | 'employees' | 'types' | 'users' | 'plans' | 'holdreasons' | 'acctpolicy';
+export type SetupTarget = 'upload' | 'imports' | 'templates' | 'employees' | 'types' | 'users' | 'plans' | 'holdreasons' | 'acctpolicy';
 
-const TABS = ['General', 'System Features', 'Import Tools', 'Licensing', 'Manage Upgrades'] as const;
+const TABS = ['General', 'System Features', 'Integrations', 'Import Tools', 'Licensing', 'Manage Upgrades'] as const;
 type Tab = (typeof TABS)[number];
 
 const MONTHS = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
@@ -95,6 +95,11 @@ export function SetupView({ onNavigate }: { onNavigate: (target: SetupTarget) =>
       </div>
 
       <div className="mx-auto w-full max-w-6xl p-6">
+        {tab === 'Integrations' && (
+          <div className="space-y-4">
+            <IntegrationsTab onNavigate={onNavigate} />
+          </div>
+        )}
         {tab === 'Import Tools' && (
           <div className="space-y-4">
             <ImportToolsTab onNavigate={onNavigate} onPermissions={() => setTab('System Features')} />
@@ -257,6 +262,55 @@ function FeaturesTab({ draft, set }: { draft: AppSettings; set: SetFn }) {
   );
 }
 
+// -- Integrations -------------------------------------------------------------------------
+
+/** Connectors planned for the CRM and ERP; until then data comes in as file imports. */
+const CONNECTORS: { name: string; system: string; does: string }[] = [
+  { name: 'Salesforce', system: 'CRM', does: 'Closed-won opportunities in as deals, with owner, SE and SDR fields for payroll templates.' },
+  { name: 'HubSpot', system: 'CRM', does: 'Closed deals in as deals, with deal owner and team fields.' },
+  { name: 'NetSuite', system: 'ERP', does: 'Customer payment receipts in, to release deals held for payment; journal entries out from monthly close.' },
+];
+
+function IntegrationsTab({ onNavigate }: { onNavigate: (t: SetupTarget) => void }) {
+  return (
+    <>
+      <Section title="File imports" hint="Available now.">
+        <div className="grid gap-4 md:grid-cols-2">
+          <Tool label="CSV and Excel" hint="Export what you need from any CRM, ERP or database and drop it in on Payouts › Commission Payroll › Imports.">
+            <ToolLink onClick={() => onNavigate('upload')} />
+          </Tool>
+        </div>
+      </Section>
+      <Section title="Connectors" hint="Planned. Each will feed the same imports, so payroll templates, payout rules and incentive programs work unchanged.">
+        <div className="overflow-x-auto">
+          <table className="w-full text-xs">
+            <thead className="text-left text-[10px] tracking-wide text-slate-400 uppercase">
+              <tr>
+                <th className="py-1 pr-3">Connector</th>
+                <th className="py-1 pr-3">System</th>
+                <th className="py-1 pr-3">What it does</th>
+                <th className="py-1">Status</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-slate-100">
+              {CONNECTORS.map((c) => (
+                <tr key={c.name}>
+                  <td className="py-2 pr-3 font-medium text-slate-800">{c.name}</td>
+                  <td className="py-2 pr-3 text-slate-500">{c.system}</td>
+                  <td className="py-2 pr-3 text-slate-600">{c.does}</td>
+                  <td className="py-2">
+                    <span className="rounded bg-slate-100 px-1.5 py-0.5 text-[10px] text-slate-500">Coming soon</span>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </Section>
+    </>
+  );
+}
+
 // -- Import Tools --------------------------------------------------------------------------
 
 function ImportToolsTab({ onNavigate, onPermissions }: { onNavigate: (t: SetupTarget) => void; onPermissions: () => void }) {
@@ -269,8 +323,11 @@ function ImportToolsTab({ onNavigate, onPermissions }: { onNavigate: (t: SetupTa
               Download link
             </a>
           </Tool>
-          <Tool label="Data import wizard" hint="Drag in a CSV or Excel file, pick the sheet and header row, confirm column types.">
+          <Tool label="Data import wizard" hint="Drag in a CSV or Excel file, pick the sheet and header row, confirm column types. Imports live on Payouts › Commission Payroll.">
             <ToolLink onClick={() => onNavigate('upload')} />
+          </Tool>
+          <Tool label="Payroll templates" hint="One per employee type: who is paid on each deal (their own deals, or all deals) and which columns a run reads.">
+            <ToolLink onClick={() => onNavigate('templates')} />
           </Tool>
         </div>
       </Section>

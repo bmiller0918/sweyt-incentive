@@ -7,6 +7,16 @@
 // released, after which it pays like a deal that closed on the release date.
 import {
   DEFAULT_HOLD_REASONS,
+  compileCriteria,
+  criteriaSchema,
+  payrollTemplateDefinitionSchema,
+  periodFromCriteria,
+  templateDeals,
+  templateFields,
+  templateProblems,
+  validateCriteria,
+  type CommissionLine,
+  type TemplateApplyInput,
   LINE_STATUSES,
   applyHoldRules,
   applyPayoutRules,
@@ -24,14 +34,13 @@ import {
   scheduleFor,
   type AccountingLineInput,
   type AccountingPolicy,
-  type DealInput,
 } from '@commissions/shared';
 import { and, asc, desc, eq, inArray, sql } from 'drizzle-orm';
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { calendar, getAppSettings } from '../appSettings.js';
 import type { Db } from '../db/client.js';
-import { accountingPeriods, accountingPolicy, auditLog, commissionLines, commissionRuns, employeeTypes, employees, holdReasons, imports, type CommissionRunConfig } from '../db/schema.js';
+import { accountingPeriods, accountingPolicy, auditLog, commissionLines, commissionRuns, employeeTypes, employees, holdReasons, imports, payrollTemplates, type CommissionRunConfig } from '../db/schema.js';
 import { toCsv } from '../export.js';
 import { getRows } from '../rowcache.js';
 import { loadMethodsAndTypes, loadSettings, payeeAccounting } from './accounting.js';
@@ -45,30 +54,17 @@ const today = () => new Date().toISOString().slice(0, 10);
 const runSchema = z.object({
   name: z.string().min(1),
   importId: z.string().uuid(),
-  repField: z.string().min(1),
-  payees: z.array(z.object({ role: z.string().min(1), field: z.string().min(1) })).default([]),
-  amountField: z.string().min(1),
-  dateField: z.string().nullable().optional(),
-  dealKeyField: z.string().nullable().optional(),
+  /** Payroll templates to apply, one per employee type being paid. */
+  templateIds: z.array(z.string().uuid()).min(1, 'Pick at least one payroll template'),
+  /** The Commission Payroll screen's filters (period, column filters); only matching rows are paid. */
+  criteria: criteriaSchema.optional(),
+  params: z.record(z.string()).optional(),
+  /** Inclusive close-date bounds; default to the criteria's period filter. */
   from: dateStr.nullable().optional(),
   to: dateStr.nullable().optional(),
-  holdRules: z.array(holdRuleSchema).default([]),
   payLagMonths: z.number().int().min(0).max(12).default(1),
-  contractStartField: z.string().nullable().optional(),
-  termMonthsField: z.string().nullable().optional(),
-  contractEndField: z.string().nullable().optional(),
-  components: z.array(z.object({ name: z.string().min(1), field: z.string().min(1) })).default([]),
-  marginField: z.string().nullable().optional(),
   includePrograms: z.boolean().default(true),
 });
-
-/** Whole months between two ISO dates, rounded (a 3-year term is 36 even if the end is the 31st). */
-function monthsBetweenDates(start: string, end: string): number {
-  const [sy, sm, sd] = start.split('-').map(Number);
-  const [ey, em, ed] = end.split('-').map(Number);
-  const months = ey * 12 + em - (sy * 12 + sm);
-  return Math.max(1, Math.round(months + (ed - sd) / 30));
-}
 
 const LINE_COLUMNS = [
   'Deal',
@@ -145,59 +141,59 @@ export async function commissionRoutes(app: FastifyInstance, db: Db) {
     return { ...run, lines };
   });
 
-  /** Calculate and store a run. Deals are read from the import as it is right now. */
+  /**
+   * Calculate and store a run: apply each payroll template to the import's
+   * rows (those passing the screen's filters), one line per person per deal.
+   * Deals are read from the import as it is right now.
+   */
   app.post('/api/commission-runs', async (req, reply) => {
     const body = runSchema.parse(req.body);
     const [imp] = await db.select().from(imports).where(eq(imports.id, body.importId));
     if (!imp) return reply.code(404).send({ error: 'Import not found' });
     const cached = await getRows(db, imp);
-    const fields = [
-      body.repField,
-      body.amountField,
-      body.dateField,
-      body.dealKeyField,
-      body.contractStartField,
-      body.termMonthsField,
-      body.contractEndField,
-      ...body.payees.map((p) => p.field),
-      ...body.components.map((c) => c.field),
-      body.marginField,
-    ].filter((f): f is string => !!f);
-    const missing = fields.filter((f) => !(f in cached.types));
-    if (missing.length) return reply.code(400).send({ error: `Column not found: ${missing.join(', ')}` });
-    const knownReasons = new Set((await db.select({ key: holdReasons.key }).from(holdReasons)).map((r) => r.key));
-    const badReason = body.holdRules.find((r) => !knownReasons.has(r.reasonKey));
-    if (badReason) return reply.code(400).send({ error: `Unknown hold reason "${badReason.reasonKey}"` });
 
-    const config_: CommissionRunConfig = {
-      repField: body.repField,
-      payees: body.payees,
-      amountField: body.amountField,
-      dateField: body.dateField ?? null,
-      dealKeyField: body.dealKeyField ?? null,
-      from: body.from ?? null,
-      to: body.to ?? null,
-      holdRules: body.holdRules,
-      payLagMonths: body.payLagMonths,
-      contractStartField: body.contractStartField ?? null,
-      termMonthsField: body.termMonthsField ?? null,
-      contractEndField: body.contractEndField ?? null,
-      components: body.components,
-      marginField: body.marginField ?? null,
-      includePrograms: body.includePrograms,
-    };
-    // Component key -> column, so the engine can find each component's value on a deal.
-    // Names that normalize to the same key ("New ARR" / "New-ARR") would silently share one column.
-    const measureFields = new Map<string, string>();
-    for (const c of body.components) {
-      const key = componentKey(c.name);
-      if (!key) return reply.code(400).send({ error: `Component name "${c.name}" has no letters or digits` });
-      if (measureFields.has(key)) return reply.code(400).send({ error: `Components "${c.name}" and another map to the same key "${key}"; give them distinct names` });
-      measureFields.set(key, c.field);
+    // In the order picked, so a run's lines read the way its templates are listed.
+    const order = new Map(body.templateIds.map((id, i) => [id, i]));
+    const templateRows = (await db.select().from(payrollTemplates).where(inArray(payrollTemplates.id, body.templateIds))).sort((a, b) => order.get(a.id)! - order.get(b.id)!);
+    if (templateRows.length !== new Set(body.templateIds).size) return reply.code(404).send({ error: 'A payroll template was not found; it may have been deleted.' });
+    const typeNames = new Map((await db.select({ id: employeeTypes.id, name: employeeTypes.name }).from(employeeTypes)).map((t) => [t.id, t.name]));
+    const knownReasons = new Set((await db.select({ key: holdReasons.key }).from(holdReasons)).map((r) => r.key));
+    const templates: TemplateApplyInput[] = [];
+    for (const t of templateRows) {
+      const parsed = payrollTemplateDefinitionSchema.safeParse(t.definition);
+      if (!parsed.success) return reply.code(400).send({ error: `${t.name}: its settings could not be read; open the template and save it again.` });
+      const def = parsed.data;
+      const problems = templateProblems(def, t.employeeTypeId);
+      if (problems.length) return reply.code(400).send({ error: `${t.name}: ${problems.join(' ')}` });
+      const missing = templateFields(def).filter((f) => !(f in cached.types));
+      if (missing.length) return reply.code(400).send({ error: `${t.name}: this import has no column ${missing.map((m) => `"${m}"`).join(', ')}` });
+      const badReason = def.holdRules.find((r) => !knownReasons.has(r.reasonKey));
+      if (badReason) return reply.code(400).send({ error: `${t.name}: unknown hold reason "${badReason.reasonKey}"` });
+      const keys = new Set<string>();
+      for (const c of def.components) {
+        const key = componentKey(c.name);
+        if (!key) return reply.code(400).send({ error: `${t.name}: component name "${c.name}" has no letters or digits` });
+        if (keys.has(key)) return reply.code(400).send({ error: `${t.name}: components "${c.name}" and another map to the same key "${key}"; give them distinct names` });
+        keys.add(key);
+      }
+      templates.push({ name: t.name, employeeTypeId: t.employeeTypeId, role: (t.employeeTypeId && typeNames.get(t.employeeTypeId)) || t.name, definition: def });
     }
 
     const ctx = { types: cached.types, ...evalContext() };
-    // Workspace payout rules go first (they are policy), then this run's own hold rules.
+    // The rows the screen's filters let through.
+    let indices = cached.typed.map((_, i) => i);
+    if (body.criteria) {
+      const fctx = { ...ctx, params: body.params };
+      const errors = Object.values(validateCriteria(body.criteria, fctx));
+      if (errors.length) return reply.code(400).send({ error: `Filter problem: ${errors.join('; ')}` });
+      const compiled = compileCriteria(body.criteria, fctx);
+      indices = indices.filter((i) => compiled.matches(cached.typed[i]));
+    }
+    const period = body.criteria ? periodFromCriteria(body.criteria, ctx) : null;
+    const from = body.from !== undefined ? body.from : (period?.from ?? null);
+    const to = body.to !== undefined ? body.to : (period?.to ?? null);
+
+    // Workspace payout rules go first (they are policy), then each template's own hold rules.
     const payoutRules_ = await loadPayoutRules(db);
     const flagged = applyPayoutRules(cached.typed, payoutRules_, ctx);
     const flagErrors = Object.entries(flagged.errors);
@@ -209,9 +205,6 @@ export async function commissionRoutes(app: FastifyInstance, db: Db) {
       };
       return reply.code(400).send({ error: `Payout rule problem: ${flagErrors.map(([id, m]) => `"${label(id)}": ${m}`).join('; ')}` });
     }
-    const holds = applyHoldRules(cached.typed, body.holdRules, ctx);
-    const ruleErrors = Object.entries(holds.errors);
-    if (ruleErrors.length) return reply.code(400).send({ error: `Hold rule problem: ${ruleErrors.map(([, m]) => m).join('; ')}` });
     const runWarnings: string[] = [];
     if (flagged.skipped.length) {
       const names = flagged.skipped.flatMap((id) => {
@@ -221,59 +214,62 @@ export async function commissionRoutes(app: FastifyInstance, db: Db) {
       runWarnings.push(`${flagged.skipped.length} payout rule${flagged.skipped.length === 1 ? '' : 's'} skipped: this import has no column ${[...new Set(names)].map((n) => `"${n}"`).join(', ')}.`);
     }
 
-    const deals: DealInput[] = [];
-    const contract = new Map<number, { start: string | null; term: number | null }>();
-    const isoOf = (field: string | null | undefined, row: (typeof cached.typed)[number]) => {
-      const v = field ? row[field] : null;
-      return typeof v === 'number' ? formatDateMs(v, 'date') : null;
-    };
-    cached.typed.forEach((row, i) => {
-      const rawRow = cached.raw[i];
-      const dateMs = config_.dateField ? row[config_.dateField] : null;
-      const date = typeof dateMs === 'number' ? formatDateMs(dateMs, 'date') : null;
-      if (config_.from && date !== null && date < config_.from) return;
-      if (config_.to && date !== null && date > config_.to) return;
-      // Date-bounded runs skip undated rows: they can't be placed in the window.
-      if ((config_.from || config_.to) && date === null) return;
-      const amount = row[config_.amountField];
-      const payees = [{ role: 'Rep', field: config_.repField }, ...config_.payees]
-        .map((p) => ({ role: p.role, name: String(rawRow[p.field] ?? '').trim() }))
-        .filter((p) => p.name);
-      if (!payees.length) return;
-      const start = isoOf(config_.contractStartField, row);
-      const termRaw = config_.termMonthsField ? row[config_.termMonthsField] : null;
-      const end = isoOf(config_.contractEndField, row);
-      const term = typeof termRaw === 'number' && termRaw > 0 ? termRaw : start && end && end > start ? monthsBetweenDates(start, end) : null;
-      contract.set(i, { start, term });
-      const measures: Record<string, number | null> = {};
-      for (const [k, field] of measureFields) {
-        const v = row[field];
-        measures[k] = typeof v === 'number' ? v : null;
-      }
-      const marginRaw = config_.marginField ? row[config_.marginField] : undefined;
-      deals.push({
-        rowIndex: i,
-        dealKey: config_.dealKeyField ? String(rawRow[config_.dealKeyField] ?? '').trim() || null : null,
-        date,
-        amount: typeof amount === 'number' ? amount : null,
-        payees,
-        measures,
-        ...(config_.marginField ? { margin: typeof marginRaw === 'number' ? marginRaw : null } : {}),
-      });
-    });
-
+    const staff = await db.select({ name: employees.name, employeeTypeId: employees.employeeTypeId, startDate: employees.startDate, status: employees.status, statusDate: employees.statusDate }).from(employees);
     const lookup = makeDatedPlanLookup(await loadEmployeeRecords(db));
-    const result = computeCommissionLines(deals, lookup, { defaultAsOf: config_.to ?? undefined });
-    // Spiffs, accelerators and bonuses pay alongside the plan, each from its own import.
-    if (config_.includePrograms !== false) {
-      const programs = await programLinesForRun(db, { from: config_.from, to: config_.to });
-      if (programs.lines.length) {
-        result.lines.push(...programs.lines);
-        result.totals = payeeTotals(result.lines);
-        result.totalPayout = roundCents(result.lines.reduce((a, l) => a + (l.payout ?? 0), 0));
+    const asOf = to ?? today();
+    // Each template pays its own lines; attainment accrues within the template's deals.
+    const lines: CommissionLine[] = [];
+    const lineHold: (string | null)[] = [];
+    const lineContract: ({ start: string | null; term: number | null } | undefined)[] = [];
+    const dealRows = new Set<number>();
+    const warnings: string[] = [];
+    for (const t of templates) {
+      const td = templateDeals({ raw: cached.raw, typed: cached.typed, indices }, t, staff, { from, to, asOf });
+      const holds = applyHoldRules(cached.typed, t.definition.holdRules, ctx);
+      const ruleErrors = Object.values(holds.errors);
+      if (ruleErrors.length) return reply.code(400).send({ error: `${t.name}: hold rule problem: ${ruleErrors.join('; ')}` });
+      const res = computeCommissionLines(td.deals, lookup, { defaultAsOf: to ?? undefined });
+      for (const d of td.deals) dealRows.add(d.rowIndex);
+      for (const l of res.lines) {
+        lines.push(l);
+        lineHold.push(holds.reasons[l.rowIndex] ?? null);
+        lineContract.push(td.contract.get(l.rowIndex));
       }
-      result.warnings.push(...programs.warnings);
+      warnings.push(...td.warnings, ...res.warnings);
     }
+    // Spiffs, accelerators and bonuses pay alongside the plan, each from its own import.
+    if (body.includePrograms) {
+      const programs = await programLinesForRun(db, { from, to });
+      for (const l of programs.lines) {
+        lines.push(l);
+        lineHold.push(null);
+        lineContract.push(undefined);
+      }
+      warnings.push(...programs.warnings);
+    }
+    const totals = payeeTotals(lines);
+    const totalPayout = roundCents(lines.reduce((a, l) => a + (l.payout ?? 0), 0));
+
+    const first = templates[0].definition;
+    const config_: CommissionRunConfig = {
+      repField: first.crediting === 'own' ? first.creditField : '',
+      payees: [],
+      amountField: first.amountField,
+      dateField: first.dateField || null,
+      dealKeyField: first.dealKeyField || null,
+      from,
+      to,
+      holdRules: templates.flatMap((t) => t.definition.holdRules),
+      payLagMonths: body.payLagMonths,
+      contractStartField: first.contractStartField || null,
+      termMonthsField: first.termMonthsField || null,
+      contractEndField: first.contractEndField || null,
+      components: first.components,
+      marginField: first.marginField || null,
+      includePrograms: body.includePrograms,
+      templates: templateRows.map((r, i) => ({ id: r.id, name: r.name, role: templates[i].role })),
+      filtered: !!body.criteria,
+    };
     const runDate = today();
 
     const [run] = await db
@@ -283,18 +279,19 @@ export async function commissionRoutes(app: FastifyInstance, db: Db) {
         importId: imp.id,
         importName: imp.name,
         config: config_,
-        dealCount: result.dealCount,
-        lineCount: result.lines.length,
-        totalPayout: result.totalPayout,
-        warnings: [...result.warnings, ...runWarnings],
+        dealCount: dealRows.size,
+        lineCount: lines.length,
+        totalPayout,
+        warnings: [...new Set([...warnings, ...runWarnings])],
       })
       .returning();
     const BATCH = 1000;
-    for (let i = 0; i < result.lines.length; i += BATCH) {
+    for (let i = 0; i < lines.length; i += BATCH) {
       await db.insert(commissionLines).values(
-        result.lines.slice(i, i + BATCH).map((l) => {
+        lines.slice(i, i + BATCH).map((l, j) => {
           const flag = flagged.hits[l.rowIndex];
-          const reason = flag?.reasonKey ?? holds.reasons[l.rowIndex];
+          const reason = flag?.reasonKey ?? lineHold[i + j];
+          const contract = lineContract[i + j];
           return {
             runId: run.id,
             rowIndex: l.rowIndex,
@@ -320,8 +317,8 @@ export async function commissionRoutes(app: FastifyInstance, db: Db) {
             holdNote: flag ? flag.message || flag.ruleName : null,
             heldAt: reason ? (l.dealDate ?? runDate) : null,
             payMonth: reason ? null : payMonthFor(l.dealDate, body.payLagMonths),
-            contractStart: contract.get(l.rowIndex)?.start ?? null,
-            termMonths: contract.get(l.rowIndex)?.term ?? null,
+            contractStart: contract?.start ?? null,
+            termMonths: contract?.term ?? null,
           };
         }),
       );
@@ -330,9 +327,9 @@ export async function commissionRoutes(app: FastifyInstance, db: Db) {
       action: 'commission_run.create',
       entityType: 'commission_run',
       entityId: run.id,
-      detail: { deals: result.dealCount, lines: result.lines.length, held: result.lines.filter((l) => flagged.hits[l.rowIndex] || holds.reasons[l.rowIndex]).length, flaggedByPayoutRules: flagged.hits.filter(Boolean).length },
+      detail: { deals: dealRows.size, lines: lines.length, templates: config_.templates?.map((t) => t.name), held: lines.filter((_, k) => flagged.hits[lines[k].rowIndex] || lineHold[k]).length, flaggedByPayoutRules: flagged.hits.filter(Boolean).length },
     });
-    return { ...run, totals: result.totals };
+    return { ...run, totals };
   });
 
   app.delete('/api/commission-runs/:id', async (req, reply) => {

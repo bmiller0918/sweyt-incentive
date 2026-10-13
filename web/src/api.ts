@@ -12,7 +12,7 @@ import type {
   RegisterAsset,
   RollforwardMonth,
 } from '@commissions/shared';
-import type { AccountingPolicy, Aggregate, AppSettings, ColumnDef, ColumnType, CostTreatment, Criteria, HoldRule, LineStatus, PayoutRule, PlanQuotas, PlanStructure, ProgramDefinition, ProgramKind, PayeeTotal, CommissionLine as EngineLine, PlanTiers, RawRow, ScheduleLine, SubledgerResult } from '@commissions/shared';
+import type { AccountingPolicy, Aggregate, AppSettings, ColumnDef, ColumnType, CostTreatment, Criteria, HoldRule, LineStatus, PayoutRule, PayrollTemplateDefinition, PlanQuotas, PlanStructure, ProgramDefinition, ProgramKind, PayeeTotal, CommissionLine as EngineLine, PlanTiers, RawRow, ScheduleLine, SubledgerResult } from '@commissions/shared';
 
 export interface ImportSummary {
   id: string;
@@ -216,6 +216,10 @@ export interface CommissionRunConfig {
   marginField?: string | null;
   /** Pay enabled spiffs, accelerators and bonuses (default true). */
   includePrograms?: boolean;
+  /** Payroll templates the run applied; absent on runs mapped by hand. */
+  templates?: { id: string; name: string; role: string }[];
+  /** The run read only rows passing the Commission Payroll screen's filters. */
+  filtered?: boolean;
 }
 
 /** The subledger as the API returns it: schedule lines without their per-month map. */
@@ -294,7 +298,29 @@ export interface CommissionLine {
   payMonth: string | null;
 }
 
-export type CommissionRunInput = Omit<CommissionRunConfig, 'payees'> & { name: string; importId: string; payees: { role: string; field: string }[] };
+/** A run applies payroll templates to an import's rows (optionally only those passing the screen's filters). */
+export interface CommissionRunInput {
+  name: string;
+  importId: string;
+  templateIds: string[];
+  criteria?: Criteria;
+  params?: Record<string, string>;
+  from?: string | null;
+  to?: string | null;
+  payLagMonths: number;
+  includePrograms: boolean;
+}
+
+/** A commission payroll template: how one employee type is credited on the deals in an import. */
+export interface PayrollTemplate {
+  id: string;
+  name: string;
+  description: string | null;
+  employeeTypeId: string | null;
+  definition: PayrollTemplateDefinition;
+  updatedAt: string;
+}
+export type PayrollTemplateInput = Omit<PayrollTemplate, 'id' | 'updatedAt'>;
 
 /** Setup › Licensing. */
 export interface SetupUsage {
@@ -670,6 +696,10 @@ export const api = {
 
   listCommissionRuns: () => request<CommissionRun[]>('/api/commission-runs'),
   getCommissionRun: (id: string) => request<CommissionRun & { lines: CommissionLine[] }>(`/api/commission-runs/${id}`),
+  listPayrollTemplates: () => request<PayrollTemplate[]>('/api/payroll-templates'),
+  createPayrollTemplate: (body: PayrollTemplateInput) => request<PayrollTemplate>('/api/payroll-templates', json('POST', body)),
+  updatePayrollTemplate: (id: string, body: PayrollTemplateInput) => request<PayrollTemplate>(`/api/payroll-templates/${id}`, json('PUT', body)),
+  deletePayrollTemplate: (id: string) => request<void>(`/api/payroll-templates/${id}`, { method: 'DELETE' }),
   createCommissionRun: (body: CommissionRunInput) => request<CommissionRun>('/api/commission-runs', json('POST', body)),
   deleteCommissionRun: (id: string) => request<void>(`/api/commission-runs/${id}`, { method: 'DELETE' }),
   exportCommissionRun(id: string, status?: LineStatus) {
