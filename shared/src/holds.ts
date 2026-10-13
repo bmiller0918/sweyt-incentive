@@ -205,7 +205,9 @@ export function applyPayoutRules(rows: TypedRow[], rules: PayoutRule[], ctx: Eva
         if (!applies.every((f) => f(row))) return false;
         return r.requireAll ? satisfied.some((ok) => !ok(row)) : satisfied.every((ok) => !ok(row));
       };
-      compiled.push({ hit: { ruleId: r.id, ruleName: payoutRuleLabel(r), reasonKey: r.reasonKey, message: payoutRuleMessage(r) }, flags });
+      // Describe only the requirements that took part (blank or disabled rows are left out).
+      const used = { ...r, requirements: reqs };
+      compiled.push({ hit: { ruleId: r.id, ruleName: payoutRuleLabel(used), reasonKey: r.reasonKey, message: payoutRuleMessage(used) }, flags });
       counts[r.id] = 0;
     } catch (e) {
       errors[r.id] = (e as Error).message;

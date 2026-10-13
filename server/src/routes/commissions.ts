@@ -17,6 +17,7 @@ import {
   holdRuleSchema,
   makeDatedPlanLookup,
   payMonthFor,
+  payoutRuleLabel,
   resolveLine,
   scheduleFor,
   type AccountingLineInput,
@@ -192,7 +193,14 @@ export async function commissionRoutes(app: FastifyInstance, db: Db) {
     const payoutRules_ = await loadPayoutRules(db);
     const flagged = applyPayoutRules(cached.typed, payoutRules_, ctx);
     const flagErrors = Object.entries(flagged.errors);
-    if (flagErrors.length) return reply.code(400).send({ error: `Payout rule problem: ${flagErrors.map(([, m]) => m).join('; ')}` });
+    if (flagErrors.length) {
+      // Rules are shared across imports, so say which one failed here (a column may have another type in this file).
+      const label = (id: string) => {
+        const r = payoutRules_.find((x) => x.id === id);
+        return r ? payoutRuleLabel(r) : id;
+      };
+      return reply.code(400).send({ error: `Payout rule problem: ${flagErrors.map(([id, m]) => `"${label(id)}": ${m}`).join('; ')}` });
+    }
     const holds = applyHoldRules(cached.typed, body.holdRules, ctx);
     const ruleErrors = Object.entries(holds.errors);
     if (ruleErrors.length) return reply.code(400).send({ error: `Hold rule problem: ${ruleErrors.map(([, m]) => m).join('; ')}` });

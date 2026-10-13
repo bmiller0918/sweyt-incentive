@@ -142,11 +142,17 @@ export async function payoutRuleRoutes(app: FastifyInstance, db: Db) {
     const cached = await getRows(db, imp);
     const res = applyPayoutRules(cached.typed, rules, { types: cached.types, ...evalContext() });
     const flagged: { index: number; ruleIds: string[]; data: Record<string, string> }[] = [];
+    // The limit applies per rule: the editor shows the rows for one rule at a
+    // time, so every rule gets up to `limit` of its rows even when earlier
+    // rules flag thousands.
+    const shown: Record<string, number> = {};
     let flaggedCount = 0;
     res.allHits.forEach((ids, i) => {
       if (!ids.length) return;
       flaggedCount++;
-      if (flagged.length < body.limit) flagged.push({ index: i, ruleIds: ids, data: cached.raw[i] });
+      if (!ids.some((id) => (shown[id] ?? 0) < body.limit)) return;
+      for (const id of ids) shown[id] = (shown[id] ?? 0) + 1;
+      flagged.push({ index: i, ruleIds: ids, data: cached.raw[i] });
     });
     return { total: cached.typed.length, flaggedCount, counts: res.counts, errors: res.errors, skipped: res.skipped, columns: cached.columns, rows: flagged };
   });

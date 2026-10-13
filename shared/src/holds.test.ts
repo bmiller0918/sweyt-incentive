@@ -92,6 +92,13 @@ describe('applyPayoutRules', () => {
     expect(res.skipped).toEqual(['missing', 'missingFilter']);
   });
 
+  it('describes a hit with only the requirements that took part', () => {
+    const r = rule('p', { requirements: [req('blank', 'Billing', 'must', 'is', ''), req('r', 'Amount', 'cannot', 'gt', '10000')] });
+    const res = applyPayoutRules(rows, [r], ctx);
+    expect(res.hits[2]?.ruleName).toBe('Amount cannot be greater than 10000');
+    expect(res.hits[2]?.message).toBe('Amount cannot be greater than 10000');
+  });
+
   it('reports a rule whose value cannot be coerced to the column type', () => {
     const res = applyPayoutRules(rows, [rule('px', { requirements: [req('r', 'Amount', 'cannot', 'gt', 'lots')] })], ctx);
     expect(res.hits).toEqual([null, null, null, null]);

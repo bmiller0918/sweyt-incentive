@@ -35,19 +35,28 @@ function migrationsFolder(): string {
  * numbering. A migration file must therefore never be edited after it has
  * been applied anywhere; add a new one instead.
  */
+/** Arbitrary, app-wide advisory lock key serialising migration runs. */
+const MIGRATION_LOCK_KEY = 727274;
+
 export async function runMigrations(db: Db, migrationsFolder: string): Promise<string[]> {
   const migrations = readMigrationFiles({ migrationsFolder });
   await db.execute(sql`CREATE SCHEMA IF NOT EXISTS drizzle`);
   await db.execute(sql`CREATE TABLE IF NOT EXISTS drizzle.__drizzle_migrations (id SERIAL PRIMARY KEY, hash text NOT NULL, created_at bigint)`);
+  // The up-front read only skips work; the authoritative check happens under
+  // the lock, so two replicas starting together don't both run the same DDL.
   const applied = new Set(((await db.execute(sql`SELECT hash FROM drizzle.__drizzle_migrations`)).rows as { hash: string }[]).map((r) => r.hash));
   const ran: string[] = [];
   for (const m of migrations) {
     if (applied.has(m.hash)) continue;
-    await db.transaction(async (tx) => {
+    const did = await db.transaction(async (tx) => {
+      await tx.execute(sql`SELECT pg_advisory_xact_lock(${MIGRATION_LOCK_KEY})`);
+      const dup = await tx.execute(sql`SELECT 1 FROM drizzle.__drizzle_migrations WHERE hash = ${m.hash}`);
+      if (dup.rows.length) return false;
       for (const stmt of m.sql) await tx.execute(sql.raw(stmt));
       await tx.execute(sql`INSERT INTO drizzle.__drizzle_migrations (hash, created_at) VALUES (${m.hash}, ${m.folderMillis})`);
+      return true;
     });
-    ran.push(m.hash.slice(0, 8));
+    if (did) ran.push(m.hash.slice(0, 8));
   }
   return ran;
 }
