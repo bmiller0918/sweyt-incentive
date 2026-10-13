@@ -15,7 +15,7 @@ interface Props {
   onChange: (spec: CalcSpec) => void;
 }
 
-const FUNCTION_HINTS = ['TIER(x)', 'TIER_RATE(x)', 'IF(cond, a, b)', 'MIN(a, b)', 'MAX(a, b)', 'ROUND(x, 2)', 'ABS(x)', 'COALESCE(a, b)', 'ISBLANK(x)'];
+const FUNCTION_HINTS = ['TIER(x)', 'TIER_RATE(x)', 'COMPONENT(x, "name")', 'COMPONENT_RATE(x, "name")', 'IF(cond, a, b)', 'MIN(a, b)', 'MAX(a, b)', 'ROUND(x, 2)', 'ABS(x)', 'COALESCE(a, b)', 'ISBLANK(x)'];
 
 export function CalcPanel({ spec, summaryColumns, errors, noPlan, asOf, onChange }: Props) {
   const [plans, setPlans] = useState<CompPlan[]>([]);
@@ -188,7 +188,9 @@ export function CalcPanel({ spec, summaryColumns, errors, noPlan, asOf, onChange
           <div className="text-[11px] text-slate-400">
             Operators: + − × ÷ ^, comparisons, AND / OR / NOT. Percentages work: <code>12%</code>. Later rows can reference earlier results by name.{' '}
             <code>TIER(x)</code> applies the rep's core plan tier table; <code>TIER(x, "spiff")</code> uses the plan in their <code>spiff</code> slot, and <code>spiff.rate</code> reads its
-            parameters. <code>employee.base_salary</code>, <code>employee.bonus_total</code> and each bonus by label come from Employees.
+            parameters. <code>COMPONENT(x, "New ARR")</code> pays x under that weighted component of the rep's plan (its quota, on-target rate and attainment tiers);{' '}
+            <code>plan.new_arr_rate</code>, <code>plan.new_arr_quota</code> and <code>plan.target_incentive</code> read the resolved numbers. <code>employee.base_salary</code>,{' '}
+            <code>employee.bonus_total</code> and each bonus by label come from Employees.
           </div>
         </div>
       )}

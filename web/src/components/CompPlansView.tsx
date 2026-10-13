@@ -1,11 +1,12 @@
-import { emptyTiers, tierPayout, type PlanTiers } from '@commissions/shared';
+import { emptyStructure, emptyTiers, resolveStructure, tierPayout, type PlanTiers } from '@commissions/shared';
 import { useCallback, useEffect, useState } from 'react';
 import { api, type CompPlan, type PlanParams, type ThresholdType } from '../api';
 import { PeriodPicker } from './PeriodPicker';
+import { PlanStructureEditor } from './PlanStructureEditor';
 
 type Draft = Omit<CompPlan, 'id' | 'updatedAt' | 'employeeCount'>;
 
-const emptyDraft = (): Draft => ({ name: '', description: '', params: { rate: 0.1, quota: 100000 }, tiers: emptyTiers(), effectiveFrom: null, effectiveTo: null });
+const emptyDraft = (): Draft => ({ name: '', description: '', params: { rate: 0.1, quota: 100000 }, tiers: emptyTiers(), structure: emptyStructure(), effectiveFrom: null, effectiveTo: null });
 
 /** "8%" -> 0.08, "0.08" -> 0.08, "$50,000" -> 50000. */
 function parseNum(s: string): number | null {
@@ -29,6 +30,12 @@ function parseParam(s: string): PlanParams[string] {
   return Number.isFinite(n) && /^[-$\d.,]+$/.test(t) ? n : t;
 }
 
+/** "New ARR 60% · Renewals 40%" for the plan list. */
+function componentSummary(structure: CompPlan['structure']): string {
+  const r = resolveStructure(structure);
+  return r.components.map((c) => `${c.name || 'Untitled'}${c.weight !== null ? ` ${Math.round(c.weight * 1000) / 10}%` : ''}`).join(' · ');
+}
+
 export function CompPlansView() {
   const [plans, setPlans] = useState<CompPlan[]>([]);
   const [selectedId, setSelectedId] = useState<string | 'new' | null>(null);
@@ -36,6 +43,8 @@ export function CompPlansView() {
   const [paramRows, setParamRows] = useState<{ key: string; value: string }[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
+  /** Bumped on every selection so the structure editor reseeds its text, even when the same plan is picked again. */
+  const [editorKey, setEditorKey] = useState(0);
 
   const refresh = useCallback(async () => {
     const p = await api.listPlans();
@@ -54,6 +63,7 @@ export function CompPlansView() {
   }, []);
 
   const select = (p: CompPlan | 'new') => {
+    setEditorKey((k) => k + 1);
     if (p === 'new') {
       setSelectedId('new');
       const d = emptyDraft();
@@ -62,7 +72,7 @@ export function CompPlansView() {
       return;
     }
     setSelectedId(p.id);
-    setDraft({ name: p.name, description: p.description ?? '', params: p.params, tiers: p.tiers ?? emptyTiers(), effectiveFrom: p.effectiveFrom, effectiveTo: p.effectiveTo });
+    setDraft({ name: p.name, description: p.description ?? '', params: p.params, tiers: p.tiers ?? emptyTiers(), structure: p.structure ?? emptyStructure(), effectiveFrom: p.effectiveFrom, effectiveTo: p.effectiveTo });
     setParamRows(Object.entries(p.params).map(([key, value]) => ({ key, value: String(value ?? '') })));
   };
 
@@ -114,7 +124,9 @@ export function CompPlansView() {
               <div className="text-xs text-slate-400">
                 {p.employeeCount ?? 0} employee{p.employeeCount === 1 ? '' : 's'} · {Object.keys(p.params).length} param{Object.keys(p.params).length === 1 ? '' : 's'}
                 {p.tiers?.rows.length ? ` · ${p.tiers.rows.length} tiers` : ''}
+                {p.structure?.components.length ? ` · ${p.structure.components.length} component${p.structure.components.length === 1 ? '' : 's'}` : ''}
               </div>
+              {p.structure?.components.length ? <div className="truncate text-[11px] text-slate-400">{componentSummary(p.structure)}</div> : null}
             </button>
           ))}
           {plans.length === 0 && <div className="px-2 py-4 text-xs text-slate-400">No plans yet.</div>}
@@ -199,6 +211,8 @@ export function CompPlansView() {
                 {paramRows.length === 0 && <div className="text-xs text-slate-400">No parameters. Add e.g. rate = 12%, quota = 100000.</div>}
               </div>
             </div>
+
+            <PlanStructureEditor key={editorKey} structure={draft.structure} onChange={(structure) => setDraft({ ...draft, structure })} />
 
             <TierEditor
               tiers={draft.tiers}

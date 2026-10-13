@@ -1,5 +1,5 @@
 {
-  "id": "62b0437e-2bba-4a13-8001-efc59820d9bb",
+  "id": "bd1edde0-cbfc-4e63-9e65-cd9dac3a09fd",
   "prevId": "445fd917-7c91-44c3-aa1c-308666135ff6",
   "version": "7",
   "dialect": "postgresql",
@@ -235,68 +235,11 @@
           "notNull": true,
           "default": "now()"
         },
-        "number": {
-          "name": "number",
-          "type": "serial",
-          "primaryKey": false,
-          "notNull": true
-        },
         "period_id": {
           "name": "period_id",
           "type": "uuid",
           "primaryKey": false,
-          "notNull": false
-        },
-        "origin": {
-          "name": "origin",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "'commission'"
-        },
-        "name": {
-          "name": "name",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "description": {
-          "name": "description",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "type_id": {
-          "name": "type_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "method_id": {
-          "name": "method_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "opening": {
-          "name": "opening",
-          "type": "boolean",
-          "primaryKey": false,
-          "notNull": true,
-          "default": false
-        },
-        "offset_account": {
-          "name": "offset_account",
-          "type": "jsonb",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "history": {
-          "name": "history",
-          "type": "jsonb",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "'[]'::jsonb"
+          "notNull": true
         },
         "source_key": {
           "name": "source_key",
@@ -362,7 +305,7 @@
           "name": "booked_month",
           "type": "text",
           "primaryKey": false,
-          "notNull": false
+          "notNull": true
         },
         "start_month": {
           "name": "start_month",
@@ -450,7 +393,7 @@
           "columnsTo": [
             "id"
           ],
-          "onDelete": "set null",
+          "onDelete": "cascade",
           "onUpdate": "no action"
         }
       },
@@ -1168,6 +1111,13 @@
           "primaryKey": false,
           "notNull": true,
           "default": "'{\"mode\":\"marginal\",\"basis\":\"amount\",\"scaleParam\":null,\"rows\":[]}'::jsonb"
+        },
+        "structure": {
+          "name": "structure",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'{\"targetIncentive\":null,\"components\":[]}'::jsonb"
         },
         "effective_from": {
           "name": "effective_from",

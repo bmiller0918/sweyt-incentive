@@ -7,8 +7,14 @@
 // to pass (e.g. the fiscal year). Each payee's rate comes from the plan in
 // force on the deal's date, so plan changes mid-year take effect on the day
 // they start.
+//
+// Plans with weighted components pay one line per component instead: the
+// run maps each component to a column (deal.measures, keyed by component
+// key), attainment accrues per payee per component against the component's
+// quota, and the component's attainment tiers scale its on-target rate.
 import type { DatedPlanLookup, ResolvedRep } from './calc.js';
-import { tierBands, tierRate } from './tiers.js';
+import { resolveStructure } from './components.js';
+import { tierBands, tierRate, type PlanTiers } from './tiers.js';
 
 export interface DealPayee {
   /** Which column the person came from: "Rep", "SE", "Manager", ... */
@@ -25,6 +31,12 @@ export interface DealInput {
   date: string | null;
   amount: number | null;
   payees: DealPayee[];
+  /**
+   * Per-component values from the run's component → column mapping, keyed
+   * by component key ("new_arr"). A key that is absent is unmapped; null is
+   * a blank cell (nothing to pay for that component on this deal).
+   */
+  measures?: Record<string, number | null>;
 }
 
 export type LineMethod =
@@ -45,6 +57,8 @@ export interface CommissionLine {
   payee: string;
   role: string;
   planName: string | null;
+  /** The plan component this line pays under (weighted plans); null for plan-level lines. */
+  component: string | null;
   method: LineMethod;
   /** Tier band this line falls in (absolute thresholds), when tiered. */
   tierFrom: number | null;
@@ -102,6 +116,75 @@ function quotaOf(rep: ResolvedRep, plan: ResolvedRep['plans'][string]): number |
   return typeof q === 'number' ? q : null;
 }
 
+type LineContext = Pick<CommissionLine, 'rowIndex' | 'dealKey' | 'dealDate' | 'dealAmount' | 'payee' | 'role' | 'planName' | 'component'>;
+
+function flatLine(ctx: LineContext, amount: number, rate: number, before: number, after: number): CommissionLine {
+  return { ...ctx, method: 'flat', tierFrom: null, tierTo: null, amount, rate, payout: roundCents(amount * rate), cumulativeBefore: before, cumulativeAfter: after, split: false, note: null };
+}
+
+/**
+ * Lines for `amount` under a tier table, given the payee's attainment before
+ * and after it. Marginal mode walks the bands the amount spans (one line per
+ * band); whole mode pays everything at the tier reached. `tiers` must be
+ * usable with `scale` (see tierBands).
+ */
+function tieredLines(ctx: LineContext, amount: number, before: number, after: number, tiers: PlanTiers, scale: number | null): CommissionLine[] {
+  const bands = tierBands(tiers, scale)!;
+  if (tiers.mode === 'whole') {
+    const rate = tierRate(after, tiers, scale) ?? 0;
+    const band = [...bands].reverse().find((b) => after >= b.from) ?? null;
+    return [
+      {
+        ...ctx,
+        method: 'whole',
+        tierFrom: band?.from ?? null,
+        tierTo: band ? (bands[bands.indexOf(band) + 1]?.from ?? null) : (bands[0]?.from ?? null),
+        amount,
+        rate,
+        payout: roundCents(amount * rate),
+        cumulativeBefore: before,
+        cumulativeAfter: after,
+        split: false,
+        note: null,
+      },
+    ];
+  }
+  // Marginal: walk the bands the deal spans. A band starting above 0
+  // implies a 0% band below it, so nothing is silently dropped, and the
+  // lowest band extends downward so credit memos that push attainment
+  // negative still unwind at the base rate.
+  const edges = bands[0].from > 0 ? [{ from: 0, rate: 0 }, ...bands] : bands;
+  const lo = Math.min(before, after);
+  const hi = Math.max(before, after);
+  const sign = amount < 0 ? -1 : 1;
+  const slices: { from: number; to: number | null; rate: number; amount: number }[] = [];
+  for (let i = 0; i < edges.length; i++) {
+    const bFrom = i === 0 ? -Infinity : edges[i].from;
+    const bTo = i + 1 < edges.length ? edges[i + 1].from : Infinity;
+    const slice = Math.min(hi, bTo) - Math.max(lo, bFrom);
+    if (slice > 0) slices.push({ from: edges[i].from, to: bTo === Infinity ? null : bTo, rate: edges[i].rate, amount: sign * slice });
+  }
+  if (!slices.length) {
+    // Zero-amount deal: record it against the band it sits in.
+    const band = [...edges].reverse().find((b) => after >= b.from) ?? edges[0];
+    slices.push({ from: band.from, to: edges[edges.indexOf(band) + 1]?.from ?? null, rate: band.rate, amount: 0 });
+  }
+  const split = slices.length > 1;
+  return slices.map((s) => ({
+    ...ctx,
+    method: 'tier' as const,
+    tierFrom: s.from,
+    tierTo: s.to,
+    amount: roundCents(s.amount),
+    rate: s.rate,
+    payout: roundCents(s.amount * s.rate),
+    cumulativeBefore: before,
+    cumulativeAfter: after,
+    split,
+    note: split ? 'Deal crossed a tier threshold and was split' : null,
+  }));
+}
+
 export function computeCommissionLines(deals: DealInput[], lookup: DatedPlanLookup, opts: LinesOptions = {}): LinesResult {
   const defaultAsOf = opts.defaultAsOf ?? new Date().toISOString().slice(0, 10);
   const cumulative = new Map<string, number>(Object.entries(opts.openingAttainment ?? {}).map(([k, v]) => [key(k), v]));
@@ -137,15 +220,16 @@ export function computeCommissionLines(deals: DealInput[], lookup: DatedPlanLook
       // Show the person as Employees spells them, however the data spelled it.
       const payee = rep?.employee.name ?? name;
 
-      const none = (note: string, planName: string | null = plan?.planName ?? null): CommissionLine => ({
+      const none = (note: string, planName: string | null = plan?.planName ?? null, component: string | null = null, value: number | null = amount): CommissionLine => ({
         ...base,
         payee,
         role: p.role,
         planName,
+        component,
         method: 'none',
         tierFrom: null,
         tierTo: null,
-        amount,
+        amount: value,
         rate: null,
         payout: null,
         cumulativeBefore: before,
@@ -154,10 +238,6 @@ export function computeCommissionLines(deals: DealInput[], lookup: DatedPlanLook
         note,
       });
 
-      if (amount === null) {
-        lines.push(none('Deal has no amount'));
-        continue;
-      }
       if (!rep) {
         lines.push(none(`No employee named "${name}"`, null));
         warnings.add(`${name} is not in Employees, so nothing was calculated for them.`);
@@ -168,77 +248,50 @@ export function computeCommissionLines(deals: DealInput[], lookup: DatedPlanLook
         warnings.add(`${name} has no comp plan in force for some deals.`);
         continue;
       }
+
+      const ctx = { ...base, payee, role: p.role, planName: plan.planName };
+
+      // -- Weighted components: one line per mapped component ----------------
+      if (plan.structure?.components.length) {
+        const resolved = resolveStructure(plan.structure);
+        for (const c of resolved.components) {
+          const value = deal.measures?.[c.key];
+          if (value === undefined) {
+            warnings.add(`Component "${c.name}" of plan "${plan.planName}" is not mapped to a column, so nothing was paid for it.`);
+            continue;
+          }
+          if (value === null) continue;
+          const ck = `${k}\u0001${c.key}`;
+          const cBefore = cumulative.get(ck) ?? 0;
+          const cAfter = cBefore + value;
+          if (c.rate === null) {
+            lines.push({ ...none(c.issues[0] ?? 'Component cannot be priced', plan.planName, c.name, value), cumulativeBefore: cBefore, cumulativeAfter: cAfter });
+            warnings.add(`Plan "${plan.planName}", component "${c.name}": ${c.issues[0] ?? 'cannot be priced'}.`);
+            continue;
+          }
+          cumulative.set(ck, cAfter);
+          if (c.tiers) lines.push(...tieredLines({ ...ctx, component: c.name }, value, cBefore, cAfter, c.tiers, c.quota));
+          else lines.push(flatLine({ ...ctx, component: c.name }, value, c.rate, cBefore, cAfter));
+        }
+        continue;
+      }
+
+      // -- Plan-level: the deal amount under the plan's tiers or flat rate ---
+      if (amount === null) {
+        lines.push(none('Deal has no amount'));
+        continue;
+      }
       cumulative.set(k, after);
 
       const tiers = plan.tiers;
       if (tiers && tiers.rows.length) {
         const quota = quotaOf(rep, plan);
-        const bands = tierBands(tiers, quota);
-        if (!bands) {
+        if (!tierBands(tiers, quota)) {
           lines.push(none('Tier thresholds are a % of quota, but no quota is set'));
           warnings.add(`${name}'s plan "${plan.planName}" needs a quota for its tiers.`);
           continue;
         }
-        if (tiers.mode === 'whole') {
-          const rate = tierRate(after, tiers, quota) ?? 0;
-          const band = [...bands].reverse().find((b) => after >= b.from) ?? null;
-          lines.push({
-            ...base,
-            payee,
-            role: p.role,
-            planName: plan.planName,
-            method: 'whole',
-            tierFrom: band?.from ?? null,
-            tierTo: band ? (bands[bands.indexOf(band) + 1]?.from ?? null) : (bands[0]?.from ?? null),
-            amount,
-            rate,
-            payout: roundCents(amount * rate),
-            cumulativeBefore: before,
-            cumulativeAfter: after,
-            split: false,
-            note: null,
-          });
-          continue;
-        }
-        // Marginal: walk the bands the deal spans. A band starting above 0
-        // implies a 0% band below it, so nothing is silently dropped, and the
-        // lowest band extends downward so credit memos that push attainment
-        // negative still unwind at the base rate.
-        const edges = bands[0].from > 0 ? [{ from: 0, rate: 0 }, ...bands] : bands;
-        const lo = Math.min(before, after);
-        const hi = Math.max(before, after);
-        const sign = amount < 0 ? -1 : 1;
-        const slices: { from: number; to: number | null; rate: number; amount: number }[] = [];
-        for (let i = 0; i < edges.length; i++) {
-          const bFrom = i === 0 ? -Infinity : edges[i].from;
-          const bTo = i + 1 < edges.length ? edges[i + 1].from : Infinity;
-          const slice = Math.min(hi, bTo) - Math.max(lo, bFrom);
-          if (slice > 0) slices.push({ from: edges[i].from, to: bTo === Infinity ? null : bTo, rate: edges[i].rate, amount: sign * slice });
-        }
-        if (!slices.length) {
-          // Zero-amount deal: record it against the band it sits in.
-          const band = [...edges].reverse().find((b) => after >= b.from) ?? edges[0];
-          slices.push({ from: band.from, to: edges[edges.indexOf(band) + 1]?.from ?? null, rate: band.rate, amount: 0 });
-        }
-        const split = slices.length > 1;
-        for (const s of slices) {
-          lines.push({
-            ...base,
-            payee,
-            role: p.role,
-            planName: plan.planName,
-            method: 'tier',
-            tierFrom: s.from,
-            tierTo: s.to,
-            amount: roundCents(s.amount),
-            rate: s.rate,
-            payout: roundCents(s.amount * s.rate),
-            cumulativeBefore: before,
-            cumulativeAfter: after,
-            split,
-            note: split ? 'Deal crossed a tier threshold and was split' : null,
-          });
-        }
+        lines.push(...tieredLines({ ...ctx, component: null }, amount, before, after, tiers, quota));
         continue;
       }
 
@@ -248,22 +301,7 @@ export function computeCommissionLines(deals: DealInput[], lookup: DatedPlanLook
         warnings.add(`Plan "${plan.planName}" has no tiers and no rate.`);
         continue;
       }
-      lines.push({
-        ...base,
-        payee,
-        role: p.role,
-        planName: plan.planName,
-        method: 'flat',
-        tierFrom: null,
-        tierTo: null,
-        amount,
-        rate,
-        payout: roundCents(amount * rate),
-        cumulativeBefore: before,
-        cumulativeAfter: after,
-        split: false,
-        note: null,
-      });
+      lines.push(flatLine({ ...ctx, component: null }, amount, rate, before, after));
     }
   }
 

@@ -10,6 +10,7 @@
 // = <> != < <= > >=, AND OR NOT, parentheses. Functions: IF, MIN, MAX, ROUND,
 // ABS, COALESCE, FLOOR, CEIL, ISBLANK, AND/OR as functions too.
 
+import { componentPayout, componentRate, findComponent, type ResolvedComponent } from './components.js';
 import { planTiersSchema, tierPayout, tierRate, tierScaleParam } from './tiers.js';
 
 export type FormulaValue = number | string | boolean | null;
@@ -116,7 +117,7 @@ const PREC: Record<string, number> = {
   '^': 7,
 };
 
-const FUNCTIONS = new Set(['IF', 'MIN', 'MAX', 'ROUND', 'ABS', 'COALESCE', 'FLOOR', 'CEIL', 'ISBLANK', 'AND', 'OR', 'NOT', 'TIER', 'TIER_RATE']);
+const FUNCTIONS = new Set(['IF', 'MIN', 'MAX', 'ROUND', 'ABS', 'COALESCE', 'FLOOR', 'CEIL', 'ISBLANK', 'AND', 'OR', 'NOT', 'TIER', 'TIER_RATE', 'COMPONENT', 'COMPONENT_RATE']);
 
 export function parseFormula(src: string): Node {
   const toks = tokenize(src);
@@ -264,6 +265,14 @@ function planTiers(scope: Scope, slot: string) {
   return { tiers: parsed.data, scale: param ? num(isScalar(raw) ? raw : null) : null };
 }
 
+/** A slot's resolved plan components (set up by repScope), if the scope has them. */
+function planComponents(scope: Scope, slot: string): ResolvedComponent[] | null {
+  const plan = scope[slot];
+  if (!plan || typeof plan !== 'object') return null;
+  const comps = (plan as Record<string, unknown>).components;
+  return Array.isArray(comps) ? (comps as ResolvedComponent[]) : null;
+}
+
 export function evaluateNode(n: Node, scope: Scope): FormulaValue {
   switch (n.k) {
     case 'num':
@@ -377,6 +386,17 @@ export function evaluateNode(n: Node, scope: Scope): FormulaValue {
           const t = planTiers(scope, typeof slotArg === 'string' && slotArg ? slotArg : 'plan');
           if (v === null || !t) return null;
           return fn === 'TIER' ? tierPayout(v, t.tiers, t.scale) : tierRate(v, t.tiers, t.scale);
+        }
+        case 'COMPONENT':
+        case 'COMPONENT_RATE': {
+          const v = num(arg(0));
+          const nameArg = arg(1);
+          const slotArg = arg(2);
+          const comps = planComponents(scope, typeof slotArg === 'string' && slotArg ? slotArg : 'plan');
+          if (v === null || !comps || typeof nameArg !== 'string') return null;
+          const c = findComponent(comps, nameArg);
+          if (!c) return null;
+          return fn === 'COMPONENT' ? componentPayout(v, c) : componentRate(v, c);
         }
       }
       return null;

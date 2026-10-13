@@ -148,3 +148,75 @@ describe('computeCommissionLines', () => {
     ]);
   });
 });
+
+describe('computeCommissionLines with weighted components', () => {
+  // $100K target incentive: New ARR 60% on $1.2M (5%, 150% above quota), Renewals 40% on $2M (2%, flat).
+  const weighted = (): EmployeeRecord => ({
+    name: 'Maya Chen',
+    baseSalary: null,
+    quota: null,
+    bonuses: {},
+    assignments: [
+      {
+        slot: 'plan',
+        planName: 'AE weighted',
+        params: {},
+        structure: {
+          targetIncentive: 100_000,
+          components: [
+            { id: 'a', name: 'New ARR', weight: { kind: 'percent', value: 0.6 }, quota: 1_200_000, tiers: { mode: 'marginal', rows: [{ from: 0, rate: 1 }, { from: 1, rate: 1.5 }] } },
+            { id: 'b', name: 'Renewals', weight: { kind: 'percent', value: 0.4 }, quota: 2_000_000, tiers: { mode: 'marginal', rows: [] } },
+          ],
+        },
+        effectiveFrom: null,
+        effectiveTo: null,
+      },
+    ],
+  });
+  const wdeal = (rowIndex: number, date: string, measures: Record<string, number | null>, amount: number | null = null): DealInput => ({
+    rowIndex,
+    dealKey: `W-${rowIndex}`,
+    date,
+    amount,
+    payees: [{ role: 'Rep', name: 'Maya Chen' }],
+    measures,
+  });
+
+  it('pays one line per mapped component with its own attainment and splits at the component quota', () => {
+    const lookup = makeDatedPlanLookup([weighted()]);
+    const res = computeCommissionLines([wdeal(1, '2026-01-20', { new_arr: 900_000, renewals: 500_000 }, 1_400_000), wdeal(2, '2026-02-14', { new_arr: 500_000, renewals: null }, 500_000)], lookup);
+    expect(res.warnings).toEqual([]);
+    expect(res.lines.map((l) => [l.component, l.amount, l.rate, l.payout])).toEqual([
+      ['New ARR', 900_000, 0.05, 45_000],
+      ['Renewals', 500_000, 0.02, 10_000],
+      ['New ARR', 300_000, 0.05, 15_000],
+      ['New ARR', 200_000, 0.075, 15_000],
+    ]);
+    expect(res.lines[2]).toMatchObject({ split: true, tierFrom: 0, tierTo: 1_200_000, cumulativeBefore: 900_000, cumulativeAfter: 1_400_000 });
+    expect(res.lines[1]).toMatchObject({ method: 'flat', cumulativeBefore: 0, cumulativeAfter: 500_000 });
+    expect(res.totalPayout).toBe(85_000);
+    expect(res.totals[0]).toMatchObject({ payee: 'Maya Chen', deals: 2, amount: 1_900_000, payout: 85_000 });
+  });
+
+  it('warns once about unmapped components and prices nothing for them', () => {
+    const lookup = makeDatedPlanLookup([weighted()]);
+    const res = computeCommissionLines([wdeal(1, '2026-01-20', { new_arr: 100_000 }), wdeal(2, '2026-01-21', { new_arr: 100_000 })], lookup);
+    expect(res.lines).toHaveLength(2);
+    expect(res.lines.every((l) => l.component === 'New ARR')).toBe(true);
+    expect(res.warnings).toEqual(['Component "Renewals" of plan "AE weighted" is not mapped to a column, so nothing was paid for it.']);
+  });
+
+  it('flags a component that cannot be priced instead of paying zero', () => {
+    const e = weighted();
+    e.assignments[0].structure!.components[0].quota = null;
+    const res = computeCommissionLines([wdeal(1, '2026-01-20', { new_arr: 100_000, renewals: 0 })], makeDatedPlanLookup([e]));
+    expect(res.lines[0]).toMatchObject({ component: 'New ARR', method: 'none', payout: null, note: 'Set a quota to get an on-target rate' });
+    expect(res.lines[1]).toMatchObject({ component: 'Renewals', method: 'flat', payout: 0 });
+  });
+
+  it('plans without components still pay from the deal amount', () => {
+    const lookup = makeDatedPlanLookup([accelerated()]);
+    const res = computeCommissionLines([{ ...deal(1, '2026-02-01', 100_000), measures: { new_arr: 5 } }], lookup);
+    expect(res.lines[0]).toMatchObject({ component: null, amount: 100_000, payout: 5_000 });
+  });
+});
