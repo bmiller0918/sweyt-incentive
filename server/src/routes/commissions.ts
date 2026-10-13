@@ -176,7 +176,14 @@ export async function commissionRoutes(app: FastifyInstance, db: Db) {
       components: body.components,
     };
     // Component key -> column, so the engine can find each component's value on a deal.
-    const measureFields = new Map(body.components.map((c) => [componentKey(c.name), c.field]));
+    // Names that normalize to the same key ("New ARR" / "New-ARR") would silently share one column.
+    const measureFields = new Map<string, string>();
+    for (const c of body.components) {
+      const key = componentKey(c.name);
+      if (!key) return reply.code(400).send({ error: `Component name "${c.name}" has no letters or digits` });
+      if (measureFields.has(key)) return reply.code(400).send({ error: `Components "${c.name}" and another map to the same key "${key}"; give them distinct names` });
+      measureFields.set(key, c.field);
+    }
 
     const holds = applyHoldRules(cached.typed, body.holdRules, { types: cached.types, fiscalYearStartMonth: config.fiscalYearStartMonth, weekStartsOn: config.weekStartsOn });
     const ruleErrors = Object.entries(holds.errors);

@@ -1,4 +1,4 @@
-import { LINE_STATUS_LABELS, OPERATOR_LABELS, familyOf, operandArity, type Condition, type HoldRule, type LineStatus, type Operator } from '@commissions/shared';
+import { LINE_STATUS_LABELS, OPERATOR_LABELS, componentKey, familyOf, operandArity, type Condition, type HoldRule, type LineStatus, type Operator } from '@commissions/shared';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { api, type CommissionLine, type CommissionRun, type CompPlan, type HoldReason, type ImportColumn, type ImportDetail, type ImportSummary, type Subledger } from '../api';
 import { PeriodPicker } from './PeriodPicker';
@@ -110,10 +110,15 @@ export function CommissionsView() {
       .catch((e) => setError(e.message));
   }, [refresh, refreshReasons]);
 
-  /** Every component name across all plans, so a run can map each to a column. */
+  /** Every component name across all plans, one per engine key, so a run can map each to a column. */
   const componentNames = useMemo(() => {
     const seen = new Map<string, string>();
-    for (const p of plans) for (const c of p.structure?.components ?? []) if (c.name.trim() && !seen.has(c.name.trim().toLowerCase())) seen.set(c.name.trim().toLowerCase(), c.name.trim());
+    for (const p of plans) {
+      for (const c of p.structure?.components ?? []) {
+        const key = componentKey(c.name);
+        if (key && !seen.has(key)) seen.set(key, c.name.trim());
+      }
+    }
     return [...seen.values()];
   }, [plans]);
 
