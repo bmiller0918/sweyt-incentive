@@ -62,9 +62,15 @@ export function MonthlyCloseView({ onOpenTypes, onOpenRegister }: { onOpenTypes:
     }
   };
   const reopen = async (m: string) => {
-    if (!window.confirm(`Reopen ${monthLabel(m)}? Its journals and the commissions it added to the register are removed, and you can close it again.`)) return;
+    if (!window.confirm(`Reopen ${monthLabel(m)}? Its journals and the commissions it added to the register are removed, manual amortizations it booked go back to pending, and you can close it again.`)) return;
     try {
-      await api.reopenMonth(m);
+      try {
+        await api.reopenMonth(m);
+      } catch (e) {
+        const msg = (e as Error).message;
+        if (!/modified, transferred or written off/.test(msg) || !window.confirm(`${msg}\n\nReopen anyway?`)) throw e;
+        await api.reopenMonth(m, true);
+      }
       await loadPeriods();
     } catch (e) {
       setError((e as Error).message);
@@ -133,7 +139,11 @@ export function MonthlyCloseView({ onOpenTypes, onOpenRegister }: { onOpenTypes:
           <>
             <div className="grid grid-cols-6 gap-3">
               <Stat label="Accrue for payroll" value={money(preview.totals.accrued)} sub={`${preview.booked.length} lines${late ? `, ${late} late` : ''}`} />
-              <Stat label="Capitalized" value={money(preview.totals.capitalized)} sub={`${capLines} new in the register`} />
+              <Stat
+                label="Capitalized"
+                value={money(preview.totals.capitalized + (preview.totals.manual ?? 0))}
+                sub={`${capLines} new in the register${preview.totals.manual ? `, incl. ${money(preview.totals.manual)} entered by hand` : ''}`}
+              />
               <Stat label="Expensed" value={money(preview.totals.expensed)} sub={`${expLines} lines`} />
               <Stat label="Amortization" value={money(preview.totals.amortization)} />
               <Stat label="Written off" value={money(preview.totals.impairment)} tone={preview.totals.impairment ? 'warn' : undefined} />
