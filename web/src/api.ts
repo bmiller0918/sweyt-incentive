@@ -1,3 +1,15 @@
+import type {
+  AccountingSettings,
+  AmortizationMethodDef,
+  AssetPosition,
+  BookedLine,
+  CloseResult,
+  GlAccount,
+  JournalEntry,
+  MethodSchedule,
+  RegisterAsset,
+  RollforwardMonth,
+} from '@commissions/shared';
 import type { AccountingPolicy, Aggregate, ColumnDef, ColumnType, CostTreatment, Criteria, HoldRule, LineStatus, PayoutRule, PlanTiers, RawRow, ScheduleLine, SubledgerResult } from '@commissions/shared';
 
 export interface ImportSummary {
@@ -124,11 +136,12 @@ export interface EmployeeType {
   defaultBaseSalary: number | null;
   defaultQuota: number | null;
   costTreatment: CostTreatment;
+  amortizationTypeId: string | null;
   employeeCount: number;
   assignments: TypeAssignment[];
   updatedAt: string;
 }
-export type EmployeeTypeInput = Pick<EmployeeType, 'name' | 'description' | 'defaultBaseSalary' | 'defaultQuota' | 'costTreatment'>;
+export type EmployeeTypeInput = Pick<EmployeeType, 'name' | 'description' | 'defaultBaseSalary' | 'defaultQuota' | 'costTreatment'> & { amortizationTypeId?: string | null };
 
 export interface Employee {
   id: string;
@@ -301,6 +314,91 @@ const json = (method: string, body: unknown): RequestInit => ({
   body: JSON.stringify(body),
 });
 
+// -- Accounting --------------------------------------------------------------
+
+export type AccountingSettingsRow = AccountingSettings & { id: string };
+export interface AmortizationMethodRow {
+  id: string;
+  name: string;
+  description: string | null;
+  def: AmortizationMethodDef;
+  builtinKey: string | null;
+  usedBy: string[];
+}
+export type AmortizationMethodInput = { name: string; description: string | null; def: AmortizationMethodDef };
+export interface AmortizationTypeRow {
+  id: string;
+  name: string;
+  description: string | null;
+  treatment: CostTreatment;
+  methodId: string | null;
+  expenseAccount: GlAccount | null;
+  amortizationAccount: GlAccount | null;
+  builtinKey: string | null;
+  employeeTypes: { id: string; name: string }[];
+}
+export type AmortizationTypeInput = Omit<AmortizationTypeRow, 'id' | 'builtinKey' | 'employeeTypes'> & { employeeTypeIds?: string[] };
+export interface RoleMapping {
+  id: string;
+  name: string;
+  amortizationTypeId: string | null;
+  costTreatment: CostTreatment;
+  suggestedTypeId: string | null;
+}
+export interface AmortizationTypesPayload {
+  types: AmortizationTypeRow[];
+  employeeTypes: RoleMapping[];
+}
+export interface PeriodRow {
+  id: string;
+  month: string;
+  runIds: string[];
+  currentPortion: number;
+  closedBy: string | null;
+  createdAt: string;
+  entryCount: number;
+  totals: CloseResult['totals'] | null;
+  rollforward: RollforwardMonth | null;
+}
+export interface PeriodsPayload {
+  periods: PeriodRow[];
+  nextMonth: string;
+  firstPayMonth: string | null;
+  lastPayMonth: string | null;
+}
+export type ClosePreview = Omit<CloseResult, 'newAssets'> & {
+  newAssets: Omit<RegisterAsset, 'byMonth'>[];
+  runs: { id: string; name: string }[];
+  unmapped: string[];
+  balanced: boolean;
+};
+export type RegisterRow = Omit<RegisterAsset, 'byMonth'> & AssetPosition;
+export interface RegisterPayload {
+  month: string;
+  closed: boolean;
+  rows: RegisterRow[];
+  rollforward: RollforwardMonth;
+  history: RollforwardMonth[];
+  byType: { typeName: string; count: number; amount: number; remaining: number; current: number; noncurrent: number; amortizationThisMonth: number }[];
+  waterfall: { year: string; amount: number }[];
+  openMonth: string | null;
+}
+export interface ReclassRow {
+  month: string;
+  closing: number;
+  current: number;
+  noncurrent: number;
+  reclass: { target: number; priorCurrent: number; beforeReclass: number; netMove: number } | null;
+  entries: JournalEntry[];
+}
+export type { BookedLine, JournalEntry, MethodSchedule };
+
+function download(href: string) {
+  const a = document.createElement('a');
+  a.href = href;
+  a.click();
+}
+
 export const api = {
   upload(file: File, onProgress?: (pct: number) => void): Promise<UploadResult> {
     return new Promise((resolve, reject) => {
@@ -453,6 +551,33 @@ export const api = {
   reorderPayoutRules: (ids: string[]) => request<PayoutRuleRow[]>('/api/payout-rules/order', json('PUT', { ids })),
   deletePayoutRule: (id: string) => request<void>(`/api/payout-rules/${id}`, { method: 'DELETE' }),
   previewPayoutRules: (body: { importId: string; rules?: PayoutRule[]; limit?: number }) => request<PayoutRulesPreview>('/api/payout-rules/preview', json('POST', body)),
+
+  getAccountingSettings: () => request<AccountingSettingsRow>('/api/accounting-settings'),
+  updateAccountingSettings: (body: AccountingSettings) => request<AccountingSettingsRow>('/api/accounting-settings', json('PUT', body)),
+  listMethods: () => request<AmortizationMethodRow[]>('/api/amortization-methods'),
+  createMethod: (body: AmortizationMethodInput) => request<AmortizationMethodRow>('/api/amortization-methods', json('POST', body)),
+  updateMethod: (id: string, body: AmortizationMethodInput) => request<AmortizationMethodRow>(`/api/amortization-methods/${id}`, json('PUT', body)),
+  deleteMethod: (id: string) => request<void>(`/api/amortization-methods/${id}`, { method: 'DELETE' }),
+  previewMethod: (body: { def: AmortizationMethodDef; amount: number; payMonth: string; contractStart: string | null; termMonths: number | null; practicalExpedient: boolean }) =>
+    request<{ errors: string[]; schedule: MethodSchedule | null }>('/api/amortization-methods/preview', json('POST', body)),
+  listAmortizationTypes: () => request<AmortizationTypesPayload>('/api/amortization-types'),
+  createAmortizationType: (body: AmortizationTypeInput) => request<AmortizationTypesPayload>('/api/amortization-types', json('POST', body)),
+  updateAmortizationType: (id: string, body: AmortizationTypeInput) => request<AmortizationTypesPayload>(`/api/amortization-types/${id}`, json('PUT', body)),
+  deleteAmortizationType: (id: string) => request<AmortizationTypesPayload>(`/api/amortization-types/${id}`, { method: 'DELETE' }),
+  assignAmortizationTypes: (assignments: { employeeTypeId: string; amortizationTypeId: string | null }[]) =>
+    request<AmortizationTypesPayload>('/api/amortization-types/assign', json('POST', { assignments })),
+  listPeriods: () => request<PeriodsPayload>('/api/accounting/periods'),
+  previewClose: (month: string, runIds: string[] | null) => request<ClosePreview>(`/api/accounting/close/${month}${runIds ? `?runIds=${runIds.join(',')}` : ''}`),
+  closeMonth: (month: string, runIds: string[] | null) => request<{ month: string }>(`/api/accounting/close/${month}`, json('POST', { runIds })),
+  reopenMonth: (month: string) => request<{ ok: true }>(`/api/accounting/periods/${month}/reopen`, json('POST', {})),
+  getJournals: (month: string) => request<{ month: string; closed: boolean; entries: JournalEntry[] }>(`/api/accounting/journals/${month}`),
+  exportJournals: (month: string) => download(`/api/accounting/journals/${month}/entries.csv`),
+  getRegister: (month?: string) => request<RegisterPayload>(`/api/accounting/register${month ? `?month=${month}` : ''}`),
+  exportRegister: (month: string) => download(`/api/accounting/register.csv?month=${month}`),
+  exportSchedule: () => download('/api/accounting/register/schedule.csv'),
+  writeOffAsset: (id: string, reason: string) => request<{ writtenOffMonth: string }>(`/api/accounting/assets/${id}/write-off`, json('POST', { reason })),
+  undoWriteOff: (id: string) => request<{ ok: true }>(`/api/accounting/assets/${id}/write-off`, { method: 'DELETE' }),
+  getReclass: () => request<ReclassRow[]>('/api/accounting/reclass'),
 
   listHoldReasons: () => request<HoldReason[]>('/api/hold-reasons'),
   createHoldReason: (name: string) => request<HoldReason>('/api/hold-reasons', json('POST', { name })),

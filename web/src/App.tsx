@@ -1,5 +1,10 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { api, type ImportSummary } from './api';
+import { AccountingSettingsView } from './components/accounting/AccountingSettingsView';
+import { AmortizationRegisterView } from './components/accounting/AmortizationRegisterView';
+import { AmortizationTypesView } from './components/accounting/AmortizationTypesView';
+import { JournalsView, ReclassView } from './components/accounting/JournalsView';
+import { MonthlyCloseView } from './components/accounting/MonthlyCloseView';
 import { CommissionsView } from './components/CommissionsView';
 import { ComingSoon } from './components/ComingSoon';
 import { DashboardView } from './components/DashboardView';
@@ -13,7 +18,24 @@ import { UploadFlow } from './components/UploadFlow';
 import { useAuth } from './components/AuthGate';
 
 /** The existing screens a sidebar item can open. 'soon' = a page that isn't built yet. */
-type Screen = 'dashboard' | 'runs' | 'imports' | 'incentives' | 'employees' | 'types' | 'plans' | 'payoutrules' | 'holdreasons' | 'acctpolicy' | 'users' | 'soon';
+type Screen =
+  | 'dashboard'
+  | 'runs'
+  | 'imports'
+  | 'incentives'
+  | 'employees'
+  | 'types'
+  | 'plans'
+  | 'payoutrules'
+  | 'holdreasons'
+  | 'acctpolicy'
+  | 'amorttypes'
+  | 'register'
+  | 'close'
+  | 'journals'
+  | 'reclass'
+  | 'users'
+  | 'soon';
 
 type NavItem = { key: string; label: string; screen: Screen; children?: NavItem[] };
 type NavSection = { key: string; label: string; items: NavItem[] };
@@ -55,15 +77,15 @@ const SECTIONS: NavSection[] = [
     label: 'Accounting',
     items: [
       { key: 'accounting-settings', label: 'Accounting Settings', screen: 'acctpolicy' },
-      { key: 'amortization-types', label: 'Amortization Types', screen: 'soon' },
-      { key: 'amortization-registers', label: 'Amortization Registers', screen: 'runs' },
+      { key: 'amortization-types', label: 'Amortization Types', screen: 'amorttypes' },
+      { key: 'amortization-registers', label: 'Amortization Register', screen: 'register' },
       {
         key: 'process-monthly-accounting',
         label: 'Process Monthly Accounting',
-        screen: 'soon',
+        screen: 'close',
         children: [
-          { key: 'process-monthly-payouts', label: 'Process Monthly Payouts', screen: 'soon' },
-          { key: 'monthly-reclass', label: 'Monthly Reclass', screen: 'soon' },
+          { key: 'monthly-journals', label: 'Monthly Journals', screen: 'journals' },
+          { key: 'monthly-reclass', label: 'Monthly Reclass', screen: 'reclass' },
         ],
       },
     ],
@@ -213,7 +235,17 @@ export default function App() {
       case 'holdreasons':
         return <SettingsView tab="hold-reasons" />;
       case 'acctpolicy':
-        return <SettingsView tab="accounting" />;
+        return <AccountingSettingsView />;
+      case 'amorttypes':
+        return <AmortizationTypesView />;
+      case 'register':
+        return <AmortizationRegisterView onOpenClose={() => go('process-monthly-accounting')} />;
+      case 'close':
+        return <MonthlyCloseView onOpenTypes={() => go('amortization-types')} onOpenRegister={() => go('amortization-registers')} />;
+      case 'journals':
+        return <JournalsView />;
+      case 'reclass':
+        return <ReclassView />;
       case 'users':
         return <SettingsView tab="users" />;
       case 'soon':

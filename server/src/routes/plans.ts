@@ -39,6 +39,7 @@ const employeeTypeSchema = z.object({
   defaultBaseSalary: z.number().nullable().optional(),
   defaultQuota: z.number().nullable().optional(),
   costTreatment: z.enum(['capitalize', 'expense']).default('capitalize'),
+  amortizationTypeId: z.string().uuid().nullable().optional(),
 });
 
 const employeeSchema = z.object({
