@@ -95,6 +95,8 @@ export interface ResolvedStructure {
 }
 
 const EPS = 1e-6;
+/** Strip float noise from derived rates (0.05 × 1.5 → 0.075, not 0.07500000000000001). */
+const clean = (n: number) => Math.round(n * 1e12) / 1e12;
 
 /** Resolve every component's weight, dollars and on-target rate. */
 export function resolveStructure(structure: PlanStructure): ResolvedStructure {
@@ -136,10 +138,10 @@ export function resolveStructure(structure: PlanStructure): ResolvedStructure {
     if (c.quota === null || c.quota <= 0) {
       if (c.weight.kind !== 'quota') cIssues.push('Set a quota to get an on-target rate');
     }
-    const rate = target !== null && c.quota !== null && c.quota > 0 ? target / c.quota : null;
+    const rate = target !== null && c.quota !== null && c.quota > 0 ? clean(target / c.quota) : null;
     const tiers: PlanTiers | null =
       rate !== null && c.tiers.rows.length
-        ? { mode: c.tiers.mode, basis: 'percent_of_quota', scaleParam: 'quota', rows: c.tiers.rows.map((r) => ({ from: r.from, rate: rate * r.rate })) }
+        ? { mode: c.tiers.mode, basis: 'percent_of_quota', scaleParam: 'quota', rows: c.tiers.rows.map((r) => ({ from: r.from, rate: clean(rate * r.rate) })) }
         : null;
     return { id: c.id, name: c.name, key: componentKey(c.name), weight, targetIncentive: target, quota: c.quota, rate, tiers, issues: cIssues };
   });

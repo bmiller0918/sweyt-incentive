@@ -1,0 +1,1 @@
+ALTER TABLE "commission_lines" ADD COLUMN "component" text;

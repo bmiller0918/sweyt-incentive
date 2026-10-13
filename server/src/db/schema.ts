@@ -232,6 +232,8 @@ export interface CommissionRunConfig {
   /** Contract term in months, or an end date to derive it from. */
   termMonthsField?: string | null;
   contractEndField?: string | null;
+  /** Weighted-plan components → the column holding each one's value (matched by component name). */
+  components?: { name: string; field: string }[];
 }
 
 /** Company-wide amortization policy (one row). */
@@ -360,6 +362,8 @@ export const commissionLines = pgTable(
     payee: text('payee').notNull(),
     role: text('role').notNull(),
     planName: text('plan_name'),
+    /** Plan component this line pays under (weighted plans); null for plan-level lines. */
+    component: text('component'),
     /** tier | whole | flat | none */
     method: text('method').notNull(),
     tierFrom: doublePrecision('tier_from'),

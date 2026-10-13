@@ -204,6 +204,8 @@ export interface CommissionRunConfig {
   contractStartField?: string | null;
   termMonthsField?: string | null;
   contractEndField?: string | null;
+  /** Weighted-plan components → the column holding each one's value. */
+  components?: { name: string; field: string }[];
 }
 
 /** The subledger as the API returns it: schedule lines without their per-month map. */
@@ -240,6 +242,8 @@ export interface CommissionLine {
   payee: string;
   role: string;
   planName: string | null;
+  /** Plan component this line pays under (weighted plans); null for plan-level lines. */
+  component: string | null;
   method: 'tier' | 'whole' | 'flat' | 'none';
   tierFrom: number | null;
   tierTo: number | null;
