@@ -32,7 +32,6 @@ type Screen =
   | 'types'
   | 'plans'
   | 'payoutrules'
-  | 'holdreasons'
   | 'acctpolicy'
   | 'amorttypes'
   | 'amortmethods'
@@ -59,7 +58,6 @@ const SECTIONS: NavSection[] = [
     items: [
       { key: 'integrations', label: 'Integrations', screen: 'soon' },
       { key: 'imports', label: 'Imports', screen: 'imports' },
-      { key: 'payout-settings', label: 'Payout Settings', screen: 'holdreasons' },
     ],
   },
   {
@@ -141,7 +139,6 @@ const FEATURE_OF: Record<string, FeatureKey> = {
   clawbacks: 'clawbacks',
   'payout-rules': 'holds',
   'payouts-on-hold': 'holds',
-  'payout-settings': 'holds',
   'accounting-settings': 'accounting',
   'amortization-types': 'accounting',
   'amortization-methods': 'accounting',
@@ -205,7 +202,7 @@ export default function App() {
   const openSetupTarget = (t: SetupTarget) => {
     if (t === 'upload') return openUpload();
     if (t === 'imports') return openImport(imports[0]?.id ?? null);
-    const key: Record<Exclude<SetupTarget, 'upload' | 'imports'>, string> = { employees: 'employees', types: 'employee-types', users: 'users', plans: 'plans-rates-quotas', holdreasons: 'payout-settings', acctpolicy: 'accounting-settings' };
+    const key: Record<Exclude<SetupTarget, 'upload' | 'imports'>, string> = { employees: 'employees', types: 'employee-types', users: 'users', plans: 'plans-rates-quotas', holdreasons: 'payout-rules', acctpolicy: 'accounting-settings' };
     go(key[t]);
   };
 
@@ -286,9 +283,7 @@ export default function App() {
       case 'plans':
         return <SettingsView tab="plans" />;
       case 'payoutrules':
-        return <PayoutRulesView onOpenHoldReasons={() => go('payout-settings')} />;
-      case 'holdreasons':
-        return <SettingsView tab="hold-reasons" />;
+        return <PayoutRulesView />;
       case 'acctpolicy':
         return <AccountingSettingsView onOpenMethods={() => go('amortization-methods')} />;
       case 'amorttypes':
