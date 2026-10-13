@@ -16,6 +16,8 @@ import type {
   HoldRule,
   JournalEntry,
   PlanQuotas,
+  ProgramDefinition,
+  ProgramKind,
   PlanStructure,
   PlanTiers,
   RawRow,
@@ -174,6 +176,24 @@ export const typePlanAssignments = pgTable(
   (t) => [index('type_plan_assignments_type_idx').on(t.employeeTypeId)],
 );
 
+/** A spiff, accelerator or bonus: pays on a metric from an import, for a window, beside the comp plan. */
+export const incentivePrograms = pgTable('incentive_programs', {
+  ...base,
+  name: text('name').notNull(),
+  description: text('description'),
+  /** spiff | accelerator | bonus */
+  kind: text('kind').$type<ProgramKind>().notNull(),
+  enabled: boolean('enabled').notNull().default(true),
+  /** Where the metric comes from (deals, calls, an uploaded scorecard). */
+  importId: uuid('import_id').references(() => imports.id, { onDelete: 'set null' }),
+  /** Employee types it is for; empty = everyone. */
+  employeeTypeIds: jsonb('employee_type_ids').$type<string[]>().notNull().default([]),
+  /** YYYY-MM-DD; null = open-ended. */
+  effectiveFrom: text('effective_from'),
+  effectiveTo: text('effective_to'),
+  definition: jsonb('definition').$type<ProgramDefinition>().notNull(),
+});
+
 /** A person who earns commission. `name` must match the rep column in the data. */
 export const employees = pgTable(
   'employees',
@@ -246,6 +266,8 @@ export interface CommissionRunConfig {
   components?: { name: string; field: string }[];
   /** Gross profit column, for plans with a percent-of-margin quota. */
   marginField?: string | null;
+  /** Pay enabled spiffs, accelerators and bonuses whose window overlaps the run (default true). */
+  includePrograms?: boolean;
 }
 
 /** Company-wide amortization policy (one row). */

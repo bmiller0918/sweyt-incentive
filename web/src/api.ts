@@ -12,7 +12,7 @@ import type {
   RegisterAsset,
   RollforwardMonth,
 } from '@commissions/shared';
-import type { AccountingPolicy, Aggregate, AppSettings, ColumnDef, ColumnType, CostTreatment, Criteria, HoldRule, LineStatus, PayoutRule, PlanQuotas, PlanStructure, PlanTiers, RawRow, ScheduleLine, SubledgerResult } from '@commissions/shared';
+import type { AccountingPolicy, Aggregate, AppSettings, ColumnDef, ColumnType, CostTreatment, Criteria, HoldRule, LineStatus, PayoutRule, PlanQuotas, PlanStructure, ProgramDefinition, ProgramKind, PayeeTotal, CommissionLine as EngineLine, PlanTiers, RawRow, ScheduleLine, SubledgerResult } from '@commissions/shared';
 
 export interface ImportSummary {
   id: string;
@@ -214,6 +214,8 @@ export interface CommissionRunConfig {
   components?: { name: string; field: string }[];
   /** Gross profit column, for percent-of-margin quotas. */
   marginField?: string | null;
+  /** Pay enabled spiffs, accelerators and bonuses (default true). */
+  includePrograms?: boolean;
 }
 
 /** The subledger as the API returns it: schedule lines without their per-month map. */
@@ -274,7 +276,7 @@ export interface CommissionLine {
   planName: string | null;
   /** Plan component this line pays under (weighted plans); null for plan-level lines. */
   component: string | null;
-  method: 'tier' | 'whole' | 'flat' | 'margin' | 'none';
+  method: 'tier' | 'whole' | 'flat' | 'margin' | 'spiff' | 'accelerator' | 'bonus' | 'none';
   tierFrom: number | null;
   tierTo: number | null;
   amount: number | null;
@@ -517,7 +519,35 @@ function download(href: string) {
   a.click();
 }
 
+/** A spiff, accelerator or bonus. */
+export interface IncentiveProgram {
+  id: string;
+  name: string;
+  description: string | null;
+  kind: ProgramKind;
+  enabled: boolean;
+  importId: string | null;
+  employeeTypeIds: string[];
+  effectiveFrom: string | null;
+  effectiveTo: string | null;
+  definition: ProgramDefinition;
+  updatedAt: string;
+}
+export type IncentiveProgramInput = Omit<IncentiveProgram, 'id' | 'updatedAt'>;
+export interface ProgramPreview {
+  lines: EngineLine[];
+  totals: PayeeTotal[];
+  totalPayout: number;
+  warnings: string[];
+}
+
 export const api = {
+  listPrograms: () => request<IncentiveProgram[]>('/api/incentive-programs'),
+  createProgram: (body: IncentiveProgramInput) => request<IncentiveProgram>('/api/incentive-programs', json('POST', body)),
+  updateProgram: (id: string, body: IncentiveProgramInput) => request<IncentiveProgram>(`/api/incentive-programs/${id}`, json('PUT', body)),
+  deleteProgram: (id: string) => request<void>(`/api/incentive-programs/${id}`, { method: 'DELETE' }),
+  previewProgram: (body: IncentiveProgramInput) => request<ProgramPreview>('/api/incentive-programs/preview', json('POST', body)),
+
   upload(file: File, onProgress?: (pct: number) => void): Promise<UploadResult> {
     return new Promise((resolve, reject) => {
       const xhr = new XMLHttpRequest();

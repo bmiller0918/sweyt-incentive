@@ -725,19 +725,19 @@ const RULE_OPERATOR_LABELS: Partial<Record<Operator, string>> = {
 };
 const opLabel = (op: Operator) => RULE_OPERATOR_LABELS[op] ?? OPERATOR_LABELS[op] ?? op;
 
-function defaultOperator(family: ColumnFamily): Operator {
+export function defaultOperator(family: ColumnFamily): Operator {
   return family === 'boolean' ? 'is_true' : family === 'number' ? 'eq' : family === 'date' ? 'on_or_after' : 'is';
 }
 const lit = (value: string): Operand => ({ kind: 'literal', value });
 const litValue = (v: Operand | undefined) => (v?.kind === 'literal' ? v.value : '');
-function defaultValues(op: Operator): Operand[] {
+export function defaultValues(op: Operator): Operand[] {
   const a = operandArity(op);
   if (a === 0 || a === 'list') return [];
   if (op === 'relative' || op === 'not_relative') return [{ kind: 'relative', preset: 'next_n_days', n: 90 }];
   return a === 2 ? [lit(''), lit('')] : [lit('')];
 }
 
-function ConditionTable<T extends Condition>({ rows, fields, withDirection, onChange, empty }: { rows: T[]; fields: RuleField[]; withDirection?: boolean; onChange: (rows: T[]) => void; empty: string }) {
+export function ConditionTable<T extends Condition>({ rows, fields, withDirection, onChange, empty }: { rows: T[]; fields: RuleField[]; withDirection?: boolean; onChange: (rows: T[]) => void; empty: string }) {
   const update = (i: number, patch: Partial<T>) => onChange(rows.map((r, j) => (j === i ? { ...r, ...patch } : r)));
   const remove = (i: number) => onChange(rows.filter((_, j) => j !== i));
   return (
