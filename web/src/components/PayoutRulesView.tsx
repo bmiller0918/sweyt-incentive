@@ -26,10 +26,13 @@ import { api, type HoldReason, type ImportSummary, type PayoutRuleRow, type Payo
  * Payout Rules, shaped like a cross-validation rule: each rule has filters
  * (which deals it applies to), requirements (what must or cannot be true of
  * them) and an action (the hold reason and message). Every commission run
- * applies the rules; a deal that breaks one starts on hold. The page also
- * dry-runs the rules against any import so flagged deals can be reviewed.
+ * applies the rules; a deal that breaks one starts on hold. The page opens on
+ * the register (every rule in place, plus the hold reasons they pick from);
+ * drilling into a rule opens its record. The page also dry-runs the rules
+ * against any import so flagged deals can be reviewed.
  */
-export function PayoutRulesView({ onOpenHoldReasons }: { onOpenHoldReasons: () => void }) {
+export function PayoutRulesView() {
+  const [view, setView] = useState<'register' | 'record'>('register');
   const [rules, setRules] = useState<PayoutRuleRow[]>([]);
   const [fields, setFields] = useState<RuleField[]>([]);
   const [reasons, setReasons] = useState<HoldReason[]>([]);
@@ -50,10 +53,6 @@ export function PayoutRulesView({ onOpenHoldReasons }: { onOpenHoldReasons: () =
         setFields(fs);
         setReasons(hr);
         setImports(imps);
-        if (rs.length) {
-          setSelectedId(rs[0].id);
-          setDraft(stripRow(rs[0]));
-        }
       })
       .catch((e) => setError(e.message))
       .finally(() => setLoaded(true));
@@ -98,12 +97,23 @@ export function PayoutRulesView({ onOpenHoldReasons }: { onOpenHoldReasons: () =
     if (dirty && !window.confirm('Discard the unsaved changes to this rule?')) return;
     setSelectedId(rule.id);
     setDraft(stripRow(rule));
+    setView('record');
   };
 
   const startNew = () => {
     if (dirty && !window.confirm('Discard the unsaved changes to this rule?')) return;
     setSelectedId(null);
     setDraft({ id: NEW_ID, name: '', message: '', reasonKey: reasons[0]?.key ?? 'other', filters: [], requirements: [], requireAll: true, enabled: true });
+    setView('record');
+  };
+
+  /** Back to the register, optionally scrolled to the hold reasons. */
+  const openRegister = (toReasons = false) => {
+    if (dirty && !window.confirm('Discard the unsaved changes to this rule?')) return;
+    setSelectedId(null);
+    setDraft(null);
+    setView('register');
+    if (toReasons) setTimeout(() => document.getElementById('hold-reasons')?.scrollIntoView({ behavior: 'smooth' }), 0);
   };
 
   const save = async () => {
@@ -125,8 +135,8 @@ export function PayoutRulesView({ onOpenHoldReasons }: { onOpenHoldReasons: () =
   const discard = () => {
     if (selected) setDraft(stripRow(selected));
     else {
-      setDraft(rules[0] ? stripRow(rules[0]) : null);
-      setSelectedId(rules[0]?.id ?? null);
+      setDraft(null);
+      setView('register');
     }
   };
 
@@ -134,10 +144,10 @@ export function PayoutRulesView({ onOpenHoldReasons }: { onOpenHoldReasons: () =
     if (!selected || !window.confirm(`Delete the rule "${payoutRuleLabel(selected)}"? Lines it already put on hold stay on hold.`)) return;
     try {
       await api.deletePayoutRule(selected.id);
-      const rest = rules.filter((r) => r.id !== selected.id);
-      setRules(rest);
-      setSelectedId(rest[0]?.id ?? null);
-      setDraft(rest[0] ? stripRow(rest[0]) : null);
+      setRules((rs) => rs.filter((r) => r.id !== selected.id));
+      setSelectedId(null);
+      setDraft(null);
+      setView('register');
     } catch (e) {
       fail(e);
     }
@@ -162,13 +172,24 @@ export function PayoutRulesView({ onOpenHoldReasons }: { onOpenHoldReasons: () =
   return (
     <div className="flex h-full min-h-0 flex-col">
       <div className="border-b border-slate-200 px-6 pt-5 pb-4">
-        <div className="text-xs text-slate-400">Payouts</div>
+        <div className="text-xs text-slate-400">
+          Payouts
+          {view === 'record' && (
+            <>
+              {' › '}
+              <button className="underline hover:text-slate-600" onClick={() => openRegister()}>
+                Payout Rules
+              </button>
+            </>
+          )}
+        </div>
         <div className="flex items-start gap-3">
           <div className="min-w-0 flex-1">
-            <h1 className="text-lg font-semibold">Payout Rules</h1>
+            <h1 className="text-lg font-semibold">{view === 'record' && draft ? payoutRuleLabel(draft) : 'Payout Rules'}</h1>
             <p className="mt-1 max-w-3xl text-sm text-slate-500">
               Cross-validation rules on the deal data. Each rule says which deals it applies to (<em>filters</em>), what must or cannot be true of them (<em>requirements</em>), and what
-              happens when a deal breaks it: it starts <em>on hold</em> with a reason and message on every commission run, for review under Payouts On Hold.
+              happens when a deal breaks it: it starts <em>on hold</em> with a reason and message on every commission run, for review under Payouts On Hold. Open a rule to see its
+              specifics.
             </p>
           </div>
           <button className="btn btn-primary shrink-0" disabled={!fields.length || !reasons.length} onClick={startNew} title={!fields.length ? 'Import a file first so there are fields to check' : undefined}>
@@ -191,17 +212,23 @@ export function PayoutRulesView({ onOpenHoldReasons }: { onOpenHoldReasons: () =
           Import a spreadsheet first. Rules check the columns of your imports, so there are no fields to pick from yet.
         </div>
       )}
-      {loaded && fields.length > 0 && !reasons.length && (
-        <div className="m-6 rounded-lg border border-dashed border-slate-300 bg-panel p-6 text-sm text-slate-500">
-          Add at least one hold reason under{' '}
-          <button className="underline" onClick={onOpenHoldReasons}>
-            Payout Settings
-          </button>{' '}
-          first; every rule needs a reason to hold with.
-        </div>
+      {loaded && view === 'register' && (
+        <RuleRegister
+          rules={rules}
+          reasons={reasons}
+          imports={imports}
+          preview={preview}
+          testing={testing}
+          testImportId={testImportId}
+          onTestImport={setTestImportId}
+          onOpen={select}
+          onMove={move}
+          onReasonsChange={setReasons}
+          onError={fail}
+        />
       )}
 
-      {fields.length > 0 && reasons.length > 0 && (
+      {view === 'record' && fields.length > 0 && reasons.length > 0 && (
         <div className="flex min-h-0 flex-1">
           {/* Rule list */}
           <aside className="flex w-72 shrink-0 flex-col border-r border-slate-200">
@@ -323,7 +350,7 @@ export function PayoutRulesView({ onOpenHoldReasons }: { onOpenHoldReasons: () =
                       </select>
                       <span className="mt-1 block text-[11px] text-slate-400">
                         Flagged deals go on hold with this reason.{' '}
-                        <button className="underline" onClick={onOpenHoldReasons}>
+                        <button className="underline" onClick={() => openRegister(true)}>
                           Manage reasons
                         </button>
                       </span>
@@ -403,6 +430,178 @@ export function PayoutRulesView({ onOpenHoldReasons }: { onOpenHoldReasons: () =
 const NEW_ID = 'new';
 const stripRow = ({ sortOrder: _s, updatedAt: _u, ...rule }: PayoutRuleRow): PayoutRule => rule;
 const uid = (p: string) => `${p}${Math.random().toString(36).slice(2, 8)}`;
+
+// -- Register -----------------------------------------------------------------
+
+/** Every rule in place, in the order they apply, plus the hold reasons they pick from. Click a rule to open its record. */
+function RuleRegister({
+  rules,
+  reasons,
+  imports,
+  preview,
+  testing,
+  testImportId,
+  onTestImport,
+  onOpen,
+  onMove,
+  onReasonsChange,
+  onError,
+}: {
+  rules: PayoutRuleRow[];
+  reasons: HoldReason[];
+  imports: ImportSummary[];
+  preview: PayoutRulesPreview | null;
+  testing: boolean;
+  testImportId: string;
+  onTestImport: (id: string) => void;
+  onOpen: (rule: PayoutRuleRow) => void;
+  onMove: (index: number, dir: -1 | 1) => void;
+  onReasonsChange: (reasons: HoldReason[]) => void;
+  onError: (e: unknown) => void;
+}) {
+  const reasonName = (key: string) => reasons.find((x) => x.key === key)?.name ?? `${key} (removed)`;
+  return (
+    <div className="min-h-0 flex-1 space-y-8 overflow-y-auto p-6">
+      <section className="space-y-3">
+        <div className="flex flex-wrap items-center gap-3">
+          <h2 className="flex-1 text-base font-semibold">Rules in place</h2>
+          <span className="text-xs text-slate-500">Test against</span>
+          <select className="select" value={testImportId} onChange={(e) => onTestImport(e.target.value)}>
+            <option value="">— none —</option>
+            {imports.map((imp) => (
+              <option key={imp.id} value={imp.id}>
+                {imp.name}
+              </option>
+            ))}
+          </select>
+        </div>
+        {preview && (
+          <div className="text-[11px] text-slate-400">
+            {testing ? 'Testing…' : `${preview.flaggedCount.toLocaleString()} of ${preview.total.toLocaleString()} deals flagged by any rule. Nothing is held by a test.`}
+          </div>
+        )}
+        <div className="overflow-x-auto rounded-lg border border-slate-200 bg-panel">
+          <table className="w-full text-sm">
+            <thead className="bg-slate-100 text-left text-xs font-medium text-slate-600">
+              <tr>
+                <th className="w-12 px-3 py-2">#</th>
+                <th className="px-3 py-2">Rule</th>
+                <th className="px-3 py-2">Hold reason</th>
+                <th className="px-3 py-2">Filters</th>
+                <th className="px-3 py-2">Requirements</th>
+                <th className="px-3 py-2">Status</th>
+                {preview && <th className="px-3 py-2">Test</th>}
+                <th className="px-3 py-2">Updated</th>
+                <th className="w-12 px-2 py-2" />
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-slate-200">
+              {rules.map((r, i) => {
+                const count = preview?.counts[r.id];
+                const err = preview?.errors[r.id];
+                return (
+                  <tr key={r.id} className="group cursor-pointer hover:bg-slate-50" onClick={() => onOpen(r)}>
+                    <td className="px-3 py-2 text-slate-400">{i + 1}</td>
+                    <td className={`px-3 py-2 font-medium ${r.enabled ? 'text-slate-800' : 'text-slate-400 line-through'}`}>{payoutRuleLabel(r)}</td>
+                    <td className="px-3 py-2">{reasonName(r.reasonKey)}</td>
+                    <td className="px-3 py-2 text-slate-500">{r.filters.length || 'All deals'}</td>
+                    <td className="px-3 py-2 text-slate-500">{r.requirements.length}</td>
+                    <td className="px-3 py-2">
+                      <span className={`rounded px-1.5 py-0.5 text-[11px] ${r.enabled ? 'bg-emerald-100 text-emerald-800' : 'bg-slate-100 text-slate-500'}`}>{r.enabled ? 'Active' : 'Off'}</span>
+                    </td>
+                    {preview && (
+                      <td className="px-3 py-2 text-xs">
+                        {err ? (
+                          <span className="text-rose-600" title={err}>
+                            can't run
+                          </span>
+                        ) : preview.skipped.includes(r.id) ? (
+                          <span className="text-slate-400">no such column</span>
+                        ) : !r.enabled ? (
+                          <span className="text-slate-400">off</span>
+                        ) : count === undefined ? (
+                          <span className="text-slate-400">incomplete</span>
+                        ) : (
+                          <span className={count ? 'text-amber-700' : 'text-emerald-700'}>flags {count.toLocaleString()}</span>
+                        )}
+                      </td>
+                    )}
+                    <td className="whitespace-nowrap px-3 py-2 text-xs text-slate-500">{r.updatedAt ? new Date(r.updatedAt).toLocaleDateString() : '—'}</td>
+                    <td className="px-2 py-2" onClick={(e) => e.stopPropagation()}>
+                      <div className="flex opacity-0 group-hover:opacity-100">
+                        <button className="px-1 text-[10px] text-slate-400 hover:text-slate-700 disabled:opacity-30" disabled={i === 0} onClick={() => onMove(i, -1)} title="Move up (rules apply in order)">
+                          ▲
+                        </button>
+                        <button className="px-1 text-[10px] text-slate-400 hover:text-slate-700 disabled:opacity-30" disabled={i === rules.length - 1} onClick={() => onMove(i, 1)} title="Move down">
+                          ▼
+                        </button>
+                      </div>
+                    </td>
+                  </tr>
+                );
+              })}
+              {!rules.length && (
+                <tr>
+                  <td colSpan={preview ? 9 : 8} className="px-3 py-6 text-center text-xs text-slate-400">
+                    No rules yet. Add one with + New rule.
+                  </td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+        <div className="text-[11px] text-slate-400">Rules apply in this order; the first rule that flags a deal gives its reason.</div>
+      </section>
+
+      <HoldReasons reasons={reasons} onChange={onReasonsChange} onError={onError} />
+    </div>
+  );
+}
+
+/** The hold reasons rules (and manual holds on a run) pick from. Built-ins can't be removed. */
+function HoldReasons({ reasons, onChange, onError }: { reasons: HoldReason[]; onChange: (reasons: HoldReason[]) => void; onError: (e: unknown) => void }) {
+  const [name, setName] = useState('');
+  const refresh = () => api.listHoldReasons().then(onChange);
+  const add = async () => {
+    if (!name.trim()) return;
+    try {
+      await api.createHoldReason(name.trim());
+      setName('');
+      await refresh();
+    } catch (e) {
+      onError(e);
+    }
+  };
+  return (
+    <section id="hold-reasons" className="max-w-3xl space-y-3">
+      <div>
+        <h2 className="text-base font-semibold">Hold reasons</h2>
+        <p className="text-xs text-slate-500">Why a commission line is on hold. Every rule holds with one of these; built-ins can't be removed.</p>
+      </div>
+      <ul className="divide-y divide-slate-200 rounded-lg border border-slate-200 bg-panel text-sm">
+        {reasons.map((r) => (
+          <li key={r.id} className="flex items-center gap-2 px-3 py-2">
+            <span className="flex-1">{r.name}</span>
+            <span className="font-mono text-[11px] text-slate-400">{r.key}</span>
+            {r.builtin ? (
+              <span className="rounded bg-slate-100 px-1.5 py-0.5 text-[10px] text-slate-500">built-in</span>
+            ) : (
+              <button className="text-slate-400 hover:text-rose-600" onClick={() => api.deleteHoldReason(r.id).then(refresh).catch(onError)}>
+                ✕
+              </button>
+            )}
+          </li>
+        ))}
+      </ul>
+      <div className="flex gap-2">
+        <input className="input flex-1" placeholder="New reason, e.g. Pending legal review" value={name} onChange={(e) => setName(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && add()} />
+        <button className="btn btn-primary" disabled={!name.trim()} onClick={add}>
+          Add
+        </button>
+      </div>
+    </section>
+  );
+}
 
 // -- Filters / Requirements tabs ----------------------------------------------
 
