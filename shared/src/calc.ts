@@ -7,6 +7,7 @@ import { resolveRelativeRange, type DateContext } from './dates.js';
 import { FormulaError, compileFormula, type CompiledFormula, type FormulaValue, type Scope } from './formula.js';
 import type { SummaryResult } from './summary.js';
 import { resolveStructure, type PlanStructure } from './components.js';
+import { primaryTiers, type PlanQuotas } from './quotas.js';
 import type { PlanTiers } from './tiers.js';
 import type { ColumnDef, ColumnType, RawRow, TypedRow } from './types.js';
 
@@ -19,6 +20,8 @@ export interface ResolvedPlan {
   tiers?: PlanTiers;
   /** Weighted components for COMPONENT() / COMPONENT_RATE(); optional. */
   structure?: PlanStructure;
+  /** Quota sections; null or absent for plans saved before sections existed. */
+  quotas?: PlanQuotas | null;
 }
 
 export interface EmployeeInfo {
@@ -163,8 +166,13 @@ export function repScope(r: ResolvedRep | null): Record<string, Record<string, u
   };
   for (const [slot, p] of Object.entries(r.plans)) {
     // A person's own quota beats the plan's default, so one plan serves many quotas.
-    const quota = r.employee.quota ?? p.params.quota;
-    out[slot] = { ...p.params, ...(quota != null ? { quota } : {}), name: p.planName, tiers: p.tiers };
+    const q = p.quotas ?? null;
+    const quota = r.employee.quota ?? (q?.percentOfQuota.applies ? q.percentOfQuota.target : null) ?? p.params.quota;
+    // A sectioned plan's TIER() uses its main section's tiers.
+    const tiers = q ? (primaryTiers(q) ?? undefined) : p.tiers;
+    out[slot] = { ...p.params, ...(quota != null ? { quota } : {}), name: p.planName, tiers };
+    if (q?.count.applies && q.count.target !== null) out[slot].count_quota = q.count.target;
+    if (q?.dollars.applies && q.dollars.target !== null) out[slot].dollars_quota = q.dollars.target;
     if (p.structure?.components.length) {
       // Weighted components: plan.target_incentive, plan.components (for
       // COMPONENT()), and per component plan.<key>_quota / _rate / _target.
@@ -208,6 +216,7 @@ export interface AssignmentRecord {
   params: PlanParams;
   tiers?: PlanTiers;
   structure?: PlanStructure;
+  quotas?: PlanQuotas | null;
   effectiveFrom: string | null;
   effectiveTo: string | null;
   /** Where it came from; an employee's own assignment beats one inherited from their type. */
@@ -244,7 +253,7 @@ export function makeDatedPlanLookup(employees: EmployeeRecord[]): DatedPlanLooku
     live.sort((a, b) => rank(a) - rank(b) || (b.effectiveFrom ?? '').localeCompare(a.effectiveFrom ?? ''));
     for (const a of live) {
       const slot = scopeKey(a.slot) || DEFAULT_SLOT;
-      if (!(slot in plans)) plans[slot] = { planName: a.planName, params: a.params, tiers: a.tiers, structure: a.structure };
+      if (!(slot in plans)) plans[slot] = { planName: a.planName, params: a.params, tiers: a.tiers, structure: a.structure, quotas: a.quotas ?? null };
     }
     return { employee: { name: e.name, status: e.status, type: e.type, baseSalary: e.baseSalary, quota: e.quota, bonuses: e.bonuses }, plans };
   };

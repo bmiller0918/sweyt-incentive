@@ -12,8 +12,14 @@
 // run maps each component to a column (deal.measures, keyed by component
 // key), attainment accrues per payee per component against the component's
 // quota, and the component's attainment tiers scale its on-target rate.
+//
+// Plans with quota sections (count, dollars, percent of quota, percent of
+// margin) pay one line per section that applies, each with its own
+// attainment. Margin tiers are per deal: the deal's margin % picks the rate,
+// which pays on its gross profit.
 import type { DatedPlanLookup, ResolvedRep } from './calc.js';
 import { resolveStructure } from './components.js';
+import { activeSections, sectionTiers } from './quotas.js';
 import { tierBands, tierRate, type PlanTiers } from './tiers.js';
 
 export interface DealPayee {
@@ -37,6 +43,12 @@ export interface DealInput {
    * a blank cell (nothing to pay for that component on this deal).
    */
   measures?: Record<string, number | null>;
+  /**
+   * Gross profit (margin dollars) from the run's margin column, for
+   * percent-of-margin quotas. Absent when the run maps no margin column;
+   * null for a blank cell.
+   */
+  margin?: number | null;
 }
 
 export type LineMethod =
@@ -46,6 +58,8 @@ export type LineMethod =
   | 'whole'
   /** The whole deal at plan.rate (no tier table). */
   | 'flat'
+  /** The deal's gross profit at the rate its margin % reaches (percent-of-margin quota). */
+  | 'margin'
   /** Nothing could be calculated; see `note`. */
   | 'none';
 
@@ -57,7 +71,7 @@ export interface CommissionLine {
   payee: string;
   role: string;
   planName: string | null;
-  /** The plan component this line pays under (weighted plans); null for plan-level lines. */
+  /** The plan component or quota section this line pays under; null for plan-level lines. */
   component: string | null;
   method: LineMethod;
   /** Tier band this line falls in (absolute thresholds), when tiered. */
@@ -250,6 +264,81 @@ export function computeCommissionLines(deals: DealInput[], lookup: DatedPlanLook
       }
 
       const ctx = { ...base, payee, role: p.role, planName: plan.planName };
+
+      // -- Quota sections: one line per section that applies ------------------
+      if (plan.quotas) {
+        const sections = activeSections(plan.quotas);
+        if (!sections.length) {
+          lines.push(none('No quota section applies on this plan'));
+          warnings.add(`Plan "${plan.planName}" has no quota section that applies.`);
+          continue;
+        }
+        for (const { key: sk, label, section } of sections) {
+          const sctx = { ...ctx, component: label };
+          if (!section.rows.length) {
+            lines.push(none('Quota section has no tiers', plan.planName, label));
+            warnings.add(`Plan "${plan.planName}": ${label} applies but has no tiers.`);
+            continue;
+          }
+          const tiers = sectionTiers(sk, section);
+          if (sk === 'percentOfMargin') {
+            const margin = deal.margin;
+            if (margin === undefined) {
+              warnings.add(`Plan "${plan.planName}" pays on margin, but this run maps no margin column, so nothing was paid for it.`);
+              continue;
+            }
+            if (margin === null) continue;
+            const mk = `${k}\u0001margin`;
+            const mBefore = cumulative.get(mk) ?? 0;
+            const mAfter = mBefore + margin;
+            cumulative.set(mk, mAfter);
+            if (!amount) {
+              lines.push({ ...none('Deal has no amount, so its margin % is unknown', plan.planName, label, margin), cumulativeBefore: mBefore, cumulativeAfter: mAfter });
+              continue;
+            }
+            const gm = margin / amount;
+            const bands = tierBands(tiers, null)!;
+            const i = bands.reduce((at, b, j) => (gm >= b.from ? j : at), -1);
+            const rate = i < 0 ? 0 : bands[i].rate;
+            lines.push({
+              ...sctx,
+              method: 'margin',
+              tierFrom: i < 0 ? null : bands[i].from,
+              tierTo: i < 0 ? (bands[0]?.from ?? null) : (bands[i + 1]?.from ?? null),
+              amount: margin,
+              rate,
+              payout: roundCents(margin * rate),
+              cumulativeBefore: mBefore,
+              cumulativeAfter: mAfter,
+              split: false,
+              note: i < 0 ? `Margin ${Math.round(gm * 1000) / 10}% is below the first tier` : null,
+            });
+            continue;
+          }
+          if (amount === null) {
+            lines.push(none('Deal has no amount', plan.planName, label));
+            continue;
+          }
+          // Count credits one unit per deal (a credit memo takes one back).
+          const value = sk === 'count' ? (amount < 0 ? -1 : 1) : amount;
+          const sKey = `${k}\u0001${sk}`;
+          const sBefore = cumulative.get(sKey) ?? 0;
+          const sAfter = sBefore + value;
+          let scale: number | null = null;
+          if (sk === 'percentOfQuota') {
+            const q = rep.employee.quota ?? section.target ?? (typeof plan.params.quota === 'number' ? plan.params.quota : null);
+            if (q === null || q <= 0) {
+              lines.push({ ...none('Percent-of-quota tiers need a quota, but none is set', plan.planName, label, value), cumulativeBefore: sBefore, cumulativeAfter: sAfter });
+              warnings.add(`${name}'s plan "${plan.planName}" needs a quota for its percent-of-quota tiers.`);
+              continue;
+            }
+            scale = q;
+          }
+          cumulative.set(sKey, sAfter);
+          lines.push(...tieredLines(sctx, value, sBefore, sAfter, tiers, scale));
+        }
+        continue;
+      }
 
       // -- Weighted components: one line per mapped component ----------------
       if (plan.structure?.components.length) {

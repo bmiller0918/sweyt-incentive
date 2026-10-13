@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { boolean, doublePrecision, index, integer, jsonb, pgTable, serial, text, timestamp, uuid } from 'drizzle-orm/pg-core';
+import { boolean, doublePrecision, index, integer, jsonb, pgTable, serial, text, timestamp, uuid, type AnyPgColumn } from 'drizzle-orm/pg-core';
 import type {
   AccountMap,
   Aggregate,
@@ -15,6 +15,7 @@ import type {
   GlAccount,
   HoldRule,
   JournalEntry,
+  PlanQuotas,
   PlanStructure,
   PlanTiers,
   RawRow,
@@ -133,6 +134,10 @@ export const compPlans = pgTable('comp_plans', {
   tiers: jsonb('tiers').$type<PlanTiers>().notNull().default({ mode: 'marginal', basis: 'amount', scaleParam: null, rows: [] }),
   /** Weighted components (target incentive split by weight, each with a quota and payout tiers). */
   structure: jsonb('structure').$type<PlanStructure>().notNull().default({ targetIncentive: null, components: [] }),
+  /** The role this plan is for; its amortization type drives the GL treatment. */
+  employeeTypeId: uuid('employee_type_id').references((): AnyPgColumn => employeeTypes.id, { onDelete: 'set null' }),
+  /** Count / dollars / percent of quota / percent of margin sections; null on plans saved before sections. */
+  quotas: jsonb('quotas').$type<PlanQuotas>(),
   /** YYYY-MM-DD; null = open-ended. */
   effectiveFrom: text('effective_from'),
   effectiveTo: text('effective_to'),
@@ -239,6 +244,8 @@ export interface CommissionRunConfig {
   contractEndField?: string | null;
   /** Weighted-plan components → the column holding each one's value (matched by component name). */
   components?: { name: string; field: string }[];
+  /** Gross profit column, for plans with a percent-of-margin quota. */
+  marginField?: string | null;
 }
 
 /** Company-wide amortization policy (one row). */

@@ -35,6 +35,8 @@ interface Draft {
   contractEndField: string;
   /** Component name -> column; '' = not mapped. */
   components: Record<string, string>;
+  /** Gross profit column for percent-of-margin quotas; '' = not mapped. */
+  marginField: string;
 }
 
 /** Guess the obvious columns so most runs are two clicks. */
@@ -53,6 +55,14 @@ function guess(imp: ImportDetail): Pick<Draft, 'repField' | 'amountField' | 'dat
     contractEndField: find(/(subscription|contract|service).*end|end.*date/i, isDate),
   };
 }
+
+/** A gross profit / margin column, by name. */
+function guessMargin(imp: ImportDetail): string {
+  const isNum = (t: string) => ['currency', 'decimal', 'integer'].includes(t);
+  return imp.columns.find((c) => isNum(c.type) && /gross.?profit|\bgp\b|margin/i.test(c.name) && !/%|percent|pct/i.test(c.name))?.name ?? '';
+}
+
+const pctLabel = (n: number | null) => (n === null ? '' : `${Math.round(n * 1000) / 10}%`);
 
 /** Map each plan component to the column with the same name, or to the amount column when it is the only component. */
 function guessComponents(imp: ImportDetail, names: string[]): Record<string, string> {
@@ -126,6 +136,9 @@ export function CommissionsView() {
     return [...seen.values()];
   }, [plans]);
 
+  /** Any plan paying a percent of margin needs the run to name its gross profit column. */
+  const usesMargin = useMemo(() => plans.some((p) => p.quotas?.percentOfMargin.applies), [plans]);
+
   const loadRun = useCallback((id: string) => api.getCommissionRun(id).then(setRun).catch((e) => setError(e.message)), []);
   useEffect(() => {
     if (!selectedId || selectedId === 'new') {
@@ -139,7 +152,7 @@ export function CommissionsView() {
   useEffect(() => {
     if (selectedId !== 'new') return;
     const first = imports[0];
-    setDraft({ name: '', importId: first?.id ?? '', repField: '', payees: [], amountField: '', dateField: '', dealKeyField: '', from: settings.general.goLiveDate, to: null, holdRules: [], payLagMonths: settings.general.defaultPayLagMonths, contractStartField: '', termMonthsField: '', contractEndField: '', components: {} });
+    setDraft({ name: '', importId: first?.id ?? '', repField: '', payees: [], amountField: '', dateField: '', dealKeyField: '', from: settings.general.goLiveDate, to: null, holdRules: [], payLagMonths: settings.general.defaultPayLagMonths, contractStartField: '', termMonthsField: '', contractEndField: '', components: {}, marginField: '' });
   }, [selectedId, imports, settings]);
 
   useEffect(() => {
@@ -151,11 +164,11 @@ export function CommissionsView() {
       .getImport(draft.importId)
       .then((d) => {
         setImportDetail(d);
-        setDraft((cur) => (cur && cur.importId === d.id && !cur.repField && !cur.amountField ? { ...cur, ...guess(d), components: guessComponents(d, componentNames), name: cur.name || `${d.name} commissions` } : cur));
+        setDraft((cur) => (cur && cur.importId === d.id && !cur.repField && !cur.amountField ? { ...cur, ...guess(d), components: guessComponents(d, componentNames), marginField: usesMargin ? guessMargin(d) : '', name: cur.name || `${d.name} commissions` } : cur));
       })
       .catch((e) => setError(e.message));
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [draft?.importId, componentNames]);
+  }, [draft?.importId, componentNames, usesMargin]);
 
   const create = async () => {
     if (!draft) return;
@@ -180,6 +193,7 @@ export function CommissionsView() {
         components: Object.entries(draft.components)
           .filter(([, field]) => field)
           .map(([name, field]) => ({ name, field })),
+        marginField: draft.marginField || null,
       });
       await refresh();
       setSelectedId(created.id);
@@ -250,6 +264,7 @@ export function CommissionsView() {
             importDetail={importDetail}
             reasons={reasons}
             componentNames={componentNames}
+            usesMargin={usesMargin}
             payoutRuleCount={payoutRuleCount}
             busy={busy}
             onCreate={create}
@@ -272,6 +287,7 @@ function NewRunForm({
   importDetail,
   reasons,
   componentNames,
+  usesMargin,
   busy,
   onCreate,
   onCancel,
@@ -285,6 +301,8 @@ function NewRunForm({
   /** Active workspace payout rules, which apply to every run before this run's own hold rules. */
   payoutRuleCount: number;
   componentNames: string[];
+  /** Some plan pays a percent of margin, so the run needs a gross profit column. */
+  usesMargin: boolean;
   busy: boolean;
   onCreate: () => void;
   onCancel?: () => void;
@@ -318,7 +336,7 @@ function NewRunForm({
                 <select
                   className="select mt-1 w-full"
                   value={draft.importId}
-                  onChange={(e) => setDraft({ ...draft, importId: e.target.value, repField: '', amountField: '', dateField: '', dealKeyField: '', payees: [], holdRules: [], contractStartField: '', termMonthsField: '', contractEndField: '', components: {} })}
+                  onChange={(e) => setDraft({ ...draft, importId: e.target.value, repField: '', amountField: '', dateField: '', dealKeyField: '', payees: [], holdRules: [], contractStartField: '', termMonthsField: '', contractEndField: '', components: {}, marginField: '' })}
                 >
                   {imports.map((i) => (
                     <option key={i.id} value={i.id}>
@@ -348,6 +366,16 @@ function NewRunForm({
                 <Field label="Or subscription end" value={draft.contractEndField} onChange={(v) => setDraft({ ...draft, contractEndField: v })} options={dateCols.map((c) => c.name)} />
               </div>
             </div>
+
+            {usesMargin && (
+              <div>
+                <span className="text-xs text-slate-500">Margin</span>
+                <div className="mt-1 text-xs text-slate-400">Plans with a percent-of-margin quota pay on each deal’s gross profit (amount minus cost). Leave it blank and those plans pay nothing on margin in this run.</div>
+                <div className="mt-2 grid grid-cols-3 gap-3">
+                  <Field label="Gross profit" value={draft.marginField} onChange={(v) => setDraft({ ...draft, marginField: v })} options={numCols.map((c) => c.name)} />
+                </div>
+              </div>
+            )}
 
             {componentNames.length > 0 && (
               <div>
@@ -610,6 +638,7 @@ function RunDetail({ run, reasons, onChanged, onDelete, onError }: { run: Commis
             {run.importName} · {run.config.repField}
             {run.config.payees.length ? ` + ${run.config.payees.map((p) => p.role).join(', ')}` : ''} · {run.config.amountField}
             {run.config.components?.length ? ` · ${run.config.components.map((c) => `${c.name} ← ${c.field}`).join(', ')}` : ''}
+            {run.config.marginField ? ` · Gross profit ← ${run.config.marginField}` : ''}
             {run.config.from || run.config.to ? ` · ${run.config.from ?? '…'} → ${run.config.to ?? '…'}` : ' · all dates'} · {run.config.holdRules?.length ?? 0} hold rule
             {(run.config.holdRules?.length ?? 0) === 1 ? '' : 's'} · {new Date(run.createdAt).toLocaleString()}
           </div>
@@ -863,7 +892,7 @@ function RunDetail({ run, reasons, onChanged, onDelete, onError }: { run: Commis
                   <td className="py-1 pr-3">{l.planName ?? ''}</td>
                   {hasComponents && <td className="py-1 pr-3 whitespace-nowrap">{l.component ?? ''}</td>}
                   <td className="py-1 pr-3 whitespace-nowrap">
-                    {l.method === 'flat' ? 'flat' : l.method === 'none' ? '' : `${num(l.tierFrom)} – ${l.tierTo === null ? '∞' : num(l.tierTo)}`}
+                    {l.method === 'flat' ? 'flat' : l.method === 'none' ? '' : l.method === 'margin' ? (l.tierFrom === null ? `GM below ${pctLabel(l.tierTo)}` : `GM ${pctLabel(l.tierFrom)}+`) : `${num(l.tierFrom)} – ${l.tierTo === null ? '∞' : num(l.tierTo)}`}
                     {l.split ? <span className="ml-1 rounded bg-indigo-100 px-1 text-[10px] text-indigo-700">split</span> : null}
                   </td>
                   <td className="py-1 pr-3 text-right">{money(l.amount)}</td>
