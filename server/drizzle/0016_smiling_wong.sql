@@ -1,4 +1,7 @@
-CREATE TABLE "payout_rules" (
+-- IF NOT EXISTS: an earlier revision of this branch shipped this same table as
+-- migration 0013 before main took that number. Databases migrated from that
+-- revision already have the table (same shape), so this is a no-op there.
+CREATE TABLE IF NOT EXISTS "payout_rules" (
 	"id" uuid PRIMARY KEY NOT NULL,
 	"organization_id" uuid,
 	"created_at" timestamp with time zone DEFAULT now() NOT NULL,

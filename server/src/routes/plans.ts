@@ -1,4 +1,4 @@
-import { BUILTIN_THRESHOLD_TYPES, makePlanLookup, planTiersSchema, type EmployeeRecord, type PlanLookup, type PlanTiers } from '@commissions/shared';
+import { BUILTIN_THRESHOLD_TYPES, makePlanLookup, planStructureSchema, planTiersSchema, type EmployeeRecord, type PlanLookup, type PlanTiers } from '@commissions/shared';
 import { asc, eq, sql } from 'drizzle-orm';
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
@@ -27,6 +27,7 @@ const planSchema = z.object({
   description: z.string().nullable().optional(),
   params: z.record(paramValue).default({}),
   tiers: planTiersSchema.default({ mode: 'marginal', basis: 'amount', scaleParam: null, rows: [] }),
+  structure: planStructureSchema.default({ targetIncentive: null, components: [] }),
   effectiveFrom: dateStr,
   effectiveTo: dateStr,
 });
@@ -68,6 +69,7 @@ const planCols = {
   planName: compPlans.name,
   params: compPlans.params,
   tiers: compPlans.tiers,
+  structure: compPlans.structure,
   planFrom: compPlans.effectiveFrom,
   planTo: compPlans.effectiveTo,
 };
@@ -117,8 +119,8 @@ export async function loadEmployeeRecords(db: Db): Promise<EmployeeRecord[]> {
     quota: e.quota ?? typeQuota ?? null,
     bonuses: Object.fromEntries(e.bonuses.map((b) => [b.label, b.amount])),
     assignments: [
-      ...(ownBy.get(e.id) ?? []).map((r) => ({ source: 'employee' as const, slot: r.slot, planName: r.planName, params: r.params, tiers: resolveTiers(r.tiers, ttypes), ...bounded(r) })),
-      ...(e.employeeTypeId ? (typeBy.get(e.employeeTypeId) ?? []) : []).map((r) => ({ source: 'type' as const, slot: r.slot, planName: r.planName, params: r.params, tiers: resolveTiers(r.tiers, ttypes), ...bounded(r) })),
+      ...(ownBy.get(e.id) ?? []).map((r) => ({ source: 'employee' as const, slot: r.slot, planName: r.planName, params: r.params, tiers: resolveTiers(r.tiers, ttypes), structure: r.structure, ...bounded(r) })),
+      ...(e.employeeTypeId ? (typeBy.get(e.employeeTypeId) ?? []) : []).map((r) => ({ source: 'type' as const, slot: r.slot, planName: r.planName, params: r.params, tiers: resolveTiers(r.tiers, ttypes), structure: r.structure, ...bounded(r) })),
     ],
   }));
 }

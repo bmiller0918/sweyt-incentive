@@ -11,6 +11,7 @@ import {
   applyHoldRules,
   applyPayoutRules,
   buildSubledger,
+  componentKey,
   computeCommissionLines,
   formatDateMs,
   holdRuleSchema,
@@ -52,6 +53,7 @@ const runSchema = z.object({
   contractStartField: z.string().nullable().optional(),
   termMonthsField: z.string().nullable().optional(),
   contractEndField: z.string().nullable().optional(),
+  components: z.array(z.object({ name: z.string().min(1), field: z.string().min(1) })).default([]),
 });
 
 /** Whole months between two ISO dates, rounded (a 3-year term is 36 even if the end is the 31st). */
@@ -69,6 +71,7 @@ const LINE_COLUMNS = [
   'Payee',
   'Role',
   'Plan',
+  'Component',
   'Method',
   'Tier From',
   'Tier To',
@@ -142,9 +145,17 @@ export async function commissionRoutes(app: FastifyInstance, db: Db) {
     const [imp] = await db.select().from(imports).where(eq(imports.id, body.importId));
     if (!imp) return reply.code(404).send({ error: 'Import not found' });
     const cached = await getRows(db, imp);
-    const fields = [body.repField, body.amountField, body.dateField, body.dealKeyField, body.contractStartField, body.termMonthsField, body.contractEndField, ...body.payees.map((p) => p.field)].filter(
-      (f): f is string => !!f,
-    );
+    const fields = [
+      body.repField,
+      body.amountField,
+      body.dateField,
+      body.dealKeyField,
+      body.contractStartField,
+      body.termMonthsField,
+      body.contractEndField,
+      ...body.payees.map((p) => p.field),
+      ...body.components.map((c) => c.field),
+    ].filter((f): f is string => !!f);
     const missing = fields.filter((f) => !(f in cached.types));
     if (missing.length) return reply.code(400).send({ error: `Column not found: ${missing.join(', ')}` });
     const knownReasons = new Set((await db.select({ key: holdReasons.key }).from(holdReasons)).map((r) => r.key));
@@ -164,7 +175,17 @@ export async function commissionRoutes(app: FastifyInstance, db: Db) {
       contractStartField: body.contractStartField ?? null,
       termMonthsField: body.termMonthsField ?? null,
       contractEndField: body.contractEndField ?? null,
+      components: body.components,
     };
+    // Component key -> column, so the engine can find each component's value on a deal.
+    // Names that normalize to the same key ("New ARR" / "New-ARR") would silently share one column.
+    const measureFields = new Map<string, string>();
+    for (const c of body.components) {
+      const key = componentKey(c.name);
+      if (!key) return reply.code(400).send({ error: `Component name "${c.name}" has no letters or digits` });
+      if (measureFields.has(key)) return reply.code(400).send({ error: `Components "${c.name}" and another map to the same key "${key}"; give them distinct names` });
+      measureFields.set(key, c.field);
+    }
 
     const ctx = { types: cached.types, ...evalContext() };
     // Workspace payout rules go first (they are policy), then this run's own hold rules.
@@ -208,12 +229,18 @@ export async function commissionRoutes(app: FastifyInstance, db: Db) {
       const end = isoOf(config_.contractEndField, row);
       const term = typeof termRaw === 'number' && termRaw > 0 ? termRaw : start && end && end > start ? monthsBetweenDates(start, end) : null;
       contract.set(i, { start, term });
+      const measures: Record<string, number | null> = {};
+      for (const [k, field] of measureFields) {
+        const v = row[field];
+        measures[k] = typeof v === 'number' ? v : null;
+      }
       deals.push({
         rowIndex: i,
         dealKey: config_.dealKeyField ? String(rawRow[config_.dealKeyField] ?? '').trim() || null : null,
         date,
         amount: typeof amount === 'number' ? amount : null,
         payees,
+        measures,
       });
     });
 
@@ -249,6 +276,7 @@ export async function commissionRoutes(app: FastifyInstance, db: Db) {
             payee: l.payee,
             role: l.role,
             planName: l.planName,
+            component: l.component,
             method: l.method,
             tierFrom: l.tierFrom,
             tierTo: l.tierTo,
@@ -479,6 +507,7 @@ export async function commissionRoutes(app: FastifyInstance, db: Db) {
       Payee: l.payee,
       Role: l.role,
       Plan: l.planName ?? '',
+      Component: l.component ?? '',
       Method: l.method,
       'Tier From': num(l.tierFrom),
       'Tier To': num(l.tierTo),
