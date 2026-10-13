@@ -12,3 +12,4 @@ export * from './lines.js';
 export * from './holds.js';
 export * from './accounting.js';
 export * from './amortization.js';
+export * from './settings.js';

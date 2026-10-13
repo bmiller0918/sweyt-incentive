@@ -11,7 +11,7 @@ import type {
   RegisterAsset,
   RollforwardMonth,
 } from '@commissions/shared';
-import type { AccountingPolicy, Aggregate, ColumnDef, ColumnType, CostTreatment, Criteria, HoldRule, LineStatus, PlanStructure, PlanTiers, RawRow, ScheduleLine, SubledgerResult } from '@commissions/shared';
+import type { AccountingPolicy, Aggregate, AppSettings, ColumnDef, ColumnType, CostTreatment, Criteria, HoldRule, LineStatus, PlanStructure, PlanTiers, RawRow, ScheduleLine, SubledgerResult } from '@commissions/shared';
 
 export interface ImportSummary {
   id: string;
@@ -264,6 +264,33 @@ export interface CommissionLine {
 }
 
 export type CommissionRunInput = Omit<CommissionRunConfig, 'payees'> & { name: string; importId: string; payees: { role: string; field: string }[] };
+
+/** Setup › Licensing. */
+export interface SetupUsage {
+  license: { edition: string; status: string; tierMax: number | null; countsTowardTier: number; syncedAt: string };
+  usage: {
+    employees: { active: number; leave: number; terminated: number; inactive: number; total: number };
+    users: number;
+    imports: { count: number; rows: number };
+    compPlans: number;
+    employeeTypes: number;
+    incentives: number;
+    runs: number;
+    lines: { pay: number; hold: number; released: number; total: number };
+    amortizations: { commission: number; manual: number; total: number };
+    closedMonths: { count: number; latest: string | null };
+  };
+}
+
+/** Setup › Manage Upgrades. */
+export interface SystemInfo {
+  version: string;
+  schema: { count: number; latest: string | null };
+  lastUpgradedAt: string | null;
+  startedAt: string;
+  database: 'postgres' | 'pglite';
+  node: string;
+}
 
 export interface AuthUser {
   id: string;
@@ -631,6 +658,12 @@ export const api = {
   writeOffAsset: (id: string, reason: string) => request<{ writtenOffMonth: string }>(`/api/accounting/assets/${id}/write-off`, json('POST', { reason })),
   undoWriteOff: (id: string) => request<{ ok: true }>(`/api/accounting/assets/${id}/write-off`, { method: 'DELETE' }),
   getReclass: () => request<ReclassRow[]>('/api/accounting/reclass'),
+
+  getSettings: () => request<AppSettings>('/api/settings'),
+  updateSettings: (body: AppSettings) => request<AppSettings>('/api/settings', json('PUT', body)),
+  getSetupUsage: () => request<SetupUsage>('/api/setup/usage'),
+  getSystemInfo: () => request<SystemInfo>('/api/setup/system'),
+  templateUrl: (name: 'deals' | 'payments') => `/api/setup/templates/${name}`,
 
   listHoldReasons: () => request<HoldReason[]>('/api/hold-reasons'),
   createHoldReason: (name: string) => request<HoldReason>('/api/hold-reasons', json('POST', { name })),

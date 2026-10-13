@@ -1,3 +1,4 @@
+import type { FeatureKey } from '@commissions/shared';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { api, type ImportSummary } from './api';
 import { AccountingSettingsView } from './components/accounting/AccountingSettingsView';
@@ -14,6 +15,8 @@ import { EmployeesView } from './components/EmployeesView';
 import { ImportView } from './components/ImportView';
 import { IncentivesView } from './components/IncentivesView';
 import { SettingsView } from './components/SettingsView';
+import { useSettings } from './components/SettingsProvider';
+import { SetupView, UpgradeNotice, type SetupTarget } from './components/setup/SetupView';
 import { UploadFlow } from './components/UploadFlow';
 import { useAuth } from './components/AuthGate';
 
@@ -36,6 +39,7 @@ type Screen =
   | 'journals'
   | 'reclass'
   | 'users'
+  | 'setup'
   | 'soon';
 
 type NavItem = { key: string; label: string; screen: Screen; children?: NavItem[] };
@@ -117,7 +121,29 @@ const SECTIONS: NavSection[] = [
       { key: 'users', label: 'Users', screen: 'users' },
     ],
   },
+  {
+    key: 'setup',
+    label: 'Setup',
+    items: [{ key: 'global-settings', label: 'Global Settings', screen: 'setup' }],
+  },
 ];
+
+/** Sidebar items a system feature (Setup › System Features) can hide. */
+const FEATURE_OF: Record<string, FeatureKey> = {
+  integrations: 'integrations',
+  'spiffs-accelerators-bonus': 'incentives',
+  'mid-year-recasts': 'recasts',
+  clawbacks: 'clawbacks',
+  'payouts-on-hold': 'holds',
+  'payout-settings': 'holds',
+  'accounting-settings': 'accounting',
+  'amortization-types': 'accounting',
+  'amortization-registers': 'accounting',
+  'process-monthly-accounting': 'accounting',
+  reporting: 'reporting',
+  'employee-statements': 'statements',
+  'annual-plan-design': 'planDesign',
+};
 
 type Page = { key: string; importId?: string | null; setId?: string | null; uploading?: boolean; assetId?: string | null };
 
@@ -138,7 +164,13 @@ const contains = (item: NavItem, key: string): boolean => item.key === key || (i
 
 export default function App() {
   const { user, signOut } = useAuth();
+  const { feature } = useSettings();
   const nav = useMemo(indexNav, []);
+  // Switched-off features drop out of the sidebar; a section with nothing left disappears.
+  const sections = useMemo(
+    () => SECTIONS.map((s) => ({ ...s, items: s.items.filter((it) => !FEATURE_OF[it.key] || feature(FEATURE_OF[it.key])) })).filter((s) => s.items.length > 0),
+    [feature],
+  );
   const [imports, setImports] = useState<ImportSummary[]>([]);
   const [page, setPage] = useState<Page>({ key: 'overview' });
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
@@ -163,6 +195,12 @@ export default function App() {
   const openAsset = (assetId: string) => setPage({ key: 'amortization-registers', assetId });
   const openImport = (importId: string | null, setId: string | null = null) => setPage({ key: 'imports', importId, setId });
   const openUpload = () => setPage({ key: 'imports', importId: null, uploading: true });
+  const openSetupTarget = (t: SetupTarget) => {
+    if (t === 'upload') return openUpload();
+    if (t === 'imports') return openImport(imports[0]?.id ?? null);
+    const key: Record<Exclude<SetupTarget, 'upload' | 'imports'>, string> = { employees: 'employees', types: 'employee-types', users: 'users', plans: 'plans-rates-quotas', holdreasons: 'payout-settings', acctpolicy: 'accounting-settings' };
+    go(key[t]);
+  };
 
   const entry = nav.get(page.key) ?? nav.get('overview')!;
   const screen = entry.item.screen;
@@ -266,6 +304,8 @@ export default function App() {
         return <ReclassView />;
       case 'users':
         return <SettingsView tab="users" />;
+      case 'setup':
+        return <SetupView onNavigate={openSetupTarget} />;
       case 'soon':
         return <ComingSoon key={entry.item.key} title={entry.item.label} section={[entry.section, entry.parent?.label].filter(Boolean).join(' › ')} />;
       case 'imports':
@@ -306,7 +346,7 @@ export default function App() {
 
         <nav className="flex-1 overflow-y-auto px-2 pb-3">
           <div className="space-y-0.5 pt-2">{PINNED.map((it) => renderItem(it, 0))}</div>
-          {SECTIONS.map((s) => {
+          {sections.map((s) => {
             const open = !collapsed[s.key];
             const sectionActive = s.items.some((i) => contains(i, page.key));
             return (
@@ -353,6 +393,7 @@ export default function App() {
             </button>
           </div>
         )}
+        <UpgradeNotice />
         {renderScreen()}
       </main>
     </div>

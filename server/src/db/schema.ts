@@ -5,6 +5,7 @@ import type {
   Aggregate,
   AmortizationMethod,
   AmortizationMethodDef,
+  AppSettings,
   AssetModification,
   ColumnDef,
   CostTreatment,
@@ -441,4 +442,11 @@ export const auditLog = pgTable('audit_log', {
   entityType: text('entity_type').notNull(),
   entityId: text('entity_id'),
   detail: jsonb('detail').$type<Record<string, unknown>>(),
+});
+
+/** The global settings document edited on the Setup page (one row). */
+export const appSettings = pgTable('app_settings', {
+  ...base,
+  /** Always written as a full document (appSettings.ts); the column default only satisfies the migration. */
+  settings: jsonb('settings').$type<AppSettings>().notNull().default({} as AppSettings),
 });

@@ -25,9 +25,9 @@ import {
 import { and, asc, desc, eq, inArray, sql } from 'drizzle-orm';
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
-import { config } from '../config.js';
+import { calendar, getAppSettings } from '../appSettings.js';
 import type { Db } from '../db/client.js';
-import { accountingPolicy, auditLog, commissionLines, commissionRuns, employeeTypes, employees, holdReasons, imports, type CommissionRunConfig } from '../db/schema.js';
+import { accountingPeriods, accountingPolicy, auditLog, commissionLines, commissionRuns, employeeTypes, employees, holdReasons, imports, type CommissionRunConfig } from '../db/schema.js';
 import { toCsv } from '../export.js';
 import { getRows } from '../rowcache.js';
 import { loadMethodsAndTypes, loadSettings, payeeAccounting } from './accounting.js';
@@ -185,7 +185,7 @@ export async function commissionRoutes(app: FastifyInstance, db: Db) {
       measureFields.set(key, c.field);
     }
 
-    const holds = applyHoldRules(cached.typed, body.holdRules, { types: cached.types, fiscalYearStartMonth: config.fiscalYearStartMonth, weekStartsOn: config.weekStartsOn });
+    const holds = applyHoldRules(cached.typed, body.holdRules, { types: cached.types, ...calendar() });
     const ruleErrors = Object.entries(holds.errors);
     if (ruleErrors.length) return reply.code(400).send({ error: `Hold rule problem: ${ruleErrors.map(([, m]) => m).join('; ')}` });
 
@@ -329,9 +329,14 @@ export async function commissionRoutes(app: FastifyInstance, db: Db) {
     if (notHeld.length) return reply.code(400).send({ error: `${notHeld.length} line(s) are not on hold` });
     if (rows.length !== body.lineIds.length) return reply.code(404).send({ error: 'Some lines were not found in this run' });
     const releasedAt = body.releasedAt ?? today();
+    const payMonth = payMonthFor(releasedAt, run.config.payLagMonths ?? 1);
+    if (payMonth && !getAppSettings().general.allowReleaseIntoClosedMonth) {
+      const [closed] = await db.select({ month: accountingPeriods.month }).from(accountingPeriods).where(eq(accountingPeriods.month, payMonth));
+      if (closed) return reply.code(400).send({ error: `A release dated ${releasedAt} would pay in ${payMonth}, which is closed. Pick a later release date, or allow it under Setup › General › Period controls.` });
+    }
     await db
       .update(commissionLines)
-      .set({ status: 'released', releasedAt, payMonth: payMonthFor(releasedAt, run.config.payLagMonths ?? 1), ...(body.note !== undefined ? { holdNote: body.note?.trim() || null } : {}) })
+      .set({ status: 'released', releasedAt, payMonth, ...(body.note !== undefined ? { holdNote: body.note?.trim() || null } : {}) })
       .where(and(eq(commissionLines.runId, id), inArray(commissionLines.id, body.lineIds)));
     await db.insert(auditLog).values({ action: 'commission_line.release', entityType: 'commission_run', entityId: id, detail: { lineIds: body.lineIds, releasedAt } });
     return linesOf(id, body.lineIds);

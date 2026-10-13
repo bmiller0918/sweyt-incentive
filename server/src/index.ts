@@ -7,6 +7,7 @@ import multipart from '@fastify/multipart';
 import fastifyStatic from '@fastify/static';
 import Fastify from 'fastify';
 import { ZodError } from 'zod';
+import { loadAppSettings } from './appSettings.js';
 import { setupAuth } from './auth.js';
 import { config } from './config.js';
 import { createDb } from './db/client.js';
@@ -15,6 +16,7 @@ import { commissionRoutes } from './routes/commissions.js';
 import { criteriaRoutes } from './routes/criteria.js';
 import { importRoutes } from './routes/imports.js';
 import { planRoutes } from './routes/plans.js';
+import { setupRoutes } from './routes/setup.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 
@@ -39,6 +41,9 @@ async function main() {
   const db = await createDb();
   // Must come before the data routes: it adds the session hook that guards /api/*.
   await setupAuth(app, db);
+  // Settings must be in memory before any route reads the calendar; the permission hook goes right after auth.
+  await loadAppSettings(db);
+  await setupRoutes(app, db);
   await importRoutes(app, db);
   await criteriaRoutes(app, db);
   await planRoutes(app, db);

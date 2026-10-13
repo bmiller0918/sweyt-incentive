@@ -13,7 +13,7 @@ export type Db = PgDatabase<any, typeof schema>;
 const here = path.dirname(fileURLToPath(import.meta.url));
 
 /** Works both from src/ (tsx) and from the bundled dist/index.js. */
-function migrationsFolder(): string {
+export function migrationsFolder(): string {
   const candidates = [path.resolve(here, '../../drizzle'), path.resolve(here, '../drizzle')];
   const found = candidates.find((p) => fs.existsSync(p));
   if (!found) throw new Error(`Migrations folder not found; looked in ${candidates.join(', ')}`);

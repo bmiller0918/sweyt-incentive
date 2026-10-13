@@ -1,5 +1,6 @@
 import { LINE_STATUS_LABELS, OPERATOR_LABELS, componentKey, familyOf, operandArity, type Condition, type HoldRule, type LineStatus, type Operator } from '@commissions/shared';
 import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useSettings } from './SettingsProvider';
 import { api, type CommissionLine, type CommissionRun, type CompPlan, type HoldReason, type ImportColumn, type ImportDetail, type ImportSummary, type Subledger } from '../api';
 import { PeriodPicker } from './PeriodPicker';
 
@@ -81,6 +82,7 @@ const newRule = (reasonKey: string, field: string): HoldRule => ({
 });
 
 export function CommissionsView() {
+  const { settings } = useSettings();
   const [runs, setRuns] = useState<CommissionRun[]>([]);
   const [imports, setImports] = useState<ImportSummary[]>([]);
   const [reasons, setReasons] = useState<HoldReason[]>([]);
@@ -135,8 +137,8 @@ export function CommissionsView() {
   useEffect(() => {
     if (selectedId !== 'new') return;
     const first = imports[0];
-    setDraft({ name: '', importId: first?.id ?? '', repField: '', payees: [], amountField: '', dateField: '', dealKeyField: '', from: null, to: null, holdRules: [], payLagMonths: 1, contractStartField: '', termMonthsField: '', contractEndField: '', components: {} });
-  }, [selectedId, imports]);
+    setDraft({ name: '', importId: first?.id ?? '', repField: '', payees: [], amountField: '', dateField: '', dealKeyField: '', from: settings.general.goLiveDate, to: null, holdRules: [], payLagMonths: settings.general.defaultPayLagMonths, contractStartField: '', termMonthsField: '', contractEndField: '', components: {} });
+  }, [selectedId, imports, settings]);
 
   useEffect(() => {
     if (!draft?.importId) {
@@ -494,6 +496,7 @@ function HoldRuleRow({ rule, columns, reasons, onChange, onRemove }: { rule: Hol
 // -- Run detail ----------------------------------------------------------------
 
 function RunDetail({ run, reasons, onChanged, onDelete, onError }: { run: CommissionRun & { lines: CommissionLine[] }; reasons: HoldReason[]; onChanged: () => void; onDelete: () => void; onError: (m: string) => void }) {
+  const { feature, quick } = useSettings();
   const [filter, setFilter] = useState('');
   const [statusFilter, setStatusFilter] = useState<LineStatus | 'all' | 'unpaid'>('all');
   const [onlySplit, setOnlySplit] = useState(false);
@@ -600,23 +603,29 @@ function RunDetail({ run, reasons, onChanged, onDelete, onError }: { run: Commis
           </div>
         </div>
         <div className="flex-1" />
-        <div className="flex rounded-md border border-slate-300 text-xs">
-          <button className={`px-2.5 py-1 ${tab === 'lines' ? 'bg-indigo-600 text-slate-50' : 'text-slate-600 hover:bg-slate-50'}`} onClick={() => setTab('lines')}>
-            Lines & holds
+        {feature('accounting') && (
+          <div className="flex rounded-md border border-slate-300 text-xs">
+            <button className={`px-2.5 py-1 ${tab === 'lines' ? 'bg-indigo-600 text-slate-50' : 'text-slate-600 hover:bg-slate-50'}`} onClick={() => setTab('lines')}>
+              Lines & holds
+            </button>
+            <button className={`px-2.5 py-1 ${tab === 'accounting' ? 'bg-indigo-600 text-slate-50' : 'text-slate-600 hover:bg-slate-50'}`} onClick={() => setTab('accounting')}>
+              Accounting
+            </button>
+          </div>
+        )}
+        {quick('exportLines') && (
+          <button className="btn btn-sm" onClick={() => api.exportCommissionRun(run.id)}>
+            Export CSV
           </button>
-          <button className={`px-2.5 py-1 ${tab === 'accounting' ? 'bg-indigo-600 text-slate-50' : 'text-slate-600 hover:bg-slate-50'}`} onClick={() => setTab('accounting')}>
-            Accounting
+        )}
+        {quick('deleteRun') && (
+          <button className="btn btn-sm" onClick={onDelete}>
+            Delete
           </button>
-        </div>
-        <button className="btn btn-sm" onClick={() => api.exportCommissionRun(run.id)}>
-          Export CSV
-        </button>
-        <button className="btn btn-sm" onClick={onDelete}>
-          Delete
-        </button>
+        )}
       </div>
 
-      {tab === 'accounting' ? (
+      {tab === 'accounting' && feature('accounting') ? (
         <AccountingPanel run={run} onError={onError} />
       ) : (
       <div className="flex-1 overflow-auto">
@@ -641,9 +650,11 @@ function RunDetail({ run, reasons, onChanged, onDelete, onError }: { run: Commis
             <div className="flex items-center gap-2">
               <div className="text-xs font-semibold text-orange-800">On hold: {money(heldTotal)}</div>
               <div className="flex-1" />
-              <button className="btn btn-sm" onClick={() => api.exportCommissionRun(run.id, 'hold')}>
-                Export on-hold CSV
-              </button>
+              {quick('exportOnHold') && (
+                <button className="btn btn-sm" onClick={() => api.exportCommissionRun(run.id, 'hold')}>
+                  Export on-hold CSV
+                </button>
+              )}
             </div>
             <div className="mt-2 grid grid-cols-2 gap-4">
               <table className="w-full text-xs">
@@ -740,12 +751,12 @@ function RunDetail({ run, reasons, onChanged, onDelete, onError }: { run: Commis
             {selected.size > 0 && (
               <>
                 <span className="text-xs text-slate-400">{selected.size} selected</span>
-                {selectedPayable.length > 0 && (
+                {quick('holdLines') && selectedPayable.length > 0 && (
                   <button className="btn btn-sm" onClick={() => setHoldTarget(selectedPayable)}>
                     Hold {selectedPayable.length}…
                   </button>
                 )}
-                {selectedHeld.length > 0 && (
+                {quick('releaseLines') && selectedHeld.length > 0 && (
                   <>
                     <input type="date" className="input" value={releaseDate} onChange={(e) => setReleaseDate(e.target.value)} title="Release date" />
                     <button className="btn btn-sm btn-primary" onClick={() => act(() => api.releaseLines(run.id, { lineIds: selectedHeld, releasedAt: releaseDate }))}>
@@ -867,14 +878,18 @@ function RunDetail({ run, reasons, onChanged, onDelete, onError }: { run: Commis
                   <td className="py-1 whitespace-nowrap text-right">
                     {l.status === 'hold' ? (
                       <>
-                        <button className="text-indigo-600 hover:underline" onClick={() => act(() => api.releaseLines(run.id, { lineIds: [l.id], releasedAt: releaseDate }))}>
-                          Release
-                        </button>{' '}
-                        <button className="text-slate-400 hover:underline" title="Clear the hold and pay as if it was never held" onClick={() => act(() => api.payLines(run.id, [l.id]))}>
-                          Undo
-                        </button>
+                        {quick('releaseLines') && (
+                          <button className="text-indigo-600 hover:underline" onClick={() => act(() => api.releaseLines(run.id, { lineIds: [l.id], releasedAt: releaseDate }))}>
+                            Release
+                          </button>
+                        )}{' '}
+                        {quick('payNow') && (
+                          <button className="text-slate-400 hover:underline" title="Clear the hold and pay as if it was never held" onClick={() => act(() => api.payLines(run.id, [l.id]))}>
+                            Undo
+                          </button>
+                        )}
                       </>
-                    ) : l.payout === null ? null : (
+                    ) : l.payout === null || !quick('holdLines') ? null : (
                       <button className="text-slate-500 hover:underline" onClick={() => setHoldTarget([l.id])}>
                         Hold…
                       </button>
@@ -901,6 +916,7 @@ function RunDetail({ run, reasons, onChanged, onDelete, onError }: { run: Commis
 // -- Accounting ----------------------------------------------------------------
 
 function AccountingPanel({ run, onError }: { run: CommissionRun & { lines: CommissionLine[] }; onError: (m: string) => void }) {
+  const { quick } = useSettings();
   const [data, setData] = useState<Subledger | null>(null);
 
   const load = useCallback(() => api.getAccounting(run.id).then(setData).catch((e) => onError(e.message)), [run.id, onError]);
@@ -927,12 +943,16 @@ function AccountingPanel({ run, onError }: { run: CommissionRun & { lines: Commi
           A preview of this run alone. Treatment and method come from each role's amortization type (Accounting › Amortization Types); the books are kept by Process Monthly Accounting.
         </span>
         <div className="flex-1" />
-        <button className="btn btn-sm" onClick={() => api.exportAccounting(run.id, 'schedule')}>
-          Export amortization schedule
-        </button>
-        <button className="btn btn-sm" onClick={() => api.exportAccounting(run.id, 'entries')}>
-          Export journal entries
-        </button>
+        {quick('exportSchedule') && (
+          <button className="btn btn-sm" onClick={() => api.exportAccounting(run.id, 'schedule')}>
+            Export amortization schedule
+          </button>
+        )}
+        {quick('exportEntries') && (
+          <button className="btn btn-sm" onClick={() => api.exportAccounting(run.id, 'entries')}>
+            Export journal entries
+          </button>
+        )}
       </div>
 
       <div className="grid grid-cols-4 gap-3 p-4">
