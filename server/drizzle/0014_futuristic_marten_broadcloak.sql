@@ -1,0 +1,1 @@
+ALTER TABLE "comp_plans" ADD COLUMN "structure" jsonb DEFAULT '{"targetIncentive":null,"components":[]}'::jsonb NOT NULL;

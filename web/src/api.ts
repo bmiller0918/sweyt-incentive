@@ -10,7 +10,7 @@ import type {
   RegisterAsset,
   RollforwardMonth,
 } from '@commissions/shared';
-import type { AccountingPolicy, Aggregate, ColumnDef, ColumnType, CostTreatment, Criteria, HoldRule, LineStatus, PlanTiers, RawRow, ScheduleLine, SubledgerResult } from '@commissions/shared';
+import type { AccountingPolicy, Aggregate, ColumnDef, ColumnType, CostTreatment, Criteria, HoldRule, LineStatus, PlanStructure, PlanTiers, RawRow, ScheduleLine, SubledgerResult } from '@commissions/shared';
 
 export interface ImportSummary {
   id: string;
@@ -88,6 +88,8 @@ export interface CompPlan {
   description: string | null;
   params: PlanParams;
   tiers: PlanTiers;
+  /** Weighted components: target incentive split by weight, each with a quota and payout tiers. */
+  structure: PlanStructure;
   effectiveFrom: string | null;
   effectiveTo: string | null;
   employeeCount?: number;
@@ -202,6 +204,8 @@ export interface CommissionRunConfig {
   contractStartField?: string | null;
   termMonthsField?: string | null;
   contractEndField?: string | null;
+  /** Weighted-plan components → the column holding each one's value. */
+  components?: { name: string; field: string }[];
 }
 
 /** The subledger as the API returns it: schedule lines without their per-month map. */
@@ -238,6 +242,8 @@ export interface CommissionLine {
   payee: string;
   role: string;
   planName: string | null;
+  /** Plan component this line pays under (weighted plans); null for plan-level lines. */
+  component: string | null;
   method: 'tier' | 'whole' | 'flat' | 'none';
   tierFrom: number | null;
   tierTo: number | null;

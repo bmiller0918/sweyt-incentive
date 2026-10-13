@@ -11,6 +11,7 @@ import type {
   GlAccount,
   HoldRule,
   JournalEntry,
+  PlanStructure,
   PlanTiers,
   RawRow,
   ReclassMode,
@@ -125,6 +126,8 @@ export const compPlans = pgTable('comp_plans', {
   params: jsonb('params').$type<Record<string, number | string | boolean | null>>().notNull().default({}),
   /** Tier table used by TIER() / TIER_RATE() in formulas. */
   tiers: jsonb('tiers').$type<PlanTiers>().notNull().default({ mode: 'marginal', basis: 'amount', scaleParam: null, rows: [] }),
+  /** Weighted components (target incentive split by weight, each with a quota and payout tiers). */
+  structure: jsonb('structure').$type<PlanStructure>().notNull().default({ targetIncentive: null, components: [] }),
   /** YYYY-MM-DD; null = open-ended. */
   effectiveFrom: text('effective_from'),
   effectiveTo: text('effective_to'),
@@ -229,6 +232,8 @@ export interface CommissionRunConfig {
   /** Contract term in months, or an end date to derive it from. */
   termMonthsField?: string | null;
   contractEndField?: string | null;
+  /** Weighted-plan components → the column holding each one's value (matched by component name). */
+  components?: { name: string; field: string }[];
 }
 
 /** Company-wide amortization policy (one row). */
@@ -357,6 +362,8 @@ export const commissionLines = pgTable(
     payee: text('payee').notNull(),
     role: text('role').notNull(),
     planName: text('plan_name'),
+    /** Plan component this line pays under (weighted plans); null for plan-level lines. */
+    component: text('component'),
     /** tier | whole | flat | none */
     method: text('method').notNull(),
     tierFrom: doublePrecision('tier_from'),

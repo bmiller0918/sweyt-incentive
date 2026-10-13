@@ -1,6 +1,6 @@
-import { LINE_STATUS_LABELS, OPERATOR_LABELS, familyOf, operandArity, type Condition, type HoldRule, type LineStatus, type Operator } from '@commissions/shared';
+import { LINE_STATUS_LABELS, OPERATOR_LABELS, componentKey, familyOf, operandArity, type Condition, type HoldRule, type LineStatus, type Operator } from '@commissions/shared';
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { api, type CommissionLine, type CommissionRun, type HoldReason, type ImportColumn, type ImportDetail, type ImportSummary, type Subledger } from '../api';
+import { api, type CommissionLine, type CommissionRun, type CompPlan, type HoldReason, type ImportColumn, type ImportDetail, type ImportSummary, type Subledger } from '../api';
 import { PeriodPicker } from './PeriodPicker';
 
 const money = (n: number | null | undefined) => (n === null || n === undefined ? '' : n.toLocaleString(undefined, { style: 'currency', currency: 'USD' }));
@@ -32,6 +32,8 @@ interface Draft {
   contractStartField: string;
   termMonthsField: string;
   contractEndField: string;
+  /** Component name -> column; '' = not mapped. */
+  components: Record<string, string>;
 }
 
 /** Guess the obvious columns so most runs are two clicks. */
@@ -51,6 +53,27 @@ function guess(imp: ImportDetail): Pick<Draft, 'repField' | 'amountField' | 'dat
   };
 }
 
+/** Map each plan component to the column with the same name, or to the amount column when it is the only component. */
+function guessComponents(imp: ImportDetail, names: string[]): Record<string, string> {
+  const isNum = (t: string) => ['currency', 'decimal', 'integer'].includes(t);
+  const numCols = imp.columns.filter((c) => isNum(c.type)).map((c) => c.name);
+  const norm = (s: string) => s.toLowerCase().replace(/[^a-z0-9]+/g, '');
+  const out: Record<string, string> = {};
+  for (const n of names) {
+    const nn = norm(n);
+    // A name that normalizes to '' (e.g. only non-ASCII) must not partial-match everything via includes('').
+    const match = nn
+      ? (numCols.find((c) => norm(c) === nn) ??
+        numCols.find((c) => {
+          const cc = norm(c);
+          return !!cc && (cc.includes(nn) || nn.includes(cc));
+        }))
+      : undefined;
+    out[n] = match ?? (names.length === 1 ? (guess(imp).amountField ?? '') : '');
+  }
+  return out;
+}
+
 const newRule = (reasonKey: string, field: string): HoldRule => ({
   id: `r${Math.random().toString(36).slice(2, 8)}`,
   reasonKey,
@@ -61,6 +84,7 @@ export function CommissionsView() {
   const [runs, setRuns] = useState<CommissionRun[]>([]);
   const [imports, setImports] = useState<ImportSummary[]>([]);
   const [reasons, setReasons] = useState<HoldReason[]>([]);
+  const [plans, setPlans] = useState<CompPlan[]>([]);
   const [selectedId, setSelectedId] = useState<string | 'new' | null>(null);
   const [run, setRun] = useState<(CommissionRun & { lines: CommissionLine[] }) | null>(null);
   const [draft, setDraft] = useState<Draft | null>(null);
@@ -77,13 +101,26 @@ export function CommissionsView() {
   const refreshReasons = useCallback(() => api.listHoldReasons().then(setReasons), []);
 
   useEffect(() => {
-    Promise.all([refresh(), api.listImports(), refreshReasons()])
-      .then(([r, imps]) => {
+    Promise.all([refresh(), api.listImports(), refreshReasons(), api.listPlans()])
+      .then(([r, imps, , p]) => {
         setImports(imps);
+        setPlans(p);
         setSelectedId(r.length ? r[0].id : 'new');
       })
       .catch((e) => setError(e.message));
   }, [refresh, refreshReasons]);
+
+  /** Every component name across all plans, one per engine key, so a run can map each to a column. */
+  const componentNames = useMemo(() => {
+    const seen = new Map<string, string>();
+    for (const p of plans) {
+      for (const c of p.structure?.components ?? []) {
+        const key = componentKey(c.name);
+        if (key && !seen.has(key)) seen.set(key, c.name.trim());
+      }
+    }
+    return [...seen.values()];
+  }, [plans]);
 
   const loadRun = useCallback((id: string) => api.getCommissionRun(id).then(setRun).catch((e) => setError(e.message)), []);
   useEffect(() => {
@@ -98,7 +135,7 @@ export function CommissionsView() {
   useEffect(() => {
     if (selectedId !== 'new') return;
     const first = imports[0];
-    setDraft({ name: '', importId: first?.id ?? '', repField: '', payees: [], amountField: '', dateField: '', dealKeyField: '', from: null, to: null, holdRules: [], payLagMonths: 1, contractStartField: '', termMonthsField: '', contractEndField: '' });
+    setDraft({ name: '', importId: first?.id ?? '', repField: '', payees: [], amountField: '', dateField: '', dealKeyField: '', from: null, to: null, holdRules: [], payLagMonths: 1, contractStartField: '', termMonthsField: '', contractEndField: '', components: {} });
   }, [selectedId, imports]);
 
   useEffect(() => {
@@ -110,10 +147,11 @@ export function CommissionsView() {
       .getImport(draft.importId)
       .then((d) => {
         setImportDetail(d);
-        setDraft((cur) => (cur && cur.importId === d.id && !cur.repField && !cur.amountField ? { ...cur, ...guess(d), name: cur.name || `${d.name} commissions` } : cur));
+        setDraft((cur) => (cur && cur.importId === d.id && !cur.repField && !cur.amountField ? { ...cur, ...guess(d), components: guessComponents(d, componentNames), name: cur.name || `${d.name} commissions` } : cur));
       })
       .catch((e) => setError(e.message));
-  }, [draft?.importId]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [draft?.importId, componentNames]);
 
   const create = async () => {
     if (!draft) return;
@@ -135,6 +173,9 @@ export function CommissionsView() {
         contractStartField: draft.contractStartField || null,
         termMonthsField: draft.termMonthsField || null,
         contractEndField: draft.contractEndField || null,
+        components: Object.entries(draft.components)
+          .filter(([, field]) => field)
+          .map(([name, field]) => ({ name, field })),
       });
       await refresh();
       setSelectedId(created.id);
@@ -198,7 +239,17 @@ export function CommissionsView() {
         {showReasons && <HoldReasonsPanel reasons={reasons} onChange={refreshReasons} onClose={() => setShowReasons(false)} onError={setError} />}
 
         {selectedId === 'new' && draft && (
-          <NewRunForm draft={draft} setDraft={setDraft} imports={imports} importDetail={importDetail} reasons={reasons} busy={busy} onCreate={create} onCancel={runs.length ? () => setSelectedId(runs[0].id) : undefined} />
+          <NewRunForm
+            draft={draft}
+            setDraft={setDraft}
+            imports={imports}
+            importDetail={importDetail}
+            reasons={reasons}
+            componentNames={componentNames}
+            busy={busy}
+            onCreate={create}
+            onCancel={runs.length ? () => setSelectedId(runs[0].id) : undefined}
+          />
         )}
 
         {selectedId !== 'new' && run && <RunDetail run={run} reasons={reasons} onChanged={() => loadRun(run.id)} onDelete={() => remove(run)} onError={setError} />}
@@ -215,6 +266,7 @@ function NewRunForm({
   imports,
   importDetail,
   reasons,
+  componentNames,
   busy,
   onCreate,
   onCancel,
@@ -224,6 +276,7 @@ function NewRunForm({
   imports: ImportSummary[];
   importDetail: ImportDetail | null;
   reasons: HoldReason[];
+  componentNames: string[];
   busy: boolean;
   onCreate: () => void;
   onCancel?: () => void;
@@ -257,7 +310,7 @@ function NewRunForm({
                 <select
                   className="select mt-1 w-full"
                   value={draft.importId}
-                  onChange={(e) => setDraft({ ...draft, importId: e.target.value, repField: '', amountField: '', dateField: '', dealKeyField: '', payees: [], holdRules: [], contractStartField: '', termMonthsField: '', contractEndField: '' })}
+                  onChange={(e) => setDraft({ ...draft, importId: e.target.value, repField: '', amountField: '', dateField: '', dealKeyField: '', payees: [], holdRules: [], contractStartField: '', termMonthsField: '', contractEndField: '', components: {} })}
                 >
                   {imports.map((i) => (
                     <option key={i.id} value={i.id}>
@@ -287,6 +340,21 @@ function NewRunForm({
                 <Field label="Or subscription end" value={draft.contractEndField} onChange={(v) => setDraft({ ...draft, contractEndField: v })} options={dateCols.map((c) => c.name)} />
               </div>
             </div>
+
+            {componentNames.length > 0 && (
+              <div>
+                <span className="text-xs text-slate-500">Plan components</span>
+                <div className="mt-1 text-xs text-slate-400">
+                  Plans with weighted components pay one line per component from its own column (New ARR, Renewals…), each against that component's quota. A component left
+                  unmapped pays nothing in this run; plans without components use the amount column.
+                </div>
+                <div className="mt-2 grid grid-cols-3 gap-3">
+                  {componentNames.map((n) => (
+                    <Field key={n} label={n} value={draft.components[n] ?? ''} onChange={(v) => setDraft({ ...draft, components: { ...draft.components, [n]: v } })} options={numCols.map((c) => c.name)} />
+                  ))}
+                </div>
+              </div>
+            )}
 
             <div>
               <div className="flex items-center">
@@ -508,10 +576,11 @@ function RunDetail({ run, reasons, onChanged, onDelete, onError }: { run: Commis
       (l) =>
         (!onlySplit || l.split) &&
         (statusFilter === 'all' || (statusFilter === 'unpaid' ? l.payout === null : l.status === statusFilter)) &&
-        (!q || `${l.payee} ${l.dealKey ?? ''} ${l.planName ?? ''} ${l.note ?? ''} ${reasonName(l.holdReason)}`.toLowerCase().includes(q)),
+        (!q || `${l.payee} ${l.dealKey ?? ''} ${l.planName ?? ''} ${l.component ?? ''} ${l.note ?? ''} ${reasonName(l.holdReason)}`.toLowerCase().includes(q)),
     );
   }, [run, filter, onlySplit, statusFilter, reasons]);
 
+  const hasComponents = run.lines.some((l) => l.component);
   const splitCount = new Set(run.lines.filter((l) => l.split).map((l) => `${l.rowIndex}|${l.payee}`)).size;
   const unpaidCount = run.lines.filter((l) => l.payout === null).length;
   const selectedHeld = [...selected].filter((id) => run.lines.find((l) => l.id === id)?.status === 'hold');
@@ -525,6 +594,7 @@ function RunDetail({ run, reasons, onChanged, onDelete, onError }: { run: Commis
           <div className="truncate text-xs text-slate-400">
             {run.importName} · {run.config.repField}
             {run.config.payees.length ? ` + ${run.config.payees.map((p) => p.role).join(', ')}` : ''} · {run.config.amountField}
+            {run.config.components?.length ? ` · ${run.config.components.map((c) => `${c.name} ← ${c.field}`).join(', ')}` : ''}
             {run.config.from || run.config.to ? ` · ${run.config.from ?? '…'} → ${run.config.to ?? '…'}` : ' · all dates'} · {run.config.holdRules?.length ?? 0} hold rule
             {(run.config.holdRules?.length ?? 0) === 1 ? '' : 's'} · {new Date(run.createdAt).toLocaleString()}
           </div>
@@ -737,6 +807,7 @@ function RunDetail({ run, reasons, onChanged, onDelete, onError }: { run: Commis
                 <th className="py-1.5 pr-3 font-normal">Person</th>
                 <th className="py-1.5 pr-3 font-normal">Role</th>
                 <th className="py-1.5 pr-3 font-normal">Plan</th>
+                {hasComponents && <th className="py-1.5 pr-3 font-normal">Component</th>}
                 <th className="py-1.5 pr-3 font-normal">Tier</th>
                 <th className="py-1.5 pr-3 text-right font-normal">Amount</th>
                 <th className="py-1.5 pr-3 text-right font-normal">Rate</th>
@@ -767,6 +838,7 @@ function RunDetail({ run, reasons, onChanged, onDelete, onError }: { run: Commis
                   <td className="py-1 pr-3 whitespace-nowrap font-medium text-slate-800">{l.payee}</td>
                   <td className="py-1 pr-3">{l.role}</td>
                   <td className="py-1 pr-3">{l.planName ?? ''}</td>
+                  {hasComponents && <td className="py-1 pr-3 whitespace-nowrap">{l.component ?? ''}</td>}
                   <td className="py-1 pr-3 whitespace-nowrap">
                     {l.method === 'flat' ? 'flat' : l.method === 'none' ? '' : `${num(l.tierFrom)} – ${l.tierTo === null ? '∞' : num(l.tierTo)}`}
                     {l.split ? <span className="ml-1 rounded bg-indigo-100 px-1 text-[10px] text-indigo-700">split</span> : null}
