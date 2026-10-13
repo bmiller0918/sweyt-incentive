@@ -38,6 +38,17 @@ function textOf(c: PlanComponent): CompText {
   };
 }
 
+/** The weight text re-expressed in the new kind (percent ↔ amount via the target incentive), or '' when it cannot be converted. */
+function convertWeightText(from: WeightKind, to: WeightKind, text: string, targetIncentive: number | null): string {
+  if (from === to) return text;
+  if (to === 'quota' || from === 'quota') return '';
+  const n = parseNum(text);
+  if (n === null || !targetIncentive) return '';
+  if (from === 'percent' && to === 'amount') return String(Math.round(n * targetIncentive * 100) / 100);
+  if (from === 'amount' && to === 'percent') return pct(n / targetIncentive, 2);
+  return '';
+}
+
 function weightFrom(kind: WeightKind, text: string): ComponentWeight {
   if (kind === 'quota') return { kind };
   const n = parseNum(text) ?? 0;
@@ -128,7 +139,9 @@ export function PlanStructureEditor({ structure, onChange }: Props) {
               weightLabel={weightLabel(c)}
               onName={(name) => setComponent(c.id, { name })}
               onWeightKind={(kind) => {
-                const text = kind === 'quota' ? '' : t.weight;
+                // A "60%" typed as a percent must not become $0.60: convert via the
+                // target incentive when it is known, otherwise start the field blank.
+                const text = convertWeightText(c.weight.kind, kind, t.weight, resolved.targetIncentive);
                 setText(c.id, { weight: text });
                 setComponent(c.id, { weight: weightFrom(kind, text) });
               }}

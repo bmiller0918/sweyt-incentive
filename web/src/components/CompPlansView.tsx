@@ -43,6 +43,8 @@ export function CompPlansView() {
   const [paramRows, setParamRows] = useState<{ key: string; value: string }[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
+  /** Bumped on every selection so the structure editor reseeds its text, even when the same plan is picked again. */
+  const [editorKey, setEditorKey] = useState(0);
 
   const refresh = useCallback(async () => {
     const p = await api.listPlans();
@@ -61,6 +63,7 @@ export function CompPlansView() {
   }, []);
 
   const select = (p: CompPlan | 'new') => {
+    setEditorKey((k) => k + 1);
     if (p === 'new') {
       setSelectedId('new');
       const d = emptyDraft();
@@ -209,7 +212,7 @@ export function CompPlansView() {
               </div>
             </div>
 
-            <PlanStructureEditor key={selectedId ?? 'new'} structure={draft.structure} onChange={(structure) => setDraft({ ...draft, structure })} />
+            <PlanStructureEditor key={editorKey} structure={draft.structure} onChange={(structure) => setDraft({ ...draft, structure })} />
 
             <TierEditor
               tiers={draft.tiers}

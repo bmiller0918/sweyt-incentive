@@ -60,7 +60,15 @@ function guessComponents(imp: ImportDetail, names: string[]): Record<string, str
   const norm = (s: string) => s.toLowerCase().replace(/[^a-z0-9]+/g, '');
   const out: Record<string, string> = {};
   for (const n of names) {
-    const match = numCols.find((c) => norm(c) === norm(n)) ?? numCols.find((c) => norm(c).includes(norm(n)) || norm(n).includes(norm(c)));
+    const nn = norm(n);
+    // A name that normalizes to '' (e.g. only non-ASCII) must not partial-match everything via includes('').
+    const match = nn
+      ? (numCols.find((c) => norm(c) === nn) ??
+        numCols.find((c) => {
+          const cc = norm(c);
+          return !!cc && (cc.includes(nn) || nn.includes(cc));
+        }))
+      : undefined;
     out[n] = match ?? (names.length === 1 ? (guess(imp).amountField ?? '') : '');
   }
   return out;
