@@ -12,7 +12,7 @@ import type {
   RegisterAsset,
   RollforwardMonth,
 } from '@commissions/shared';
-import type { AccountingPolicy, Aggregate, AppSettings, ColumnDef, ColumnType, CostTreatment, Criteria, HoldRule, LineStatus, PayoutRule, PlanStructure, PlanTiers, RawRow, ScheduleLine, SubledgerResult } from '@commissions/shared';
+import type { AccountingPolicy, Aggregate, AppSettings, ColumnDef, ColumnType, CostTreatment, Criteria, HoldRule, LineStatus, PayoutRule, PlanQuotas, PlanStructure, PlanTiers, RawRow, ScheduleLine, SubledgerResult } from '@commissions/shared';
 
 export interface ImportSummary {
   id: string;
@@ -92,6 +92,10 @@ export interface CompPlan {
   tiers: PlanTiers;
   /** Weighted components: target incentive split by weight, each with a quota and payout tiers. */
   structure: PlanStructure;
+  /** The role this plan is for (drives the GL treatment through its amortization type). */
+  employeeTypeId: string | null;
+  /** Count / dollars / percent of quota / percent of margin; null on plans saved before sections. */
+  quotas: PlanQuotas | null;
   effectiveFrom: string | null;
   effectiveTo: string | null;
   employeeCount?: number;
@@ -208,6 +212,8 @@ export interface CommissionRunConfig {
   contractEndField?: string | null;
   /** Weighted-plan components → the column holding each one's value. */
   components?: { name: string; field: string }[];
+  /** Gross profit column, for percent-of-margin quotas. */
+  marginField?: string | null;
 }
 
 /** The subledger as the API returns it: schedule lines without their per-month map. */
@@ -268,7 +274,7 @@ export interface CommissionLine {
   planName: string | null;
   /** Plan component this line pays under (weighted plans); null for plan-level lines. */
   component: string | null;
-  method: 'tier' | 'whole' | 'flat' | 'none';
+  method: 'tier' | 'whole' | 'flat' | 'margin' | 'none';
   tierFrom: number | null;
   tierTo: number | null;
   amount: number | null;

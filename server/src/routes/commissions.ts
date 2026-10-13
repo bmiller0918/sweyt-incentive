@@ -55,6 +55,7 @@ const runSchema = z.object({
   termMonthsField: z.string().nullable().optional(),
   contractEndField: z.string().nullable().optional(),
   components: z.array(z.object({ name: z.string().min(1), field: z.string().min(1) })).default([]),
+  marginField: z.string().nullable().optional(),
 });
 
 /** Whole months between two ISO dates, rounded (a 3-year term is 36 even if the end is the 31st). */
@@ -156,6 +157,7 @@ export async function commissionRoutes(app: FastifyInstance, db: Db) {
       body.contractEndField,
       ...body.payees.map((p) => p.field),
       ...body.components.map((c) => c.field),
+      body.marginField,
     ].filter((f): f is string => !!f);
     const missing = fields.filter((f) => !(f in cached.types));
     if (missing.length) return reply.code(400).send({ error: `Column not found: ${missing.join(', ')}` });
@@ -177,6 +179,7 @@ export async function commissionRoutes(app: FastifyInstance, db: Db) {
       termMonthsField: body.termMonthsField ?? null,
       contractEndField: body.contractEndField ?? null,
       components: body.components,
+      marginField: body.marginField ?? null,
     };
     // Component key -> column, so the engine can find each component's value on a deal.
     // Names that normalize to the same key ("New ARR" / "New-ARR") would silently share one column.
@@ -242,6 +245,7 @@ export async function commissionRoutes(app: FastifyInstance, db: Db) {
         const v = row[field];
         measures[k] = typeof v === 'number' ? v : null;
       }
+      const marginRaw = config_.marginField ? row[config_.marginField] : undefined;
       deals.push({
         rowIndex: i,
         dealKey: config_.dealKeyField ? String(rawRow[config_.dealKeyField] ?? '').trim() || null : null,
@@ -249,6 +253,7 @@ export async function commissionRoutes(app: FastifyInstance, db: Db) {
         amount: typeof amount === 'number' ? amount : null,
         payees,
         measures,
+        ...(config_.marginField ? { margin: typeof marginRaw === 'number' ? marginRaw : null } : {}),
       });
     });
 
