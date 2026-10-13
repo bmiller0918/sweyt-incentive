@@ -303,8 +303,12 @@ export async function accountingRoutes(app: FastifyInstance, db: Db) {
     const errors = validateMethod(body.def);
     if (errors.length) return { errors, schedule: null };
     const s = await loadSettings(db);
-    const sched = scheduleFor(body.amount, body.def, { payMonth: body.payMonth, contractStart: body.contractStart, termMonths: body.termMonths, defaultTermMonths: s.defaultTermMonths }, body.practicalExpedient);
-    return { errors, schedule: sched };
+    try {
+      const sched = scheduleFor(body.amount, body.def, { payMonth: body.payMonth, contractStart: body.contractStart, termMonths: body.termMonths, defaultTermMonths: s.defaultTermMonths }, body.practicalExpedient);
+      return { errors, schedule: sched };
+    } catch (e) {
+      return { errors: [(e as Error).message], schedule: null };
+    }
   });
 
   // -- Types -----------------------------------------------------------------

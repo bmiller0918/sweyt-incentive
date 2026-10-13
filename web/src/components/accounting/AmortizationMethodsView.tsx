@@ -170,7 +170,9 @@ function MethodRecord({
   const [monthText, setMonthText] = useState(draft.def.monthPercents.join(', '));
   const [error, setError] = useState<string | null>(null);
   const [menu, setMenu] = useState(false);
-  const d = editing || !method ? draft : toDraft(method);
+  // Memoized: a fresh object each render would re-run the preview effect forever.
+  const viewDraft = useMemo(() => (method ? toDraft(method) : null), [method]);
+  const d = editing || !viewDraft ? draft : viewDraft;
   const def = d.def;
   const setDef = (patch: Partial<AmortizationMethodDef>) => setDraft((x) => ({ ...x, def: { ...x.def, ...patch } }));
   const termed = def.kind === 'straight_line' || def.kind === 'formula';

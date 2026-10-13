@@ -80,8 +80,9 @@ export function spreadByFormula(src: string, amount: number, startMonth: string,
     if (cp === months) v = nb;
     else {
       const r = f.evaluate({ CV: cv, NB: nb, AD: roundCents(cv - nb), T: months, CP: cp, RT: months - cp + 1, LD: ld, Y: Math.ceil(cp / 12), MY: ((cp - 1) % 12) + 1, TERM: term });
-      const n = typeof r === 'number' ? r : typeof r === 'boolean' ? Number(r) : Number(r ?? 0);
-      if (!Number.isFinite(n)) throw new Error(`The formula gave no number in month ${cp}.`);
+      // null (e.g. division by zero) is an error, not zero: it would silently push everything to the last month.
+      const n = typeof r === 'number' ? r : typeof r === 'boolean' ? Number(r) : r === null || r === '' ? NaN : Number(r);
+      if (!Number.isFinite(n)) throw Object.assign(new Error(`The formula "${src}" gave no number in month ${cp} of ${months} (TERM ${term}). Fix the amortization method.`), { statusCode: 400 });
       v = roundCents(cv >= 0 ? Math.min(Math.max(n, 0), nb) : Math.max(Math.min(n, 0), nb));
     }
     out[addMonths(startMonth, cp - 1)] = v;

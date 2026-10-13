@@ -435,3 +435,16 @@ describe('formula methods', () => {
     expect(validateMethod({ ...base, formula: 'nb / rt' })).toEqual([]);
   });
 });
+
+describe('formula runtime errors', () => {
+  it('names the formula and month and is a 400', () => {
+    const def: AmortizationMethodDef = { kind: 'formula', periodBasis: 'contract_term', months: null, termMultiplier: 1, yearPercents: [], monthPercents: [], startBasis: 'pay_month', formula: 'CV / (TERM - 12)' };
+    try {
+      scheduleFor(1200, def, { payMonth: '2026-01', contractStart: null, termMonths: 12, defaultTermMonths: 12 });
+      throw new Error('expected a throw');
+    } catch (e) {
+      expect((e as Error).message).toMatch(/CV \/ \(TERM - 12\).*month 1 of 12/);
+      expect((e as { statusCode?: number }).statusCode).toBe(400);
+    }
+  });
+});
